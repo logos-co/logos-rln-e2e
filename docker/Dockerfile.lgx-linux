@@ -1,0 +1,37 @@
+# Build the logos-libp2p-module .lgx for Linux (cbind-rln + RLN), COPY-based:
+# our three local repos are staged in the context (no .git, darwin librln
+# stripped), a Linux librln_mix is built from zerokit, and the flake inputs are
+# repointed at the in-container copies via --override-input path:.
+FROM nixos/nix:2.34.1 AS builder
+
+RUN printf 'experimental-features = nix-command flakes\nsandbox = false\n' >> /etc/nix/nix.conf
+RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
+WORKDIR /build
+
+# 1. Linux librln_mix from the zerokit mix fork (the vendored one is darwin).
+RUN git clone --depth 1 --branch v2.0.0 https://github.com/vacp2p/zerokit.git /build/zerokit
+RUN nix shell nixpkgs#cargo nixpkgs#rustc nixpkgs#gcc nixpkgs#pkg-config \
+    --command bash -c "cd /build/zerokit && cargo build --release -p rln --manifest-path rln/Cargo.toml"
+
+# 2. Stage our repos (context already excludes .git/build/junk/darwin librln).
+COPY nim-libp2p-mix /src/nim-libp2p-mix
+COPY mix-rln-spam-protection-plugin /src/mix-rln-spam-protection-plugin
+COPY logos-libp2p-module /src/logos-libp2p-module
+COPY logos-rln-gifter /src/logos-rln-gifter
+
+# 3. Drop the Linux librln where cbind-rln.nix expects it.
+RUN mkdir -p /src/mix-rln-spam-protection-plugin/vendor && \
+    cp /build/zerokit/target/release/librln.a \
+       /src/mix-rln-spam-protection-plugin/vendor/librln_mix_v2.0.0.a
+
+# 4. Build the Linux .lgx, repointing the local git+file inputs at the copies.
+RUN nix build "path:/src/logos-libp2p-module#lgx" \
+      --override-input libp2p "path:/src/mix-rln-spam-protection-plugin" \
+      --override-input libp2p/libp2p_mix "path:/src/nim-libp2p-mix" \
+      --override-input libp2p/logos_rln_gifter "path:/src/logos-rln-gifter" \
+      --out-link /build/result-lgx && \
+    cp -L /build/result-lgx/*.lgx /build/libp2p_module.lgx && \
+    ls -la /build/libp2p_module.lgx
+
+FROM scratch AS lgx
+COPY --from=builder /build/libp2p_module.lgx /libp2p_module.lgx

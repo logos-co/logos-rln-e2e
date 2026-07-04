@@ -1,0 +1,13 @@
+# Built libp2p .lgx (produced by docker/build_lgx_linux.sh)
+docker/lp2p-out/
+
+# nix build outputs
+result
+result-*
+
+# local scratch
+*.log
+*.exe
+
+# local working doc (kept untracked)
+docker/testnet/mix_e2e/JOURNEY.md

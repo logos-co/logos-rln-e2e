@@ -1,0 +1,100 @@
+# testnet E2E image (NO local sequencer / risc0). Builds logos-logoscore-cli +
+# the wallet & rln modules (clone of logos-lez-rln, pinned to main), bundles our
+# COPY-built Linux libp2p_module .lgx, and bakes the deployment profile. This is
+# the base image for the 5-node gifted-RLN-over-mix sim; the compose entrypoint
+# overrides the container command and orchestrate.sh drives the run.
+#
+# Build context = repo root; expects docker/lp2p-out/libp2p_module.lgx (from
+# docker/build_lgx_linux.sh) and the deployment profile under docker/testnet/.
+# Ubuntu base + apt build tooling — the
+# zerokit/lez-rln-ffi cargo build needs build-essential + clang/libclang for
+# bindgen, which the bare nixos/nix (alpine) base lacks.
+FROM catthehacker/ubuntu:act-latest AS builder
+RUN apt-get update -qq && apt-get install -y -qq \
+    build-essential pkg-config libssl-dev git curl clang libclang-dev xxd \
+    && rm -rf /var/lib/apt/lists/*
+RUN curl -L https://nixos.org/nix/install | bash -s -- --daemon --yes
+# accept-flake-config=false: ignore flakes' nix-cache.status.im substituter,
+# which hangs for untrusted users (the Phase-0 2h+ silent-stall gotcha).
+# connect-timeout + fallback so any unreachable substituter fails fast.
+RUN mkdir -p /root/.config/nix && \
+    printf 'experimental-features = nix-command flakes\nsandbox = false\naccept-flake-config = false\nconnect-timeout = 5\nfallback = true\n' > /root/.config/nix/nix.conf && \
+    mkdir -p /etc/nix && cp /root/.config/nix/nix.conf /etc/nix/nix.conf
+RUN rmdir /homeless-shelter 2>/dev/null || true
+RUN git config --global url."https://github.com/".insteadOf "git@github.com:"
+SHELL ["/bin/bash","-lc"]
+ENV LIBCLANG_PATH=/usr/lib/llvm-18/lib
+
+# logoscore CLI (the -D / load-module / call daemon binary).
+RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+    nix build --no-accept-flake-config --fallback github:logos-co/logos-logoscore-cli -o /logoscore
+
+# Clone logos-lez-rln pinned to main @ 4b403c1 (PR #16: the rc6 SPEL stack —
+# lez-rln-ffi PDA-prefix fix, reviewed rln-module, tri-state subtree fetch).
+# Its flake fetches the execution zone (lssa) at v0.2.0-rc6 (e37876a6) via
+# fetchFromGitHub — so nothing is vendored/overlaid. nix emits raw lib/include;
+# the daemon needs the .lgx layout (manifest + variant), produced by the bundle
+# step below.
+RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+    git clone https://github.com/logos-co/logos-lez-rln.git /root/logos-lez-rln && \
+    git -C /root/logos-lez-rln checkout 4b403c13988679115f3e4ff8c0ec33b47c6c3b8b
+
+# Wallet module: UPSTREAM logos-execution-zone-module d70225c (rc6). Upstream
+# natively ships program-id-based send_generic_public_transaction (+ rc6 transfer
+# sigs + resolve_public_account); its flake pins execution-zone e37876a6 (rc6).
+# The rln module calls send_generic_public_transaction directly with typed
+# multi-arg invokeRemoteMethod. Built FIRST (stable input) so rln-side iterations
+# keep it cached.
+RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+    nix build --no-accept-flake-config --fallback \
+        github:logos-blockchain/logos-execution-zone-module/d70225ced646934d2294fd9e8f8b03615c104b80#lgx \
+        -o /root/wallet-lgx
+
+# RLN module .lgx, built from the pinned main checkout above.
+RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+    cd /root/logos-lez-rln && \
+    nix bundle --no-accept-flake-config --fallback \
+        --bundler github:logos-co/nix-bundle-lgx .#logos-rln-module -o /root/rln-bundle
+
+# Runtime tools into a dedicated profile so the container runtime (entrypoint +
+# in-container exec calls) needs no `nix`.
+RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
+    nix profile install --no-accept-flake-config --fallback --profile /rttools \
+      nixpkgs#bash nixpkgs#python3 nixpkgs#coreutils nixpkgs#gnutar nixpkgs#gnugrep nixpkgs#curl nixpkgs#procps
+ENV PATH=/rttools/bin:$PATH
+
+# Our Linux RLN-enabled libp2p module (overlaid fresh by the compose entrypoint).
+COPY docker/lp2p-out/libp2p_module.lgx /artifacts/libp2p_module.lgx
+# Deployment profile -> /testnet fixtures. A deployment is fully captured by its
+# descriptor (tree_id + derived config + payment/supply pointers) plus the wallet
+# (storage.json). stage.sh generates the flat files the daemons read and asserts
+# the wallet<->deployment binding (schema + payment/supply present). Point the sim
+# at a different provisioned deployment with --build-arg DEPLOYMENT=<name>.
+ARG DEPLOYMENT=shared-5ade
+COPY docker/testnet/deployments/ /deployments/
+COPY docker/testnet/stage.sh /stage.sh
+RUN bash /stage.sh "/deployments/$DEPLOYMENT" /testnet
+
+# Install all three modules the way logos-core expects: <mdir>/<manifest.name>/
+# with manifest.json + flattened variant libs + a `variant` marker (mirrors the
+# sim's install_lgx). rln/wallet .lgx come from the nix bundles; libp2p from our
+# COPY'd artifact. Variant key auto-detected (single per-platform variant).
+RUN mkdir -p /modules && \
+    rlnlgx=$(find -L /root/rln-bundle -maxdepth 2 -name '*.lgx' | head -1) && \
+    walletlgx=$(find -L /root/wallet-lgx -maxdepth 2 -name '*.lgx' | head -1) && \
+    [ -f "$rlnlgx" ] && [ -f "$walletlgx" ] || { echo "missing .lgx (rln=$rlnlgx wallet=$walletlgx)"; exit 1; } && \
+    for lgx in /artifacts/libp2p_module.lgx "$rlnlgx" "$walletlgx"; do \
+        name=$(tar xzOf "$lgx" manifest.json | python3 -c 'import json,sys;print(json.load(sys.stdin)["name"])') && \
+        tmp=$(mktemp -d) && tar xzf "$lgx" -C "$tmp" && \
+        var=$(ls "$tmp/variants" | head -1) && \
+        rm -rf "/modules/$name" && mkdir -p "/modules/$name" && \
+        cp "$tmp/manifest.json" "/modules/$name/" && \
+        cp -L "$tmp/variants/$var/"* "/modules/$name/" && \
+        printf '%s' "$var" > "/modules/$name/variant" && \
+        echo "installed $name (variant=$var)"; \
+    done
+
+ENV LOGOSCORE=/logoscore/bin/logoscore MODULES_DIR=/modules WALLET_HOME=/testnet
+# This image is the base for the 5-node sim; the compose entrypoint overrides
+# this. Run the sim via docker/testnet/mix_e2e/orchestrate.sh (see the README).
+CMD ["bash","-lc","echo 'lp2p-mix-e2e base image. Run the sim: cd docker/testnet/mix_e2e && bash orchestrate.sh (see README).'"]
