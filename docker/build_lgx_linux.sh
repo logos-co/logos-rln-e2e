@@ -7,8 +7,8 @@
 # Output: ./lp2p-out/libp2p_module.lgx (Linux variant).
 #
 # Repos expected as siblings under ~/Waku/Logos:
-#   nim-libp2p-mix (rebase/mix-cbind), mix-rln-spam-protection-plugin
-#   (feat/cbind-rln), logos-libp2p-module (rebase/enable-mix), logos-rln-gifter
+#   nim-libp2p-mix (feat/on-demand-roots), mix-rln-spam-protection-plugin
+#   (feat/on-demand-roots), logos-libp2p-module (feat/on-demand-roots), logos-rln-gifter
 #   (the standalone RLN membership gifter protocol module).
 set -euo pipefail
 

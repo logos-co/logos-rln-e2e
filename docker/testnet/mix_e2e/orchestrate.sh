@@ -170,37 +170,13 @@ except Exception: print("conf=false; lact=")')"
   echo "  $s peerId=${pid:-EMPTY} leaf_opt=$lopt leaf_actual=$lact confirmed=$conf rlnIsReady=$rdy$flag"
 }
 
-# Root-convergence barrier: run AFTER all registrations, BEFORE the exchange.
-# confirm_and_ready makes each node ready at the tree state of ITS OWN
-# registration, but every later registration advances the Merkle tree to a new
-# root. An earlier node's verification-side valid-roots window (the group
-# manager's rootTracker, refreshed on the module's ~epoch proof-refresh timer)
-# then lags the newest root — so as a mix hop it rejects a proof built with that
-# root ("invalid Merkle root") and silently drops the message (seen as a missing
-# reply). Re-sync every wallet to head, wait until all nodes read the SAME
-# on-chain valid-roots set, then give the proof-refresh timers one epoch to
-# propagate that set into every verifier's window.
-roots_sig(){ call "$1" "$RLN_MOD" get_valid_roots "$CONFIG_ACCT" | python3 -c 'import json,sys
-try:
-  d=json.load(sys.stdin); r=d.get("result"); a=json.loads(r) if isinstance(r,str) else r
-  print(",".join(sorted(x.lower() for x in a)) if a else "EMPTY")
-except Exception: print("ERR")'; }
-converge_roots(){ local s sig first ok
-  for s in $ALL; do sync_wallet "$s" >/dev/null 2>&1; done
-  for w in $(seq 1 24); do
-    first=""; ok=1
-    for s in $ALL; do
-      sig=$(roots_sig "$s")
-      case "$sig" in ""|ERR|EMPTY) ok=0;; esac
-      if [ -z "$first" ]; then first="$sig"; elif [ "$sig" != "$first" ]; then ok=0; fi
-    done
-    [ "$ok" = "1" ] && break
-    sleep 5
-  done
-  if [ "$ok" = "1" ]; then echo "  valid-roots converged across all 5 nodes; settling one epoch for verifier windows"
-  else echo "  !! valid-roots did not fully converge in time — proceeding (a first-hop proof reject may drop one round-trip)" >&2; fi
-  sleep 12
-}
+# NOTE: there is deliberately no root-convergence barrier between registration
+# and the exchange. A verifier whose valid-roots window lags the newest root
+# (later registrations advance the Merkle tree) recovers IN-LINE: the plugin's
+# verifyProof requests an on-demand valid-roots refresh from the module on a
+# root-window miss and re-checks before rejecting ("Root miss - requesting
+# on-demand valid-roots refresh" / "On-demand root refresh recovered proof
+# root" in the node logs — counted in the observe step below).
 
 echo "=== up: 5 daemons (force-recreate for FRESH daemons) ==="
 # Force-recreate so each run starts from clean daemons. Module state (e.g. the
@@ -305,9 +281,6 @@ echo "  meshed."
 echo "=== rlnIsReady status (each node was confirmed ready before the next registered) ==="
 line="  "; for s in $ALL; do line="$line $s=$(call "$s" libp2p_module rlnIsReady | jval)"; done; echo "$line"
 
-echo "=== root convergence: wait until every node's valid-roots window includes the final root ==="
-converge_roots
-
 echo "=== register dest-read-behavior on all nodes (the SURB exit is random) ==="
 for s in $ALL; do
   jcall "$s" libp2p_module mixRegisterDestReadBehavior "{\"proto\":\"$PROTO\",\"behavior\":0,\"sizeParam\":$READ_SIZE}" >/dev/null 2>&1
@@ -346,11 +319,17 @@ if [ "$NEG" = "0" ]; then run_dir dest sender; DS=$LAST_OK; fi
 sleep 4
 
 echo "=== observe: RLN proofs (forward request + SURB reply legs) ==="
+# root_misses/refresh_recovered are DIAGNOSTIC only (not asserted): whether a
+# hop's window lags at exchange time is a race against the module's periodic
+# proof push, so a lucky run can legitimately show 0/0. misses > recovered
+# means a packet was dropped after an unrecovered miss.
 vtot=0
 for n in $ALL; do
   g=$($DC logs --since 240s "$n" 2>&1 | grep -c 'Generated RLN proof successfully')
   v=$($DC logs --since 240s "$n" 2>&1 | grep -c 'Proof verified successfully')
-  echo "  $n: generated=$g verified=$v"; vtot=$((vtot+v))
+  rm=$($DC logs --since 240s "$n" 2>&1 | grep -c 'Root miss - requesting on-demand')
+  rr=$($DC logs --since 240s "$n" 2>&1 | grep -c 'On-demand root refresh recovered')
+  echo "  $n: generated=$g verified=$v root_misses=$rm refresh_recovered=$rr"; vtot=$((vtot+v))
 done
 sgen=$($DC logs --since 240s sender 2>&1 | grep -c 'Generated RLN proof successfully')
 echo "  replies: sender->dest=$SD dest->sender=$DS ; total verifications=$vtot ; sender proofs=$sgen"

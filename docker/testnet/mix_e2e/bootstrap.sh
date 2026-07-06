@@ -37,10 +37,10 @@ clone(){ # repo branch base
 }
 
 echo "=== 1/3 clone sibling repos into $SIBLINGS ==="
-clone logos-libp2p-module             rebase/enable-mix  "$FORK_BASE"
-clone mix-rln-spam-protection-plugin  feat/cbind-rln     "$FORK_BASE"
-clone nim-libp2p-mix                  rebase/mix-cbind   "$FORK_BASE"
-clone logos-rln-gifter                master             "$LOGOS_BASE"
+clone logos-libp2p-module             feat/on-demand-roots  "$FORK_BASE"
+clone mix-rln-spam-protection-plugin  feat/on-demand-roots  "$FORK_BASE"
+clone nim-libp2p-mix                  feat/on-demand-roots  "$FORK_BASE"
+clone logos-rln-gifter                master                "$LOGOS_BASE"
 
 echo "=== 2/3 build the Linux libp2p .lgx (~6-15 min) ==="
 LOGOS_ROOT="$SIBLINGS" bash "$REPO_ROOT/docker/build_lgx_linux.sh"
