@@ -4,9 +4,12 @@ A reproducible, end-to-end simulation of **gifted RLN membership allocation over
 Sphinx mix network**, running real `logoscore` daemons against the hosted Logos
 Execution Zone (LEZ) testnet.
 
-Five nodes come up as a docker-compose stack. One node — the **gifter** — holds the
-only funded wallet; it registers its own RLN membership and then serves a libp2p
-membership-allocation protocol (`/logos/rln/membership/1.0.0`, [LIP-158]). The other
+Five nodes come up as a docker-compose stack. One node — the **gifter** — is the
+only spender: it mints the run's RLNTOK budget into a fresh per-run payment
+account (the deployment wallet carries the test token's mint authority, so every
+run funds itself — no fixed pool to drain), registers its own RLN membership, and
+then serves a libp2p membership-allocation protocol
+(`/logos/rln/membership/1.0.0`, [LIP-158]). The other
 four nodes **authenticate with an EIP-191 signature and receive a distinct on-chain
 RLN membership without ever funding or signing a transaction themselves.** Those
 memberships are then exercised by sending an RLN-protected message through a 3-hop

@@ -37,7 +37,7 @@ RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
 # step below.
 RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
     git clone https://github.com/logos-co/logos-lez-rln.git /root/logos-lez-rln && \
-    git -C /root/logos-lez-rln checkout 4b403c13988679115f3e4ff8c0ec33b47c6c3b8b
+    git -C /root/logos-lez-rln checkout 5091dc09342d86b1fa58b5671d6d65913b253875
 
 # Wallet module: UPSTREAM logos-execution-zone-module d70225c (rc6). Upstream
 # natively ships program-id-based send_generic_public_transaction (+ rc6 transfer

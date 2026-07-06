@@ -44,6 +44,11 @@ MSG_COUNT=3
 PROTO="/ipfs/ping/1.0.0"
 READ_SIZE=32
 RATE=100
+# Per-run RLNTOK budget minted into a FRESH payment account at setup: a happy
+# run does 5 registrations x (price_per_unit 10000 x RATE 100) = 5M, +1M slack.
+# The mint authority (payment-token definition) key ships in the deployment
+# wallet, so any clone funds itself — no fixed pre-funded account to drain.
+MINT_AMOUNT="${MINT_AMOUNT:-6000000}"
 RPC_URL="https://testnet.lez.logos.co/"
 SYNC_STEP=3000
 REG_RETRY_SLEEP=15
@@ -109,21 +114,14 @@ diagnose_reg(){ local svc="$1"; local logs
   echo "  !! RLN registration for '$svc' did not confirm on-chain." >&2
   if echo "$logs" | grep -qiE "Insufficient balance|may be out of funds|range end index 49"; then
     cat >&2 <<EOF
-  CAUSE: the deployment's payment account is OUT OF RLNTOK (each register costs
-         price_per_unit*rate; the funded account holds a finite amount).
-  FIX: provision a fresh funded payment account on the SAME tree (re-uses the
-       wallet, so run_setup mints a new funded holder), then rebuild the image
-       against the new deployment (the gifter signs with the baked wallet, so a
-       new payment account must be baked in):
-    D=docker/testnet/deployments/shared-5ade
-    (cd "\$LEZ_RLN_DIR/lez-rln" && PYO3_PYTHON=\$(command -v python3) \\
-        cargo build --release --bin run_setup --bin derive_accounts)
-    LEZ_RLN_DIR="\$LEZ_RLN_DIR" bash ../provision.sh --name shared-refunded \\
-        --tree \$(jq -r .tree_id "\$D/deployment.json") --adopt-wallet "\$D/storage.json"
-    docker build -f docker/Dockerfile.testnet-e2e \\
-        --build-arg DEPLOYMENT=shared-refunded -t lp2p-mix-e2e .
-  If you instead saw "supply holding may be out of funds", the master supply is
-  exhausted -> provision a brand-new tree (see "tree full" below).
+  CAUSE: the run's payment account ran out of RLNTOK mid-run (each register
+         costs price_per_unit*rate = 1M at rate=$RATE). The account is minted
+         fresh per run with MINT_AMOUNT=$MINT_AMOUNT, so this normally means
+         the budget knob is too low for a modified run shape (more nodes /
+         higher rate), or a registration was double-paid after retries.
+  FIX: re-run with a bigger budget — the sim mints what it needs, nothing to
+       re-provision or rebuild:
+    MINT_AMOUNT=$((MINT_AMOUNT * 2)) bash orchestrate.sh
 EOF
   elif echo "$logs" | grep -qiE "Would exceed max total rate limit|max_total_rate_limit"; then
     cat >&2 <<EOF
@@ -189,10 +187,12 @@ for s in $ALL; do
   for i in $(seq 1 90); do lc "$s" load-module libp2p_module >/dev/null 2>&1 && break; sleep 1; done
 done
 
-# Config + funder accounts come from the baked deployment profile (/testnet).
+# Config account comes from the baked deployment profile (/testnet). The
+# funder is NOT baked anymore: relay1 creates a fresh payment account and
+# mints this run's budget into it during its setup (see the gifter branch).
 CONFIG_ACCT=$(dexec sender sh -c 'tr -d "\n\r" < /testnet/config_account.txt')
-HOLDING_ACCT=$(dexec sender sh -c 'tr -d "\n\r" < /testnet/payment_account.txt')
-echo "  config=$CONFIG_ACCT holding(funder)=$HOLDING_ACCT"
+HOLDING_ACCT=""
+echo "  config=$CONFIG_ACCT holding(funder)=<minted per-run by relay1>"
 
 echo "=== per-node setup (load chain -> wallet+rln -> start -> mixSetNodeInfo -> peerInfo -> register) ==="
 for s in $ALL; do
@@ -217,11 +217,61 @@ except Exception: print("")')
   sv LPPUB "$s" "$($KEYS peerpub "$pid" 2>/dev/null || echo DECODE_FAIL)"
 
   if [ "$s" = "$GIFTER" ]; then
-    # relay1 = the membership provider (gifter). It holds the funded wallet, so
-    # it self-allocates its OWN membership (register_member funded/signed by its
-    # wallet), confirms on-chain, then mounts the gifter service the other nodes
-    # authenticate to. Retry transient sequencer failures; register_member is
-    # idempotent on the same seed. A persistent failure is diagnosed.
+    # Fund this run: create a FRESH payment account in relay1's (container-
+    # local) wallet and mint the run budget into it. Mint needs only the RLN
+    # config account — the token program id + definition (authority) account
+    # are recorded in its on-chain state, and the definition's signing key is
+    # in the opened deployment wallet. The Token program credits uninitialized
+    # accounts directly (Claim::Authorized, co-signed by the fresh account).
+    #
+    # create_account_public derives accounts DETERMINISTICALLY from the shared
+    # wallet's key chain, so early derivations collide with accounts other
+    # provisioning runs already created on-chain (e.g. another tree's supply
+    # holding) — walk the chain until an account with no on-chain data. Each
+    # completed run leaves its account on-chain, so the next run derives one
+    # step further: genuinely fresh per run.
+    echo "  funding: fresh per-run payment account (mint $MINT_AMOUNT RLNTOK)"
+    HOLDING_ACCT=""
+    for d in $(seq 1 30); do
+      cand=$(call "$s" "$WALLET_MOD" create_account_public | jval)
+      case "$cand" in ""|ERR|None) continue;; esac
+      if call "$s" "$RLN_MOD" get_token_balance "$cand" | grep -q '\\"exists\\":false'; then
+        HOLDING_ACCT="$cand"; echo "  fresh account after $d derivation(s): $HOLDING_ACCT"; break
+      fi
+    done
+    if [ -z "$HOLDING_ACCT" ]; then
+      echo "  !! no unused wallet account in 30 derivations — inspect the key chain" >&2; exit 1
+    fi
+    # The CLI double-encodes the module's JSON result, so match the bare word
+    # (the quotes around "pending" arrive backslash-escaped).
+    mint=$(call "$s" "$RLN_MOD" mint_tokens "$CONFIG_ACCT" "$HOLDING_ACCT" "$MINT_AMOUNT")
+    if ! echo "$mint" | grep -q 'pending'; then
+      echo "  !! mint_tokens failed: $mint" >&2
+      echo "  (mint submits via the wallet's generic tx — check testnet reachability" >&2
+      echo "   and that the deployment wallet holds the payment-token definition key)" >&2
+      exit 1
+    fi
+    bal=0
+    for w in $(seq 1 30); do
+      bal=$(call "$s" "$RLN_MOD" get_token_balance "$HOLDING_ACCT" | python3 -c 'import json,sys
+try:
+  r=json.loads(json.load(sys.stdin)["result"]); print(r.get("balance","0"))
+except Exception: print(0)')
+      [ "${bal:-0}" -ge "$MINT_AMOUNT" ] 2>/dev/null && break
+      sleep 5
+    done
+    if ! [ "${bal:-0}" -ge "$MINT_AMOUNT" ] 2>/dev/null; then
+      echo "  !! mint not credited in time (balance=$bal) — check the fund step output + testnet" >&2
+      exit 1
+    fi
+    echo "  funded: payment=$HOLDING_ACCT balance=$bal"
+
+    # relay1 = the membership provider (gifter). It holds the freshly funded
+    # payment account, so it self-allocates its OWN membership (register_member
+    # funded/signed by its wallet), confirms on-chain, then mounts the gifter
+    # service the other nodes authenticate to. Retry transient sequencer
+    # failures; register_member is idempotent on the same seed. A persistent
+    # failure is diagnosed.
     seed=$(python3 -c 'import os;print(os.urandom(32).hex())')
     idc=""; lopt=""; reg=""
     for attempt in 1 2 3 4; do
