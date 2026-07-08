@@ -9,10 +9,12 @@
 #   bash stage.sh <deployment_dir> <out_dir>
 #
 # A deployment is fully captured by tree_id + wallet (storage.json). config is a
-# derived cache of tree_id; payment/supply are pointers into the wallet. This emits
-# the flat files (storage.json, wallet_config.json, {config,payment,supply}.txt,
-# env.sh) enforcing the wallet<->deployment binding so a mismatched wallet fails
-# here, not at runtime. Bash+jq (no Python) so every sim + the image build share it.
+# derived cache of tree_id; payment (and, on wallet-key deployments, supply) are
+# pointers into the wallet — a faucet deployment's supply holder is a program PDA.
+# Emits storage.json.seed, wallet_config.json, {config,payment}_account.txt,
+# supply_holding.txt, funding.txt, env.sh, enforcing the wallet<->deployment binding
+# so a mismatched wallet fails here, not at runtime. Bash+jq (no Python) so every
+# sim + the image build share it.
 # The guest-drift guard (re-deriving config from the guest binaries) is verify.sh.
 set -euo pipefail
 
@@ -30,20 +32,28 @@ field(){ jq -re ".$1 // empty" "$DESC" 2>/dev/null || fail "descriptor missing r
 NAME=$(field name); TREE=$(field tree_id); SEQ=$(field sequencer)
 CFG=$(field config_account); PAY=$(field payment_account); SUP=$(field supply_holding)
 field registration_program_id >/dev/null
+# Pre-policy descriptors carry no "funding" field == the legacy wallet-key model.
+FUNDING=$(jq -r '.funding // "wallet-key"' "$DESC")
+case "$FUNDING" in faucet|wallet-key) ;; *) fail "descriptor funding must be faucet|wallet-key, got '$FUNDING'";; esac
 [[ "$TREE" =~ ^[0-9a-f]{64}$ ]] || fail "tree_id must be 64 lowercase hex chars, got '$TREE'"
 
 # rc6 wallet schema — refuse a wallet whose schema doesn't match the guest version.
 jq -e '.key_chain.accounts' "$WALLET" >/dev/null 2>&1 \
   || fail "wallet schema is not rc6 (expected top-level 'key_chain.accounts')"
-# wallet<->deployment binding: the wallet must actually hold payment + supply.
+# wallet<->deployment binding: the wallet must actually hold payment (always)
+# and supply (wallet-key only — faucet deployments' supply holder is the
+# program's own PDA, which no wallet holds).
 holds(){ jq -e --arg a "$1" 'any(.key_chain.accounts[]; .Public.account_id == $a)' "$WALLET" >/dev/null 2>&1; }
 holds "$PAY" || fail "wallet does not contain payment_account=$PAY — descriptor and storage.json are mismatched (wrong wallet)"
-holds "$SUP" || fail "wallet does not contain supply_holding=$SUP — descriptor and storage.json are mismatched (wrong wallet)"
+if [ "$FUNDING" = "wallet-key" ]; then
+  holds "$SUP" || fail "wallet does not contain supply_holding=$SUP — descriptor and storage.json are mismatched (wrong wallet)"
+fi
 
 mkdir -p "$OUT"
 printf '%s' "$CFG" > "$OUT/config_account.txt"
 printf '%s' "$PAY" > "$OUT/payment_account.txt"
 printf '%s' "$SUP" > "$OUT/supply_holding.txt"
+printf '%s' "$FUNDING" > "$OUT/funding.txt"
 jq '.last_synced_block = 0' "$WALLET" > "$OUT/storage.json.seed"
 jq -n --arg s "$SEQ" '{sequencer_addr:$s, seq_poll_timeout:"30s", seq_tx_poll_max_blocks:15, seq_poll_max_retries:10, seq_block_poll_max_amount:100}' > "$OUT/wallet_config.json"
 cat > "$OUT/env.sh" <<EOF
@@ -52,6 +62,7 @@ SCRIPT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
 export LEE_WALLET_HOME_DIR="\$SCRIPT_DIR"
 export NSSA_WALLET_HOME_DIR="\$SCRIPT_DIR"
 export LEZ_RLN_TREE_ID_HEX=$TREE
+export LEZ_RLN_FUNDING=$FUNDING
 EOF
 
-echo "stage: OK  $NAME  tree=${TREE:0:8}…  config=$CFG  payment=$PAY  supply=$SUP  -> $OUT"
+echo "stage: OK  $NAME  tree=${TREE:0:8}…  funding=$FUNDING  config=$CFG  payment=$PAY  supply=$SUP  -> $OUT"

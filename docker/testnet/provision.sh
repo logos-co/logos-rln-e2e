@@ -4,6 +4,8 @@
 #
 #   LEZ_RLN_DIR=/path/to/logos-lez-rln bash provision.sh --name <name> \
 #       [--tree <64hex>] [--adopt-wallet <storage.json>] [--sequencer <url>]
+#       [--funding faucet|wallet-key] [--claim-cap <u128>]
+#       [--registrar <64hex>] [--quota <u64>]
 #
 # Provisions on the sequencer and writes the new deployment into THIS repo's build
 # context (docker/testnet/deployments/) so `docker build --build-arg DEPLOYMENT=`

@@ -44,11 +44,18 @@ MSG_COUNT=3
 PROTO="/ipfs/ping/1.0.0"
 READ_SIZE=32
 RATE=100
-# Per-run RLNTOK budget minted into a FRESH payment account at setup: a happy
+# Per-run RLNTOK budget put into a FRESH payment account at setup: a happy
 # run does 5 registrations x (price_per_unit 10000 x RATE 100) = 5M, +1M slack.
-# The mint authority (payment-token definition) key ships in the deployment
-# wallet, so any clone funds itself — no fixed pre-funded account to drain.
+# How the account is funded follows the deployment's funding mode (staged
+# funding.txt): faucet deployments claim from the program's own payment PDA
+# (no human mint key anywhere); wallet-key deployments mint with the
+# definition key that ships in the deployment wallet. Either way any clone
+# funds itself — no fixed pre-funded account to drain.
 MINT_AMOUNT="${MINT_AMOUNT:-6000000}"
+# Faucet mode claims per-call amounts <= the deployment's faucet_claim_cap
+# (shared-faucet's cap = the provision default 10M), so the budget is claimed
+# in slices of at most CLAIM_CHUNK. Lower this if a deployment has a smaller cap.
+CLAIM_CHUNK="${CLAIM_CHUNK:-10000000}"
 RPC_URL="https://testnet.lez.logos.co/"
 SYNC_STEP=3000
 REG_RETRY_SLEEP=15
@@ -104,6 +111,19 @@ sync_wallet(){ local svc="$1" head cur n
   done
   echo "$cur"
 }
+# Poll until $2 holds at least $3 RLNTOK on $1 (credit lands async). Prints the
+# last seen balance; fails after ~150s.
+wait_balance(){ local svc="$1" acct="$2" want="$3" bal=0 w
+  for w in $(seq 1 30); do
+    bal=$(call "$svc" "$RLN_MOD" get_token_balance "$acct" | python3 -c 'import json,sys
+try:
+  r=json.loads(json.load(sys.stdin)["result"]); print(r.get("balance","0"))
+except Exception: print(0)')
+    [ "${bal:-0}" -ge "$want" ] 2>/dev/null && { echo "$bal"; return 0; }
+    sleep 5
+  done
+  echo "${bal:-0}"; return 1
+}
 
 # Diagnose a failed/again-unconfirmed registration by scanning the node's logs
 # for the rln program's assert strings, then print the exact remediation. Set
@@ -115,7 +135,7 @@ diagnose_reg(){ local svc="$1"; local logs
   if echo "$logs" | grep -qiE "Insufficient balance|may be out of funds|range end index 49"; then
     cat >&2 <<EOF
   CAUSE: the run's payment account ran out of RLNTOK mid-run (each register
-         costs price_per_unit*rate = 1M at rate=$RATE). The account is minted
+         costs price_per_unit*rate = 1M at rate=$RATE). The account is funded
          fresh per run with MINT_AMOUNT=$MINT_AMOUNT, so this normally means
          the budget knob is too low for a modified run shape (more nodes /
          higher rate), or a registration was double-paid after retries.
@@ -187,12 +207,16 @@ for s in $ALL; do
   for i in $(seq 1 90); do lc "$s" load-module libp2p_module >/dev/null 2>&1 && break; sleep 1; done
 done
 
-# Config account comes from the baked deployment profile (/testnet). The
-# funder is NOT baked anymore: relay1 creates a fresh payment account and
-# mints this run's budget into it during its setup (see the gifter branch).
+# Config account + funding mode come from the baked deployment profile
+# (/testnet, staged at image build). The funder is NOT baked anymore: relay1
+# creates a fresh payment account and puts this run's budget into it during
+# its setup (see the gifter branch). Pre-policy images have no funding.txt ==
+# the legacy wallet-key model.
 CONFIG_ACCT=$(dexec sender sh -c 'tr -d "\n\r" < /testnet/config_account.txt')
+FUNDING=$(dexec sender sh -c 'cat /testnet/funding.txt 2>/dev/null' | tr -d '\n\r')
+FUNDING="${FUNDING:-wallet-key}"
 HOLDING_ACCT=""
-echo "  config=$CONFIG_ACCT holding(funder)=<minted per-run by relay1>"
+echo "  config=$CONFIG_ACCT funding=$FUNDING holding(funder)=<funded per-run by relay1>"
 
 echo "=== per-node setup (load chain -> wallet+rln -> start -> mixSetNodeInfo -> peerInfo -> register) ==="
 for s in $ALL; do
@@ -218,11 +242,16 @@ except Exception: print("")')
 
   if [ "$s" = "$GIFTER" ]; then
     # Fund this run: create a FRESH payment account in relay1's (container-
-    # local) wallet and mint the run budget into it. Mint needs only the RLN
-    # config account — the token program id + definition (authority) account
-    # are recorded in its on-chain state, and the definition's signing key is
-    # in the opened deployment wallet. The Token program credits uninitialized
-    # accounts directly (Claim::Authorized, co-signed by the fresh account).
+    # local) wallet and put the run budget into it, per the deployment's
+    # funding mode. Both paths need only the RLN config account — the token
+    # program id + definition (authority) account are recorded in its on-chain
+    # state — and both credit the uninitialized fresh account directly
+    # (Claim::Authorized, co-signed by it):
+    #  - faucet: claim_tokens mints from the program's own payment PDA,
+    #    PDA-authorized — no signing key involved beyond the destination.
+    #    Per-call cap on-chain => the budget is claimed in CLAIM_CHUNK slices.
+    #  - wallet-key: mint_tokens signs with the definition key in the opened
+    #    deployment wallet.
     #
     # create_account_public derives accounts DETERMINISTICALLY from the shared
     # wallet's key chain, so early derivations collide with accounts other
@@ -230,7 +259,7 @@ except Exception: print("")')
     # holding) — walk the chain until an account with no on-chain data. Each
     # completed run leaves its account on-chain, so the next run derives one
     # step further: genuinely fresh per run.
-    echo "  funding: fresh per-run payment account (mint $MINT_AMOUNT RLNTOK)"
+    echo "  funding: fresh per-run payment account ($FUNDING, $MINT_AMOUNT RLNTOK)"
     HOLDING_ACCT=""
     for d in $(seq 1 30); do
       cand=$(call "$s" "$WALLET_MOD" create_account_public | jval)
@@ -244,25 +273,35 @@ except Exception: print("")')
     fi
     # The CLI double-encodes the module's JSON result, so match the bare word
     # (the quotes around "pending" arrive backslash-escaped).
-    mint=$(call "$s" "$RLN_MOD" mint_tokens "$CONFIG_ACCT" "$HOLDING_ACCT" "$MINT_AMOUNT")
-    if ! echo "$mint" | grep -q 'pending'; then
-      echo "  !! mint_tokens failed: $mint" >&2
-      echo "  (mint submits via the wallet's generic tx — check testnet reachability" >&2
-      echo "   and that the deployment wallet holds the payment-token definition key)" >&2
-      exit 1
-    fi
-    bal=0
-    for w in $(seq 1 30); do
-      bal=$(call "$s" "$RLN_MOD" get_token_balance "$HOLDING_ACCT" | python3 -c 'import json,sys
-try:
-  r=json.loads(json.load(sys.stdin)["result"]); print(r.get("balance","0"))
-except Exception: print(0)')
-      [ "${bal:-0}" -ge "$MINT_AMOUNT" ] 2>/dev/null && break
-      sleep 5
-    done
-    if ! [ "${bal:-0}" -ge "$MINT_AMOUNT" ] 2>/dev/null; then
-      echo "  !! mint not credited in time (balance=$bal) — check the fund step output + testnet" >&2
-      exit 1
+    if [ "$FUNDING" = faucet ]; then
+      claimed=0
+      while [ "$claimed" -lt "$MINT_AMOUNT" ]; do
+        step=$((MINT_AMOUNT - claimed)); [ "$step" -gt "$CLAIM_CHUNK" ] && step=$CLAIM_CHUNK
+        tx=$(call "$s" "$RLN_MOD" claim_tokens "$CONFIG_ACCT" "$HOLDING_ACCT" "$step")
+        if ! echo "$tx" | grep -q 'pending'; then
+          echo "  !! claim_tokens failed: $tx" >&2
+          echo "  (claims mint from the program's payment PDA — check testnet reachability" >&2
+          echo "   and that CLAIM_CHUNK=$CLAIM_CHUNK <= this deployment's faucet_claim_cap)" >&2
+          exit 1
+        fi
+        claimed=$((claimed + step))
+        if ! bal=$(wait_balance "$s" "$HOLDING_ACCT" "$claimed"); then
+          echo "  !! claim not credited in time (balance=$bal want=$claimed) — check the fund step output + testnet" >&2
+          exit 1
+        fi
+      done
+    else
+      mint=$(call "$s" "$RLN_MOD" mint_tokens "$CONFIG_ACCT" "$HOLDING_ACCT" "$MINT_AMOUNT")
+      if ! echo "$mint" | grep -q 'pending'; then
+        echo "  !! mint_tokens failed: $mint" >&2
+        echo "  (mint submits via the wallet's generic tx — check testnet reachability" >&2
+        echo "   and that the deployment wallet holds the payment-token definition key)" >&2
+        exit 1
+      fi
+      if ! bal=$(wait_balance "$s" "$HOLDING_ACCT" "$MINT_AMOUNT"); then
+        echo "  !! mint not credited in time (balance=$bal) — check the fund step output + testnet" >&2
+        exit 1
+      fi
     fi
     echo "  funded: payment=$HOLDING_ACCT balance=$bal"
 

@@ -92,7 +92,7 @@ docker/
   testnet/
     stage.sh                 # bakes a deployment profile into /testnet at image build time
     provision.sh, verify.sh  # deployment-profile tooling (thin shims into logos-lez-rln)
-    deployments/             # deployment profiles (default: shared-5ade)
+    deployments/             # deployment profiles (default: shared-faucet)
     mix_e2e/                 # THE SIM
       bootstrap.sh           #   one-shot: clone siblings + build .lgx + build image
       orchestrate.sh         #   drives the 5 daemons (gifter + clients, mix exchange, verdict)

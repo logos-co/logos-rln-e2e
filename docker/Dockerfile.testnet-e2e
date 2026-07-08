@@ -29,15 +29,16 @@ ENV LIBCLANG_PATH=/usr/lib/llvm-18/lib
 RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
     nix build --no-accept-flake-config --fallback github:logos-co/logos-logoscore-cli -o /logoscore
 
-# Clone logos-lez-rln pinned to main @ 4b403c1 (PR #16: the rc6 SPEL stack —
-# lez-rln-ffi PDA-prefix fix, reviewed rln-module, tri-state subtree fetch).
+# Clone logos-lez-rln pinned to feat/deploy-policies @ 7e6e9ab (deployment-
+# configurable funding: faucet claim_tokens + tri-state get_token_balance in
+# the rln module, on top of the rc6 SPEL stack + mint-on-demand mint_tokens).
 # Its flake fetches the execution zone (lssa) at v0.2.0-rc6 (e37876a6) via
 # fetchFromGitHub — so nothing is vendored/overlaid. nix emits raw lib/include;
 # the daemon needs the .lgx layout (manifest + variant), produced by the bundle
 # step below.
 RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
     git clone https://github.com/logos-co/logos-lez-rln.git /root/logos-lez-rln && \
-    git -C /root/logos-lez-rln checkout 5091dc09342d86b1fa58b5671d6d65913b253875
+    git -C /root/logos-lez-rln checkout 7e6e9abad635aaf886a8266314f25fcce9e8dd6c
 
 # Wallet module: UPSTREAM logos-execution-zone-module d70225c (rc6). Upstream
 # natively ships program-id-based send_generic_public_transaction (+ rc6 transfer
@@ -50,7 +51,7 @@ RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
         github:logos-blockchain/logos-execution-zone-module/d70225ced646934d2294fd9e8f8b03615c104b80#lgx \
         -o /root/wallet-lgx
 
-# RLN module .lgx, built from the pinned main checkout above.
+# RLN module .lgx, built from the pinned checkout above.
 RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
     cd /root/logos-lez-rln && \
     nix bundle --no-accept-flake-config --fallback \
@@ -66,11 +67,12 @@ ENV PATH=/rttools/bin:$PATH
 # Our Linux RLN-enabled libp2p module (overlaid fresh by the compose entrypoint).
 COPY docker/lp2p-out/libp2p_module.lgx /artifacts/libp2p_module.lgx
 # Deployment profile -> /testnet fixtures. A deployment is fully captured by its
-# descriptor (tree_id + derived config + payment/supply pointers) plus the wallet
-# (storage.json). stage.sh generates the flat files the daemons read and asserts
-# the wallet<->deployment binding (schema + payment/supply present). Point the sim
-# at a different provisioned deployment with --build-arg DEPLOYMENT=<name>.
-ARG DEPLOYMENT=shared-5ade
+# descriptor (tree_id + derived config + payment/supply pointers + funding mode)
+# plus the wallet (storage.json). stage.sh generates the flat files the daemons
+# read (incl. funding.txt, which orchestrate's fund step branches on) and asserts
+# the wallet<->deployment binding. Point the sim at a different provisioned
+# deployment with --build-arg DEPLOYMENT=<name> (shared-5ade = wallet-key legacy).
+ARG DEPLOYMENT=shared-faucet
 COPY docker/testnet/deployments/ /deployments/
 COPY docker/testnet/stage.sh /stage.sh
 RUN bash /stage.sh "/deployments/$DEPLOYMENT" /testnet
