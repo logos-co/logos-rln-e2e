@@ -1,30 +1,19 @@
-# mix scenario — QUARANTINED
+# mix scenario — revival in progress
 
-The sim last ran green against the hosted testnet before 2026-08-10; nothing
-here has been adapted to the harness yet, and its build is dead:
+Being rebuilt on the **logos-delivery mix stack** (`PINS.env`:
+logos-messaging/logos-delivery @ `feat/logos-testnetv02-mix`), replacing the
+retired libp2p-module/gifter stack (deleted here; history has it at
+`feat/e2e-repo`).
 
-1. **Dead module pin.** `harness/container/Dockerfile.node` (the old
-   `Dockerfile.testnet-e2e`) clones `logos-co/logos-lez-rln` at
-   `feat/deploy-policies@7e6e9ab` — an orphaned pre-split commit — and builds
-   the flake attr `.#logos-rln-module`, which the module-stack extraction
-   (logos-lez-rln `96621e4`, 2026-08-10) deleted. That module now lives in
-   `logos-co/logos-rln-modules` as `logos-lez-rln-module`, and the name
-   `logos-rln-module` means the membership-management module instead — see
-   `docs/naming.md`. Every module reference under `scenarios/mix/` uses the
-   **pre-rename** meanings.
-2. **Testnet-only.** `orchestrate.sh` hardcodes the hosted RPC; the committed
-   deployment descriptors it relied on predate the 2026-08-05 chain reset and
-   were removed with the vendored deployment tooling.
-3. **Personal-fork siblings.** `bootstrap.sh` clones three
-   `adklempner/*@feat/on-demand-roots` forks plus `logos-rln-gifter`; a
-   revival must either upstream them or pin them as explicit flake inputs.
+The shape: 5 host `wakunode2` processes with per-node mix keys, RLN
+spam-protection per hop via mix-rln-spam-protection-plugin (zerokit v2.0.2
+stateless, depth-20 tree). Membership is **pre-provisioned and static** —
+the harness generates the identities host-side, writes the plugin's
+keystores + tree, and registers the same commitments **on-chain** through
+`liblogos_lez_rln_module.register_member`. The defining assertion: the
+plugin tree's root appears in the registry's `get_valid_roots` — the mix
+network's RLN group is the on-chain registry.
 
-Revival is phase P4 of the rework plan: module bundles come from
-`harness/artifacts.sh`, the RPC from `$E2E_SEQUENCER`, the generic primitives
-(`jcall`/`sync_wallet`/`wait_balance`/`confirm_and_ready`/`diagnose_reg`)
-from `harness/lib/` — leaving the gifter/keycard/NEG logic here as the
-scenario's `run.sh`. First local-target run will be the sim's first run with
-zero external infra.
-
-The old narrated runbook (`JOURNEY.md`) stays an untracked local doc beside
-this file.
+Quarantine lifts when `./run.sh mix --target local` is green (M-C of the
+revival plan). Gifted allocation (LIP-158) returns only when the new gifter
+wire (`rln_gifter_module`) has a contract to build against.

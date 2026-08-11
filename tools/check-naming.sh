@@ -1,12 +1,10 @@
 #!/usr/bin/env bash
 # Names that flipped meaning on 2026-08-10 (docs/naming.md) must not appear in
-# active code. scenarios/mix/** and docs/journeys/mix.md are frozen pre-rename
-# artifacts (quarantined until the P4 revival) and are excluded, as are the
-# files that discuss the rename itself.
+# active code; only the files that discuss the rename itself are excluded.
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-excl=(':!scenarios/mix' ':!docs/naming.md' ':!tools/check-naming.sh')
+excl=(':!docs/naming.md' ':!tools/check-naming.sh')
 bad=0
 
 # Pre-rename identifiers that no longer exist anywhere in the stack.
