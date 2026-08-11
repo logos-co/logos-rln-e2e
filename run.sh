@@ -23,6 +23,7 @@ list_scenarios() {
     for env in "$HERE"/scenarios/*/scenario.env; do
         [ -f "$env" ] || continue
         id=$(basename "$(dirname "$env")")
+        # shellcheck source=/dev/null
         status=$(. "$env"; printf '%s' "${STATUS:-active}")
         printf '  %-14s %s\n' "$id" "$status"
     done
@@ -66,6 +67,7 @@ say "run dir: $E2E_RUN_DIR"
 . "$HERE/harness/artifacts.sh"
 resolve_artifacts
 
+# shellcheck source=/dev/null
 . "$TARGET_SH"
 trap 'target_down' EXIT
 target_up

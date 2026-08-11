@@ -53,6 +53,7 @@
           #   . "$(nix build .#pins --no-link --print-out-paths)"
           pins = pkgs.writeText "e2e-pins.env" ''
             E2E_LEZ_RLN_SRC=${lez-rln}
+            E2E_RLN_MODULES_SRC=${rln-modules}
           '';
         }
         # The module bundles every scenario loads, re-exported from the
@@ -79,6 +80,7 @@
               rsync
               gnutar
               shellcheck
+              coreutils # timeout(1) for the harness call caps; absent on stock macOS
             ];
           };
         }

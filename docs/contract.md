@@ -37,6 +37,19 @@ channel.
 | `E2E_EPOCH_SIZE_SEC` | RLN epoch size passed to `start` (local 60, testnet 600) |
 | `E2E_ROOT_WINDOW_TIMEOUT_S` | `verify_proof` root-window retry budget (local 60, testnet 120) |
 
+## Target inputs (caller → target)
+
+| var | meaning |
+|---|---|
+| `E2E_DEVNET` | local only: `host` (default — run lez-rln's `dev.sh`) \| `external` (attach to a running sequencer) |
+| `E2E_DEVNET_TIMEOUT_S` | local/host: devnet readiness budget (default 900 — first boot cargo-builds the sequencer) |
+| `LEZ_RLN_CHECKOUT` | lez-rln working tree for dev.sh + provisioning (default `../logos-lez-rln`; must have host bins + guest blobs built) |
+| `E2E_DEPLOYMENT` | testnet only, required: name of a committed descriptor under `deployments/` |
+| `E2E_DEPLOYMENT_DIR` | local/external only: reuse an existing provisioned deployment (refused under `E2E_DEVNET=host` — dev.sh wipes the chain) |
+
+Scenario-specific knobs (e.g. `register`'s `E2E_RATE_LIMIT`) are documented in
+the scenario's header, never invented in the harness.
+
 ## scenario.env
 
 Each `scenarios/<id>/scenario.env` declares: `NODES` (daemon count),
