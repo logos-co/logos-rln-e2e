@@ -211748,15 +211748,16 @@
         ]
       },
       "locked": {
-        "lastModified": 1786402010,
-        "narHash": "sha256-RhihrbEM7lTlCwZlJUMhw4fYcv1yJYcGFzlBrRmjrJM=",
+        "lastModified": 1786418042,
+        "narHash": "sha256-fb2ZAapUP5htNJ/t+tR1+lZhayhcVm/ZG8PPe3UMyfY=",
         "owner": "logos-co",
         "repo": "logos-rln-modules",
-        "rev": "b48c44ac8b27d0b8268c12387416f932de0b8254",
+        "rev": "d998344d54f4bb0ba80b443fae22d7d20f548a14",
         "type": "github"
       },
       "original": {
         "owner": "logos-co",
+        "ref": "main",
         "repo": "logos-rln-modules",
         "type": "github"
       }

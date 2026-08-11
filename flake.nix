@@ -18,7 +18,7 @@
       url = "github:logos-co/logos-lez-rln";
       flake = false;
     };
-    rln-modules.url = "github:logos-co/logos-rln-modules";
+    rln-modules.url = "github:logos-co/logos-rln-modules/main";
 
     # logoscore is consumed as a flake: its default package is the daemon/CLI
     # every scenario drives. The module-stack e2e used to fetch it unpinned at
