@@ -10,3 +10,6 @@ runs/
 
 # stale build artifact from the pre-rework layout
 docker/lp2p-out/
+
+# local working doc (kept untracked)
+scenarios/mix/JOURNEY.md

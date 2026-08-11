@@ -10,8 +10,7 @@ On 2026-08-10 the RLN module stack was extracted from logos-lez-rln into
 
 So `liblogos_rln_module` in anything written **before** 2026-08-10 means the
 registry provider; in anything written after, the membership module. The
-quarantined `scenarios/mix/` tree (and `docs/journeys/mix.md`) is entirely
-pre-rename.
+quarantined `scenarios/mix/` tree is entirely pre-rename.
 
 Rules for this repo:
 

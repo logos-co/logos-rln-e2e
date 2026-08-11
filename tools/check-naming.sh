@@ -6,7 +6,7 @@
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-excl=(':!scenarios/mix' ':!docs/journeys/mix.md' ':!docs/naming.md' ':!tools/check-naming.sh')
+excl=(':!scenarios/mix' ':!docs/naming.md' ':!tools/check-naming.sh')
 bad=0
 
 # Pre-rename identifiers that no longer exist anywhere in the stack.

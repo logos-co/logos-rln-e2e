@@ -26,4 +26,5 @@ from `harness/lib/` — leaving the gifter/keycard/NEG logic here as the
 scenario's `run.sh`. First local-target run will be the sim's first run with
 zero external infra.
 
-What a green run looked like: `docs/journeys/mix.md`.
+The old narrated runbook (`JOURNEY.md`) stays an untracked local doc beside
+this file.

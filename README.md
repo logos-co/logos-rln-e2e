@@ -18,7 +18,7 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 | `register` | in progress | full single-node membership lifecycle: faucet claim → register → merkle proof + registry cross-check → generate/verify proof (valid + tampered) |
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
 | `delivery` | planned | logos-delivery-module propagation; RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
-| `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) — `docs/journeys/mix.md` |
+| `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
 ./run.sh --list
@@ -73,7 +73,7 @@ harness/
 scenarios/
   register/  live-registry/  delivery/  mix/
 deployments/            committed testnet descriptors (local is per-run)
-docs/                   contract.md, naming.md, journeys/<scenario>.md
+docs/                   contract.md, naming.md
 tools/                  check-naming.sh
 ```
 
