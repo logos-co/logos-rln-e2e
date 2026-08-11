@@ -70,6 +70,27 @@ wallet_fresh_holding() {
     return 1
 }
 
+# The faucet caps each ClaimTokens call at the deployment's claim cap —
+# slice a large budget into chunks, confirming the running balance after
+# each so a dropped claim fails at the right slice.
+# Usage: wallet_claim_chunked <node> <config_account> <dest> <total> [chunk]
+wallet_claim_chunked() {
+    local node="$1" cfg="$2" dest="$3" total="$4" chunk="${5:-${E2E_CLAIM_CHUNK:-2000000}}"
+    local claimed=0 take n=0
+    while [ "$claimed" -lt "$total" ]; do
+        take=$((total - claimed))
+        [ "$take" -gt "$chunk" ] && take="$chunk"
+        node_call "$node" "$E2E_REGISTRY_MOD" claim_tokens \
+            "$(argfile claim_cfg "$cfg")" "$(argfile claim_dest "$dest")" "$take" | jres >/dev/null \
+            || die_node "$node" "claim_tokens($take) failed"
+        claimed=$((claimed + take))
+        n=$((n + 1))
+        wait_balance "$node" "$dest" "$claimed" >/dev/null \
+            || die_node "$node" "faucet credit never reached $claimed (after claim $n)"
+    done
+    say "claimed $claimed RLNTOK into ${dest:0:12}… ($n claim(s))"
+}
+
 # Poll until <account> holds at least <want> RLNTOK (credit lands async).
 # Prints the last seen balance; 1 when the budget runs out.
 # Usage: wait_balance <node> <account> <want>
