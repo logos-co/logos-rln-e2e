@@ -57,7 +57,16 @@ ln -sfn "$E2E_DEPLOYMENT_DIR" "$SHIM/deployments/e2e"
 say "deployment shim: $SHIM/deployments/e2e -> $E2E_DEPLOYMENT_DIR"
 
 # ---------- the tests --------------------------------------------------------
-section "cargo test testnet_ (6 live-registry tests)"
+section "cargo test testnet_ (live-registry suite)"
+# The standalone sequencer leaves the CLOCK_50 account at zero, so chain time
+# never tracks wall time on a local devnet (membership lifecycle timing is
+# only faithfully exercised against testnet — docs/contract.md). The clock
+# test would correctly fail there; skip it on local, run everything on testnet.
+SKIP=()
+if [ "${E2E_TARGET:-}" = "local" ]; then
+    say "local target: skipping testnet_clock_account_decodes_to_live_chain_time (standalone sequencer keeps CLOCK_50 at 0)"
+    SKIP=(--skip testnet_clock_account_decodes_to_live_chain_time)
+fi
 CACHE="${E2E_CARGO_TARGET_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/logos-rln-e2e/cargo-target}"
 mkdir -p "$CACHE"
 OUT="$E2E_RUN_DIR/live-registry.out"
@@ -66,7 +75,7 @@ OUT="$E2E_RUN_DIR/live-registry.out"
          LEZ_RLN_CHECKOUT="$SHIM" \
          LEZ_RLN_TESTNET_DEPLOYMENT=e2e \
          CARGO_TARGET_DIR="$CACHE" \
-         cargo test testnet_ -- --nocapture ) 2>&1 | tee "$OUT"
+         cargo test testnet_ -- --nocapture ${SKIP[@]+"${SKIP[@]}"} ) 2>&1 | tee "$OUT"
 rc=${PIPESTATUS[0]}
 [ "$rc" = 0 ] || die "cargo test failed (rc=$rc, full output: $OUT)"
 grep -q "testnet test skipped" "$OUT" && die "gate did not propagate — tests skipped themselves"

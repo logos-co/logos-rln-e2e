@@ -50,6 +50,18 @@ channel.
 Scenario-specific knobs (e.g. `register`'s `E2E_RATE_LIMIT`) are documented in
 the scenario's header, never invented in the harness.
 
+### Known local-vs-testnet gaps
+
+The local target is a standalone (mock) sequencer; two behavioral gaps mean
+testnet stays a first-class target rather than a fallback:
+
+- **Chain time**: the standalone sequencer leaves the `CLOCK_50` account at
+  zero, so anything clocked by chain time (membership pending windows,
+  expiry/renewal) is not faithfully exercised locally. The live-registry
+  clock test runs only against testnet.
+- **Block size**: local debug config caps blocks at 1 MiB; the real testnet
+  cap is under ~459 KB, and oversized program deploys vanish silently there.
+
 ## scenario.env
 
 Each `scenarios/<id>/scenario.env` declares: `NODES` (daemon count),
