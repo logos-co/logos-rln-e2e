@@ -37,10 +37,13 @@ clone(){ # repo branch base
 }
 
 echo "=== 1/3 clone sibling repos into $SIBLINGS ==="
-clone logos-libp2p-module             rebase/enable-mix  "$FORK_BASE"
-clone mix-rln-spam-protection-plugin  feat/cbind-rln     "$FORK_BASE"
-clone nim-libp2p-mix                  rebase/mix-cbind   "$FORK_BASE"
-clone logos-rln-gifter                master             "$LOGOS_BASE"
+clone logos-libp2p-module             feat/on-demand-roots  "$FORK_BASE"
+clone mix-rln-spam-protection-plugin  feat/on-demand-roots  "$FORK_BASE"
+clone nim-libp2p-mix                  feat/on-demand-roots  "$FORK_BASE"
+# feat/keycard = master + the keycard attestation auth (pinned until merged).
+# Local runs don't depend on this pin — build_lgx_linux.sh copies the sibling
+# WORKING TREES, whatever their state; the pin only shapes fresh clones.
+clone logos-rln-gifter                feat/keycard          "$LOGOS_BASE"
 
 echo "=== 2/3 build the Linux libp2p .lgx (~6-15 min) ==="
 LOGOS_ROOT="$SIBLINGS" bash "$REPO_ROOT/docker/build_lgx_linux.sh"
@@ -52,8 +55,11 @@ cat <<EOF
 
 DONE. Run the sim:
   cd $REPO_ROOT/docker/testnet/mix_e2e
-  bash orchestrate.sh          # the full gifted-RLN-over-mix E2E
+  bash orchestrate.sh          # the full E2E: 3 eth clients + dest via keycard attestation
+  KEYCARD=0 bash orchestrate.sh     # the all-EIP-191 legacy shape
+  KEYCARD=real bash orchestrate.sh  # dest onboards with a PHYSICAL Status Keycard (see README)
   NEG=1 bash orchestrate.sh    # negative: unregistered sender rejected
   NEG=2 bash orchestrate.sh    # negative: non-allowlisted sender refused by the gifter
+  NEG=3 bash orchestrate.sh    # negative: attestation refused when keycard auth is not mounted
   docker compose down          # tear down
 EOF
