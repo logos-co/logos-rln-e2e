@@ -106,7 +106,7 @@ section "wallet"
 wallet_open "$NODE" || die "wallet open failed"
 CHAIN_HEAD=$(chain_head) || die "cannot probe chain head at $E2E_SEQUENCER"
 say "syncing wallet to chain head $CHAIN_HEAD"
-wallet_sync "$NODE" "$CHAIN_HEAD"
+wallet_sync "$NODE" >/dev/null || die "wallet sync failed"
 
 # ---------- faucet funding (Register-instruction path, no gifter) -----------
 say "deriving a fresh holding account"
@@ -126,7 +126,7 @@ say "claiming $CLAIM RLNTOK from the faucet (rate $RATE_LIMIT x price $PRICE x2)
 CLAIM_RES=$(node_call "$NODE" liblogos_lez_rln_module claim_tokens \
     "$(argfile cfg2 "$E2E_CONFIG_ACCOUNT")" "$(argfile hold "$HOLDING")" "$CLAIM" | jres) || CLAIM_RES=""
 [ -n "$CLAIM_RES" ] || die "claim_tokens failed"
-wait_balance "$NODE" "$HOLDING" "$CLAIM" || die "faucet credit never landed (want $CLAIM)"
+wait_balance "$NODE" "$HOLDING" "$CLAIM" >/dev/null || die "faucet credit never landed (want $CLAIM)"
 
 # ---------- scope (the identity is generated INSIDE the module) --------------
 # The consumer supplies only the scope (registry_id + rln_identifier) and the

@@ -1,0 +1,11 @@
+{
+  "name": "shared-faucet",
+  "tree_id": "15f5520c1648358440b73a7b11f4a8cf8e44b63b7a0ae326609863e3e2f1b6ee",
+  "sequencer": "https://testnet.lez.logos.co/",
+  "registration_program_id": "65343a570616eec04387832a193b258ee48d445f1feb4d842db4f320feec3e7b",
+  "merkle_program_id": "ec8c814c6b2d0854c75a86a5e1c63f0df00598f23b27b3fc8f14e3eeeba0161d",
+  "config_account": "8Subd1uJZAQRxTnh3Y2KQEaoexpyFQHp28yWCzZcZB14",
+  "payment_account": "EMG8ax4F9nRyKPbAu87xctu25Ku6JAkk5fsKLTCkY6K7",
+  "supply_holding": "DJwWhGqfkFdxnu54umQXUiFzPPr6ADRC5n3Xm3CbECok",
+  "funding": "faucet"
+}
