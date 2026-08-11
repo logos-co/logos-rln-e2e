@@ -70,6 +70,27 @@ wallet_fresh_holding() {
     return 1
 }
 
+# Some scenarios need wallets the deployment does NOT own: create_new mints
+# a FRESH key chain into <home>/storage.json (open() hard-fails on a missing
+# storage file — it never creates one), decoupling the node from the staged
+# deployment wallet: distinct seeds mean distinct derived accounts, so
+# co-resident nodes cannot race each other's holdings, and the faucet/
+# register paths sign only with the node's own holding. The mnemonic is
+# discarded by the wallet FFI — these wallets are ephemeral by design.
+# wallet_config.json (the sequencer binding) is copied from the staged home.
+# Usage: wallet_create_new <node> <home> [password]
+wallet_create_new() {
+    local node="$1" home="$2" pw="${3:-e2e-ephemeral}"
+    mkdir -p "$home"
+    if [ ! -f "$home/wallet_config.json" ]; then
+        cp "${E2E_WALLET_HOME:?wallet_create_new needs E2E_WALLET_HOME}/wallet_config.json" \
+            "$home/wallet_config.json" || die "wallet_create_new: cannot copy wallet_config.json"
+    fi
+    node_call "$node" "$E2E_WALLET_MOD" create_new \
+        "$home/wallet_config.json" "$home/storage.json" "$pw" >/dev/null \
+        || die_node "$node" "wallet create_new failed"
+}
+
 # The faucet caps each ClaimTokens call at the deployment's claim cap —
 # slice a large budget into chunks, confirming the running balance after
 # each so a dropped claim fails at the right slice.
