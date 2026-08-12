@@ -38,7 +38,7 @@
 #                                   Qt-thread note at roundtrip())
 #   LIBP2P_LGX=<bundle>             libp2p_module bundle override
 #   LIBP2P_MODULE_CHECKOUT=<dir>    checkout to nix-build #lgx from (default
-#                                   ../logos-libp2p-module — a local pin that
+#                                   ../logos-libp2p-module; see PINS.env for
 #                                   becomes a PINS.env rev at push time)
 set -uo pipefail
 
@@ -114,7 +114,7 @@ say "scope rln_identifier: ${RLN_ID:0:16}… (shared by all $N nodes)"
 # ---------- libp2p module bundle -------------------------------------------
 section "artifacts: libp2p_module"
 if [ -z "${LIBP2P_LGX:-}" ]; then
-    # Local-checkout pin during bring-up; becomes a PINS.env rev at push time.
+    # The checkout should match scenarios/mix-core/PINS.env.
     LIBP2P_CHECKOUT="${LIBP2P_MODULE_CHECKOUT:-$ROOT/../logos-libp2p-module}"
     [ -d "$LIBP2P_CHECKOUT" ] || die "no libp2p module checkout at $LIBP2P_CHECKOUT (set LIBP2P_LGX or LIBP2P_MODULE_CHECKOUT)"
     _out=$(nix build "$LIBP2P_CHECKOUT#lgx" --no-link --print-out-paths | tail -1) \
