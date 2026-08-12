@@ -21,6 +21,17 @@ argfile() {
     printf '@%s' "$dir/$1.arg"
 }
 
+# argfile for JSON built from a single-quoted printf format. bash 3.2
+# (stock macOS) mis-parses \" inside a quoted $(...) — the substitution
+# shreds into one word per \"…\" segment — so JSON blobs must never be
+# inlined with escaped quotes at a "$(argfile …)" call site.
+argjson() {
+    local name="$1" fmt="$2" blob; shift 2
+    # shellcheck disable=SC2059
+    blob=$(printf "$fmt" "$@")
+    argfile "$name" "$blob"
+}
+
 # timeout(1) is coreutils; stock macOS has neither it nor gtimeout. A missing
 # timeout must not fail every call — run uncapped instead.
 _with_timeout() {
