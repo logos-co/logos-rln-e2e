@@ -18,7 +18,8 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 | `register` | in progress | full single-node membership lifecycle: faucet claim → register → merkle proof + registry cross-check → generate/verify proof (valid + tampered) |
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
 | `delivery` | planned | logos-delivery-module propagation; RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
-| `mix` | active (local) | 5-node mixnet, per-hop RLN spam protection, membership pre-provisioned **on-chain** — the plugin tree root is asserted to be a valid root of the registry |
+| `mix` | active (local) | 5-node mixnet (bare wakunode2), per-hop RLN spam protection, membership pre-provisioned **on-chain** — the plugin tree root is asserted to be a valid root of the registry |
+| `mix-core` | active (local) | 5 **logos-core** nodes: each daemon registers its own membership through `liblogos_rln_module` and the mix obtains its proofs **from that module** (secrets never leave it); sphinx roundtrips prove per-hop verification |
 
 ```sh
 ./run.sh --list
