@@ -17,18 +17,20 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 |---|---|---|
 | `register` | in progress | full single-node membership lifecycle: faucet claim → register → merkle proof + registry cross-check → generate/verify proof (valid + tampered) |
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
-| `delivery` | planned | logos-delivery-module propagation; RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
+| `delivery` | scaffold | 3-daemon co-residency (RLN module stack + delivery_module in one process) and 3-node static-peer relay propagation, chainless (`--target none`); grows RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
 | `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
 ./run.sh --list
 ./run.sh register --target local     # boots a local sequencer, provisions a fresh RLN tree
 ./run.sh register --target testnet   # runs against a committed testnet deployment
+./run.sh delivery --target none      # chainless: 3 daemons, module co-residency, relay mesh
 ```
 
 A scenario is `scenarios/<id>/{scenario.env,run.sh}` driven through the
 harness contract (`docs/contract.md`); a target
-(`harness/targets/{local,testnet}.sh`) stands up and provisions the chain.
+(`harness/targets/{local,testnet,none}.sh`) stands up and provisions the
+chain (`none` stands up nothing — for module-runtime-only scenarios).
 The target is always a flag, never part of a scenario's name.
 
 ## Prerequisites
@@ -42,17 +44,31 @@ The target is always a flag, never part of a scenario's name.
   `../logos-lez-rln`, override with `LEZ_RLN_CHECKOUT`) with the host
   binaries and risc0 guest blobs built — the target prints the exact build
   recipe when they are missing.
-- **docker** — only for compose-topology scenarios (mix, later delivery).
+- **docker** — only for compose-topology scenarios (mix).
 
 Platforms: darwin-arm64 and linux (x86_64/aarch64).
 
 ## Pinning
 
 `flake.lock` is the compatibility matrix: the exact revisions of
-logos-lez-rln, logos-rln-modules and logoscore this repo's scenarios are
-known to compose. Bumping the lock is the act of declaring a new known-good
-set. Artifact resolution (env override → nix build → staged-source build) is
-`harness/artifacts.sh`.
+logos-lez-rln, logos-rln-modules, logos-delivery-module and logoscore this
+repo's scenarios are known to compose. Bumping the lock is the act of
+declaring a new known-good set. Artifact resolution (env override → nix
+build → staged-source build) is `harness/artifacts.sh`.
+
+The dev loop is env-var checkout overrides — run any scenario against a
+working tree without touching the lock:
+
+```sh
+RLN_MODULES_CHECKOUT=../logos-rln-modules        ./run.sh register --target local
+DELIVERY_MODULE_CHECKOUT=../logos-delivery-module ./run.sh delivery --target none
+LOGOS_DELIVERY_CHECKOUT=../logos-delivery         ./run.sh delivery --target none  # Nim lib: source build
+```
+
+The delivery overrides compose (set both to test a shim change against a
+lib change). A `LOGOS_DELIVERY_CHECKOUT` tree must have its git submodules
+checked out, and only pinned revs are prebuilt in the logos cache — a
+changed Nim tree builds liblogosdelivery from source.
 
 ## Naming
 
@@ -64,7 +80,7 @@ The module stack was renamed on 2026-08-10 and two names **swapped meaning**
 
 ```
 run.sh                  entrypoint: ./run.sh <scenario> --target <t>
-flake.nix flake.lock    the pins (lez-rln, rln-modules, logoscore)
+flake.nix flake.lock    the pins (lez-rln, rln-modules, delivery-module, logoscore)
 harness/
   artifacts.sh          binary/bundle resolution
   lib/                  shared primitives (json, lgx, daemon, wallet, chain)
@@ -73,6 +89,7 @@ harness/
 scenarios/
   register/  live-registry/  delivery/  mix/
 deployments/            committed testnet descriptors (local is per-run)
+profiles/               committed local provision inputs (pinned tree + wallet)
 docs/                   contract.md, naming.md
 tools/                  check-naming.sh
 ```

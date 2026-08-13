@@ -11,7 +11,7 @@ channel.
 | var | meaning |
 |---|---|
 | `E2E_SCENARIO` | scenario id |
-| `E2E_TARGET` | `local` \| `testnet` |
+| `E2E_TARGET` | `local` \| `testnet` \| `none` |
 | `E2E_RUN_DIR` | per-run scratch dir (`runs/<ts>-<scenario>-<target>`) |
 | `E2E_KEEP` | `1` = leave chain/daemons/state up for debugging |
 
@@ -21,7 +21,11 @@ channel.
 |---|---|
 | `LOGOSCORE` | logoscore binary |
 | `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX` | module bundles (each overridable by pre-setting the env) |
+| `DELIVERY_LGX` | delivery bundle — resolved only when the scenario's `NEEDS_MODULES` includes `delivery_module`; `DELIVERY_MODULE_CHECKOUT` / `LOGOS_DELIVERY_CHECKOUT` build it from working trees (see `harness/artifacts.sh`) |
 | `E2E_MODULES_DIR` | flattened module dir daemons load from |
+
+The `none` target exports nothing below — it stands up no chain. Scenarios
+that preflight chain vars fail fast under it by design.
 
 ## Set by the target (harness/targets/<target>.sh)
 
@@ -42,6 +46,8 @@ channel.
 | var | meaning |
 |---|---|
 | `E2E_DEVNET` | local only: `host` (default — run lez-rln's `dev.sh`) \| `external` (attach to a running sequencer) |
+| `E2E_LOCAL_PROFILE` | local only: provision-input profile under `profiles/` (default `local-default` — pinned tree + adopted wallet, so the deployment repeats across runs) \| `fresh` (random tree, fresh wallet) |
+| `E2E_PROVISION_FUNDING`, `E2E_CLAIM_CAP`, `E2E_REGISTRAR`, `E2E_FREE_QUOTA` | local only: provision policy passed to lez-rln `provision.sh` (`--funding`/`--claim-cap`/`--registrar`/`--quota`); defaults: faucet, tool defaults |
 | `E2E_DEVNET_TIMEOUT_S` | local/host: devnet readiness budget (default 900 — first boot cargo-builds the sequencer) |
 | `LEZ_RLN_CHECKOUT` | lez-rln working tree for dev.sh + provisioning (default `../logos-lez-rln`; must have host bins + guest blobs built) |
 | `E2E_DEPLOYMENT` | testnet only, required: name of a committed descriptor under `deployments/` |
@@ -73,5 +79,7 @@ mix phases), optional `STATUS=quarantined`.
 
 Sourced from `harness/lib/`: `node_call <node> <module> <method> [args…]` is
 the topology seam — identical whether the node is a host process or a
-container. `node_logs`, wallet/chain helpers, JSON plumbing: see each lib
-file's header.
+container. Event-driven modules (delivery) get `node_watch_start <node>
+<module>` (attach a `logoscore watch` stream before the triggering call) and
+`node_wait_event <node> <module> <event> [timeout] [substring]`. `node_logs`,
+wallet/chain helpers, JSON plumbing: see each lib file's header.

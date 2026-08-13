@@ -15,10 +15,12 @@
 #   E2E_DAEMON_ENV   extra KEY=VALUE pairs (space-separated) for every daemon
 #   E2E_DIE_NODE     node whose log tail die prints
 #   E2E_NODES        node ids started so far (daemon_stop_all's list)
+#   E2E_WATCHERS     node:module:pid triples of running event watchers
 
 . "$(dirname "${BASH_SOURCE[0]}")/json.sh"
 
 E2E_NODES="${E2E_NODES:-}"
+E2E_WATCHERS="${E2E_WATCHERS:-}"
 
 node_cfg_dir() { gv NODECFG "$1"; }
 node_log_path() { gv NODELOG "$1"; }
@@ -110,6 +112,76 @@ node_call() {
     call_json "$@"
 }
 
+# Usage: node_watch_start <node> <module>
+# Streams the module's events (logoscore watch) into
+# nodes/<node>/events-<module>.jsonl until daemon_stop. Start it BEFORE the
+# call whose event you'll wait on — the stream only carries events emitted
+# after attach.
+node_watch_start() {
+    local node="${1:?node_watch_start <node> <module>}" mod="${2:?node_watch_start <node> <module>}"
+    local cfg evt pid
+    cfg=$(node_cfg_dir "$node")
+    [ -n "$cfg" ] || die "node_watch_start: unknown node '$node'"
+    evt="$(dirname "$(node_log_path "$node")")/events-$mod.jsonl"
+    sv NODEEVT "${node}_${mod}" "$evt"
+    ( exec env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" \
+        "$LOGOSCORE" --json watch "$mod" >>"$evt" 2>&1 ) &
+    pid=$!
+    disown "$pid" 2>/dev/null || true
+    E2E_WATCHERS="$E2E_WATCHERS $node:$mod:$pid"
+    say "$node: watching $mod events -> $(basename "$evt")"
+}
+
+# Usage: node_wait_event <node> <module> <event> [timeout_s] [substring]
+# Prints the first matching event line (compact JSON: {"event":...,"data":
+# {"arg0":...}}) or returns 1 on timeout. substring is a fixed-string filter
+# over the raw line (e.g. a requestId or topic).
+node_wait_event() {
+    local node="$1" mod="$2" ev="$3" timeout="${4:-30}" match="${5:-}" evt _t
+    evt=$(gv NODEEVT "${node}_${mod}")
+    [ -n "$evt" ] || die "node_wait_event: no watcher for $node/$mod (node_watch_start first)"
+    for _t in $(seq 1 "$timeout"); do
+        python3 - "$evt" "$ev" "$match" <<'EOF' && return 0
+import json, sys
+path, ev, match = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    lines = open(path)
+except OSError:
+    sys.exit(1)
+for line in lines:
+    line = line.strip()
+    if not line.startswith("{"):
+        continue
+    try:
+        d = json.loads(line)
+    except Exception:
+        continue
+    if d.get("event") != ev:
+        continue
+    if match and match not in line:
+        continue
+    print(json.dumps(d, separators=(",", ":")))
+    sys.exit(0)
+sys.exit(1)
+EOF
+        sleep 1
+    done
+    return 1
+}
+
+_watchers_stop() {
+    # Usage: _watchers_stop <node|''>  ('' = all)
+    local node="$1" w rest
+    rest=""
+    for w in $E2E_WATCHERS; do
+        case "$w" in
+            ${node:-*}:*) kill "${w##*:}" 2>/dev/null || true ;;
+            *) rest="$rest $w" ;;
+        esac
+    done
+    E2E_WATCHERS="$rest"
+}
+
 # Usage: node_logs <node> [lines]   (whole log when lines is omitted)
 node_logs() {
     local node="$1" lines="${2:-}" log
@@ -120,6 +192,7 @@ node_logs() {
 
 daemon_stop() {
     local node="$1" pid
+    _watchers_stop "$node"
     pid=$(gv NODEPID "$node")
     [ -n "$pid" ] || return 0
     kill "$pid" 2>/dev/null || true
