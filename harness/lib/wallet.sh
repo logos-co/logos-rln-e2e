@@ -3,7 +3,8 @@
 # seam (host daemon now, container later).
 #
 # Env beyond docs/contract.md:
-#   E2E_WALLET_MOD    wallet module id (default logos_execution_zone)
+#   E2E_WALLET_MOD    wallet module id (default lez_core; was
+#                     logos_execution_zone before its 01c6f40 rename)
 #   E2E_REGISTRY_MOD  registry-provider module id (default
 #                     liblogos_lez_rln_module)
 #   SYNC_STEP         blocks per sync_to_block call (default 3000)
@@ -11,7 +12,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/daemon.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/chain.sh"
 
-E2E_WALLET_MOD="${E2E_WALLET_MOD:-logos_execution_zone}"
+E2E_WALLET_MOD="${E2E_WALLET_MOD:-lez_core}"
 E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 SYNC_STEP="${SYNC_STEP:-3000}"
 
@@ -26,8 +27,26 @@ wallet_open() {
         cp "$home/storage.json.seed" "$home/storage.json" \
             || die "wallet_open: cannot seed $home/storage.json"
     fi
-    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$home/storage.json" >/dev/null \
-        || die_node "$node" "wallet open failed"
+    # lez_core's open grew a third statistics_path arg with the v0.2.2 bump;
+    # the file need not pre-exist. open's REPLY is unreliable in both
+    # directions, so the probe below is the real verdict:
+    #  - v0.2.2 open probes every sequencer inside the call
+    #    (MultiSequencerClient::new), and a cold testnet LB (~15s first
+    #    request) blows the QtRO reply timeout while the method keeps
+    #    running daemon-side — RPC_FAILED here, wallet open moments later;
+    #  - a bad storage.json fails only in the daemon log while the reply
+    #    envelope stays "ok", and every later call hits "Null wallet handle".
+    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$home/storage.json" \
+        "$home/statistics.json" >/dev/null || true
+    local probe _t
+    for _t in 1 2 3 4 5 6 7 8 9; do
+        probe=$(node_call "$node" "$E2E_WALLET_MOD" get_last_synced_block | jres | jval)
+        case "$probe" in
+            ''|*[!0-9]*) sleep 10 ;;
+            *) return 0 ;;
+        esac
+    done
+    die_node "$node" "wallet never became usable after open (get_last_synced_block: '${probe:-<empty>}') — storage.json schema vs wallet module version, or the sequencer probe in open is stuck"
 }
 
 # Sync to the chain head in SYNC_STEP chunks (a single jump over a long chain

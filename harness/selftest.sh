@@ -34,7 +34,7 @@ trap cleanup EXIT
 
 resolve_artifacts
 daemon_start "$NODE"
-daemon_load_modules "$NODE" logos_execution_zone liblogos_lez_rln_module liblogos_rln_module
+daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module
 
 section "no-chain probes"
 FAIL=0

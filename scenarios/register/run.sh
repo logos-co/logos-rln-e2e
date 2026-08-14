@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scenarios/register — the single-node membership lifecycle over the real
-# module stack (logos_execution_zone -> liblogos_lez_rln_module ->
+# module stack (lez_core -> liblogos_lez_rln_module ->
 # liblogos_rln_module). Drives a PAID registration through the membership
 # module's spec surface — the faucet-funded Register instruction, NOT the
 # gifter's RegisterFree path:
@@ -98,7 +98,7 @@ say "registry: $REGISTRY_ID (tree ${E2E_TREE_ID:0:8}…, sequencer $E2E_SEQUENCE
 section "node"
 daemon_start "$NODE" || die "daemon_start $NODE failed"
 NODE_UP=1
-daemon_load_modules "$NODE" logos_execution_zone liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module failed"
 
 # ---------- wallet: open + sync ---------------------------------------------
@@ -228,11 +228,14 @@ say "generate_proof over the registered membership"
 # the start()'d window.
 # str: forces a literal string — a bare or @file numeric arg is coerced to a
 # JSON number by the CLI, which the tstr dispatch then reads as "".
-PROOF_JSON=$(node_call "$NODE" liblogos_rln_module generate_proof \
-    "$REGISTRY_ID" "$(argfile rlnid2 "$RLN_ID")" "$(argfile sig "$SIGNAL_HEX")" "str:$(date +%s)" | jres | jval) || PROOF_JSON=""
+PROOF_RAW=$(node_call "$NODE" liblogos_rln_module generate_proof \
+    "$REGISTRY_ID" "$(argfile rlnid2 "$RLN_ID")" "$(argfile sig "$SIGNAL_HEX")" "str:$(date +%s)") || PROOF_RAW=""
+PROOF_JSON=$(printf '%s' "$PROOF_RAW" | jres | jval)
 case "$PROOF_JSON" in
     *'"proof"'*'"nullifier"'*|*'"nullifier"'*'"proof"'*) ;;
-    *) die "generate_proof failed: ${PROOF_JSON:-<empty>}" ;;
+    # jres yields "" on an envelope-level (lp/CLI) failure, hiding the reason
+    # — print the raw envelope, which is all the evidence there is.
+    *) die "generate_proof failed: ${PROOF_JSON:-<empty>} (envelope: ${PROOF_RAW:-<none>})" ;;
 esac
 MESSAGE_ID=$(printf '%s' "$PROOF_JSON" | jfield message_id)
 say "proof issued (message_id ${MESSAGE_ID:-?}, epoch $(printf '%s' "$PROOF_JSON" | jfield epoch))"
@@ -260,14 +263,16 @@ fi
 say "verify_proof from the local root window (polling not_ready away)…"
 VALID=""
 for _t in $(seq 1 "$(polls "$E2E_ROOT_WINDOW_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
-    VERIFY=$(node_call "$NODE" liblogos_rln_module verify_proof \
+    VERIFY_RAW=$(node_call "$NODE" liblogos_rln_module verify_proof \
         "$REGISTRY_ID" "$(argfile rlnid3 "$RLN_ID")" "$(argfile sig2 "$SIGNAL_HEX")" \
-        "$(argfile proof "$PROOF_JSON")" | jres | jval) || VERIFY=""
+        "$(argfile proof "$PROOF_JSON")") || VERIFY_RAW=""
+    VERIFY=$(printf '%s' "$VERIFY_RAW" | jres | jval)
     case "$VERIFY" in
         *'"verdict":"valid"'*)   VALID=yes; break ;;
         *'"verdict":"invalid"'*) die "verify_proof rejected our own fresh proof: $VERIFY" ;;
         *'not_ready'*)     say "  root window still cold ($_t)"; sleep "$E2E_POLL_INTERVAL_S" ;;
-        *) die "verify_proof failed: ${VERIFY:-<empty>}" ;;
+        # See generate_proof: "" means an envelope-level failure.
+        *) die "verify_proof failed: ${VERIFY:-<empty>} (envelope: ${VERIFY_RAW:-<none>})" ;;
     esac
 done
 [ "$VALID" = "yes" ] || die "verify_proof never left not_ready (root window warm-up)"

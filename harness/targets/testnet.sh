@@ -26,7 +26,9 @@ _TESTNET_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 _testnet_chain_head() {
     local head
-    head=$(curl -sS -m 15 -X POST -H 'Content-Type: application/json' \
+    # -m 60: the hosted testnet's first request after idle can take ~15s alone
+    # (cold LB); a 15s budget flaked target_up on an otherwise healthy chain.
+    head=$(curl -sS -m 60 -X POST -H 'Content-Type: application/json' \
         --data '{"jsonrpc":"2.0","method":"getLastBlockId","params":[],"id":1}' \
         "$1" 2>/dev/null | jq -re '.result // empty' 2>/dev/null) || return 1
     case "$head" in
