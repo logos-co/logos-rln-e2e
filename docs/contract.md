@@ -39,7 +39,7 @@ that preflight chain vars fail fast under it by design.
 | `E2E_FUNDING` | `faucet` \| `wallet-key` |
 | `E2E_CONFIRM_TIMEOUT_S` / `E2E_POLL_INTERVAL_S` | on-chain confirmation budget (local 120/5, testnet 600/10) |
 | `E2E_EPOCH_SIZE_SEC` | RLN epoch size passed to `start` (local 60, testnet 600) |
-| `E2E_ROOT_WINDOW_TIMEOUT_S` | `verify_proof` root-window retry budget (local 60, testnet 120) |
+| `E2E_ROOT_WINDOW_TIMEOUT_S` | `validate_proof` root-window retry budget (local 60, testnet 120) |
 
 ## Target inputs (caller → target)
 
