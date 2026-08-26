@@ -35,6 +35,10 @@
     # every scenario drives. The module-stack e2e used to fetch it unpinned at
     # run time; locking it here makes it part of the matrix.
     logoscore-cli.url = "github:logos-co/logos-logoscore-cli";
+
+    # The in-repo consumer module (Nim mock of logos-delivery) the consumer-*
+    # scenarios drive. A path subflake: the working tree is the pin.
+    nim-rln-consumer.url = "path:./nim-rln-consumer";
   };
 
   outputs =
@@ -45,6 +49,7 @@
       rln-modules,
       delivery-module,
       logoscore-cli,
+      nim-rln-consumer,
       ...
     }:
     let
@@ -78,6 +83,9 @@
         }
         // lib.optionalAttrs (delivery-module.packages ? ${system}) {
           delivery-lgx = delivery-module.packages.${system}.lgx;
+        }
+        // lib.optionalAttrs (nim-rln-consumer.packages ? ${system}) {
+          consumer-lgx = nim-rln-consumer.packages.${system}.lgx;
         }
         // lib.optionalAttrs (logoscore-cli.packages ? ${system}) {
           logoscore = logoscore-cli.packages.${system}.default;

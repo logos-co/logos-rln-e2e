@@ -3,7 +3,7 @@
 #
 # Resolution order per artifact:
 #   1. explicit env override: LOGOSCORE, WALLET_LGX, LEZ_RLN_LGX, RLN_LGX,
-#      DELIVERY_LGX
+#      DELIVERY_LGX, CONSUMER_LGX, LIBP2P_LGX, GIFTER_LGX
 #   2. checkout overrides — the dev loop for changing a repo and running a
 #      scenario against it (filtered copy + --override-input):
 #        RLN_MODULES_CHECKOUT=<dir>      the three RLN-stack bundles
@@ -140,6 +140,41 @@ resolve_artifacts() {
             ;;
     esac
 
+    # The in-repo consumer module (Nim mock of logos-delivery), only when the
+    # scenario loads it. A path subflake of THIS repo: the working tree is the
+    # pin, so there is no checkout-override knob — edit and re-run.
+    case " ${NEEDS_MODULES:-} " in
+        *" nim_rln_consumer "*)
+            [ -n "${CONSUMER_LGX:-}" ] || CONSUMER_LGX=$(lgx_of "$(_nix_out consumer-lgx)")
+            export CONSUMER_LGX
+            ;;
+    esac
+
+    # Gifter-path artifacts (consumer-gifter): not pinned in this repo's flake
+    # yet — the gifter needs a register-target fix that hasn't merged (its
+    # lp.rs still calls the pre-rename module name), so these resolve from an
+    # env override or a checkout build only. Pin them once upstream is fixed.
+    case " ${NEEDS_MODULES:-} " in
+        *" libp2p_module "*)
+            if [ -z "${LIBP2P_LGX:-}" ]; then
+                [ -n "${LIBP2P_MODULE_CHECKOUT:-}" ] \
+                    || die "libp2p_module requested: set LIBP2P_LGX or LIBP2P_MODULE_CHECKOUT (no flake pin yet)"
+                LIBP2P_LGX=$(lgx_of "$(cd "$LIBP2P_MODULE_CHECKOUT" && nix build .#lgx --no-link --print-out-paths --accept-flake-config | tail -1)")
+            fi
+            export LIBP2P_LGX
+            ;;
+    esac
+    case " ${NEEDS_MODULES:-} " in
+        *" rln_gifter_module "*)
+            if [ -z "${GIFTER_LGX:-}" ]; then
+                [ -n "${GIFTER_CHECKOUT:-}" ] \
+                    || die "rln_gifter_module requested: set GIFTER_LGX or GIFTER_CHECKOUT (no flake pin yet — needs the register-target fix branch)"
+                GIFTER_LGX=$(lgx_of "$(cd "$GIFTER_CHECKOUT/rust/rln-gifter-module" && nix build .#lgx --no-link --print-out-paths --accept-flake-config | tail -1)")
+            fi
+            export GIFTER_LGX
+            ;;
+    esac
+
     E2E_MODULES_DIR="$E2E_RUN_DIR/modules"
     export E2E_MODULES_DIR
     mkdir -p "$E2E_MODULES_DIR"
@@ -147,5 +182,8 @@ resolve_artifacts() {
     install_lgx "$LEZ_RLN_LGX"
     install_lgx "$RLN_LGX"
     [ -n "${DELIVERY_LGX:-}" ] && install_lgx "$DELIVERY_LGX"
+    [ -n "${CONSUMER_LGX:-}" ] && install_lgx "$CONSUMER_LGX"
+    [ -n "${LIBP2P_LGX:-}" ] && install_lgx "$LIBP2P_LGX"
+    [ -n "${GIFTER_LGX:-}" ] && install_lgx "$GIFTER_LGX"
     say "modules dir: $E2E_MODULES_DIR ($(lgx_platform))"
 }

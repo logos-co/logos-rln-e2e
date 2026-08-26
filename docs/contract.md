@@ -22,6 +22,8 @@ channel.
 | `LOGOSCORE` | logoscore binary |
 | `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX` | module bundles (each overridable by pre-setting the env) |
 | `DELIVERY_LGX` | delivery bundle — resolved only when the scenario's `NEEDS_MODULES` includes `delivery_module`; `DELIVERY_MODULE_CHECKOUT` / `LOGOS_DELIVERY_CHECKOUT` build it from working trees (see `harness/artifacts.sh`) |
+| `CONSUMER_LGX` | nim_rln_consumer bundle — resolved only when `NEEDS_MODULES` includes `nim_rln_consumer`; built from the in-repo `nim-rln-consumer/` path subflake (the working tree is the pin — no checkout knob) |
+| `LIBP2P_LGX` / `GIFTER_LGX` | libp2p_module / rln_gifter_module bundles (consumer-gifter) — env override, else built from `LIBP2P_MODULE_CHECKOUT` / `GIFTER_CHECKOUT` (`nix build <checkout>#lgx`). Not pinned in this flake yet: the gifter needs its register-target fix branch (post-rename `register_member` lives on liblogos_lez_rln_module) |
 | `E2E_MODULES_DIR` | flattened module dir daemons load from |
 
 The `none` target exports nothing below — it stands up no chain. Scenarios
