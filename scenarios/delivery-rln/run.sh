@@ -194,7 +194,10 @@ must_call start "start (dispatch)" >/dev/null
 say "start dispatched — waiting for the library's RLN requests"
 
 # Leg 1: start. The event carries (reqId, timestamp); the responder answers
-# with the real module's start reply, verbatim.
+# with the real module's start reply, wrapped in the reply envelope every
+# responder must speak (delivery-module docs/rln.md): {"ok": <result>} |
+# {"err":{"kind","message"}}. The library doesn't parse it yet — wrapping now
+# keeps this acceptance ahead of the contract, not behind it.
 EVT=$(node_wait_event "$NODE" delivery_module rlnStartRequest "$EVT_TIMEOUT") \
     || die "no rlnStartRequest within ${EVT_TIMEOUT}s (callbacks not registered, or rlnRelayConf not set)"
 REQ_ID=$(evt_arg "$EVT" 0)
@@ -205,7 +208,8 @@ case "$START_RES" in
     *'"started":true'*) ;;
     *) die "module start failed while answering rlnStartRequest: ${START_RES:-<empty>}" ;;
 esac
-must_call rlnRespond "rlnRespond(start, reqId $REQ_ID)" "$REQ_ID" "$(argfile rsp_start "$START_RES")" >/dev/null
+must_call rlnRespond "rlnRespond(start, reqId $REQ_ID)" "$REQ_ID" \
+    "$(argfile rsp_start "{\"ok\":$START_RES}")" >/dev/null
 say "leg 1: start answered (reqId $REQ_ID)"
 
 # Leg 2: register_membership. Assert the payload IS the configured scope
@@ -237,7 +241,9 @@ case "$REG" in
     *) die "module register failed while answering rlnRegisterRequest: ${REG:-<empty>}" ;;
 esac
 MEMBERSHIP_HASH=$(printf '%s' "$REG" | jfield membership_hash)
-must_call rlnRespond "rlnRespond(register, reqId $REQ_ID2)" "$REQ_ID2" "$(argfile rsp_reg "$REG")" >/dev/null
+# Same envelope contract as leg 1: ok wraps the module's pending membership.
+must_call rlnRespond "rlnRespond(register, reqId $REQ_ID2)" "$REQ_ID2" \
+    "$(argfile rsp_reg "{\"ok\":$REG}")" >/dev/null
 say "leg 2: register answered — pending membership $MEMBERSHIP_HASH"
 
 # The chain completes: nodeStarted only fires after start_node's future

@@ -1,54 +1,81 @@
 ## The RLN module seam, mirrored from logos-delivery so the e2e exercises the
 ## exact contract delivery is building (logos-delivery branch
 ## impl-plugable-rln-api-module: library/logos_delivery_api/rln_api.nim +
-## library/liblogosdelivery_rln.h, fetched 2026-08-25). Opaque JSON in/out:
-## the host module owns the schema, so this file models no RLN types.
+## library/liblogosdelivery_rln.h, refreshed 2026-08-26 — the typed
+## one-callback-per-function surface). Scalar args are passed directly,
+## complex args (options, proof) as JSON, and every call's result comes back
+## as JSON via `rlnconsumer_rln_response` — the reply envelope
+## {"ok": <result>} | {"err": {"kind","message"}} documented in
+## logos-delivery-module docs/rln.md (kinds from the RLN Module API LIP).
 ##
-## ONE deliberate divergence from delivery: `rlnInvoke` takes a per-call
-## timeout instead of delivery's hard 10 seconds. Registration is async by
-## design (the module returns "pending" fast and activation is observed via
-## events/polling), so nothing here should need minutes — but 10s is too
-## tight for the module's slower legs, and the e2e demonstrates that with a
-## 10s parity mode. See README.md "Findings for the delivery team".
+## ONE deliberate divergence from delivery: every outbound proc takes a
+## timeout (default 10s — delivery's hard `rlnInvoke` limit) so scenarios can
+## probe other budgets. See README.md "Findings for the delivery team".
 ##
 ## Threading: host callbacks may complete on a foreign thread, so the
 ## crossing uses `ThreadSignalPtr` + `allocShared` (no GC memory shared
-## across threads). One `Lock` guards the callback pointer and the in-flight
+## across threads). One `Lock` guards the callback table and the in-flight
 ## `ptr Pending` list.
 
 import std/locks
 import chronos, chronos/threadsync, results
 
+const SeamDefaultTimeout* = 10.seconds ## delivery's hard rlnInvoke budget
+
 type
-  RlnConsumerRlnOpFn = proc(reqId: uint64, payloadJson: cstring, userData: pointer) {.
-    cdecl, gcsafe, raises: []
-  .}
+  RlnConsumerRlnStartFn =
+    proc(reqId: uint64, userData: pointer) {.cdecl, gcsafe, raises: [].}
+
+  RlnConsumerRlnStopFn =
+    proc(reqId: uint64, userData: pointer) {.cdecl, gcsafe, raises: [].}
+
+  RlnConsumerRlnRegisterFn = proc(
+    reqId: uint64, registryId, rlnIdentifier, optionsJson: cstring, userData: pointer
+  ) {.cdecl, gcsafe, raises: [].}
+
+  RlnConsumerRlnGetMembershipStateFn = proc(
+    reqId: uint64, registryId, rlnIdentifier: cstring, userData: pointer
+  ) {.cdecl, gcsafe, raises: [].}
+
+  RlnConsumerRlnGetEpochQuotaFn = proc(
+    reqId: uint64,
+    registryId, rlnIdentifier: cstring,
+    timestamp: uint64,
+    userData: pointer,
+  ) {.cdecl, gcsafe, raises: [].}
+
+  RlnConsumerRlnGenerateProofFn = proc(
+    reqId: uint64,
+    registryId, rlnIdentifier, signalHex: cstring,
+    timestamp: uint64,
+    userData: pointer,
+  ) {.cdecl, gcsafe, raises: [].}
+
+  RlnConsumerRlnVerifyProofFn = proc(
+    reqId: uint64,
+    registryId, rlnIdentifier, signalHex: cstring,
+    timestamp: uint64,
+    proofJson: cstring,
+    userData: pointer,
+  ) {.cdecl, gcsafe, raises: [].}
 
   RlnConsumerRlnCallbacks = object
-    start: RlnConsumerRlnOpFn
-    stop: RlnConsumerRlnOpFn
-    register_membership: RlnConsumerRlnOpFn
-    get_membership_state: RlnConsumerRlnOpFn
-    get_epoch_quota: RlnConsumerRlnOpFn
-    generate_proof: RlnConsumerRlnOpFn
-    verify_proof: RlnConsumerRlnOpFn
+    start: RlnConsumerRlnStartFn
+    stop: RlnConsumerRlnStopFn
+    register_membership: RlnConsumerRlnRegisterFn
+    get_membership_state: RlnConsumerRlnGetMembershipStateFn
+    get_epoch_quota: RlnConsumerRlnGetEpochQuotaFn
+    generate_proof: RlnConsumerRlnGenerateProofFn
+    verify_proof: RlnConsumerRlnVerifyProofFn ## delivery's op name; the host
+                                              ## maps it to the module's
+                                              ## `validate_proof` (0.5.0 rename)
 
   Pending = object
     reqId: uint64
-    signal: ThreadSignalPtr # how rlnInvoke gets woken
-    resultBuf: cstring # allocShared copy of the host's JSON; nil until answered
+    signal: ThreadSignalPtr # how the awaiting call gets woken
+    resultBuf: cstring # allocShared copy of the host's JSON result; nil until answered
     completed: bool
     next: ptr Pending # intrusive in-flight list — no GC memory, cross-thread safe
-
-  RlnOp* = enum
-    RlnOpStart
-    RlnOpStop
-    RlnOpRegister
-    RlnOpGetMembershipState
-    RlnOpGetEpochQuota
-    RlnOpGenerateProof
-    RlnOpVerifyProof ## delivery's op name; the host maps it to the module's
-                     ## `validate_proof` method (0.5.0 rename)
 
 var
   gLock: Lock
@@ -59,8 +86,25 @@ var
 
 initLock(gLock)
 
+# --- transport primitives -----------------------------------------------------
+
+proc newPending(): ptr Pending =
+  ## Allocate a pending node with a fresh signal. nil on signal-alloc failure.
+  let p = cast[ptr Pending](allocShared0(sizeof(Pending)))
+  p.signal = ThreadSignalPtr.new().valueOr:
+    deallocShared(p)
+    return nil
+  p
+
+proc linkPending(p: ptr Pending) =
+  ## Assign `p` a req id and link it into the in-flight list. Caller holds gLock.
+  p.reqId = gNextReqId
+  inc gNextReqId
+  p.next = gPending
+  gPending = p
+
 proc unlinkPending(target: ptr Pending) =
-  ## Remove `target` from the in-flight list. Safe if it was never linked.
+  ## Remove `target` from the in-flight list. Caller holds gLock. Safe if unlinked.
   if gPending == target:
     gPending = target.next
     return
@@ -70,15 +114,176 @@ proc unlinkPending(target: ptr Pending) =
   if not p.isNil:
     p.next = target.next
 
-proc slotFor(op: RlnOp): RlnConsumerRlnOpFn =
-  case op
-  of RlnOpStart: gCallbacks.start
-  of RlnOpStop: gCallbacks.stop
-  of RlnOpRegister: gCallbacks.register_membership
-  of RlnOpGetMembershipState: gCallbacks.get_membership_state
-  of RlnOpGetEpochQuota: gCallbacks.get_epoch_quota
-  of RlnOpGenerateProof: gCallbacks.generate_proof
-  of RlnOpVerifyProof: gCallbacks.verify_proof
+proc awaitResult(
+    p: ptr Pending, timeout: Duration
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  ## Await the host's response for an already-registered node; always unlinks +
+  ## frees. Divergence: the timeout is a parameter — delivery hardcodes
+  ## 10.seconds here and synthesizes the failure itself.
+  defer:
+    withLock gLock:
+      unlinkPending(p)
+    discard p.signal.close()
+    if not p.resultBuf.isNil:
+      deallocShared(p.resultBuf)
+    deallocShared(p)
+
+  let answered = await p.signal.wait().withTimeout(timeout)
+  if not answered or not p.completed:
+    return
+      err("timeout") # or "module cleared" if completed=false via set_callbacks(nil)
+  return ok($p.resultBuf) # Nim string materialized here, on the chronos thread — safe
+
+# --- outbound calls (one per RLN function) ------------------------------------
+# Each: allocate + register a pending node, capture its callback + userData under
+# the lock, fire the callback (outside the lock, so a synchronous host response
+# can't deadlock), then await the JSON result.
+
+proc rlnStart*(
+    timeout = SeamDefaultTimeout
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  let pending = newPending()
+  if pending.isNil:
+    return err("signal alloc failed")
+  var cb: RlnConsumerRlnStartFn
+  var ud: pointer
+  withLock gLock:
+    cb = gCallbacks.start
+    if cb.isNil:
+      discard pending.signal.close()
+      deallocShared(pending)
+      return err("RLN module not registered")
+    ud = gUserData
+    linkPending(pending)
+  cb(pending.reqId, ud)
+  return await awaitResult(pending, timeout)
+
+proc rlnStop*(
+    timeout = SeamDefaultTimeout
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  let pending = newPending()
+  if pending.isNil:
+    return err("signal alloc failed")
+  var cb: RlnConsumerRlnStopFn
+  var ud: pointer
+  withLock gLock:
+    cb = gCallbacks.stop
+    if cb.isNil:
+      discard pending.signal.close()
+      deallocShared(pending)
+      return err("RLN module not registered")
+    ud = gUserData
+    linkPending(pending)
+  cb(pending.reqId, ud)
+  return await awaitResult(pending, timeout)
+
+proc rlnRegister*(
+    registryId, rlnIdentifier, optionsJson: string, timeout = SeamDefaultTimeout
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  let pending = newPending()
+  if pending.isNil:
+    return err("signal alloc failed")
+  var cb: RlnConsumerRlnRegisterFn
+  var ud: pointer
+  withLock gLock:
+    cb = gCallbacks.register_membership
+    if cb.isNil:
+      discard pending.signal.close()
+      deallocShared(pending)
+      return err("RLN module not registered")
+    ud = gUserData
+    linkPending(pending)
+  cb(pending.reqId, registryId.cstring, rlnIdentifier.cstring, optionsJson.cstring, ud)
+  return await awaitResult(pending, timeout)
+
+proc rlnGetMembershipState*(
+    registryId, rlnIdentifier: string, timeout = SeamDefaultTimeout
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  let pending = newPending()
+  if pending.isNil:
+    return err("signal alloc failed")
+  var cb: RlnConsumerRlnGetMembershipStateFn
+  var ud: pointer
+  withLock gLock:
+    cb = gCallbacks.get_membership_state
+    if cb.isNil:
+      discard pending.signal.close()
+      deallocShared(pending)
+      return err("RLN module not registered")
+    ud = gUserData
+    linkPending(pending)
+  cb(pending.reqId, registryId.cstring, rlnIdentifier.cstring, ud)
+  return await awaitResult(pending, timeout)
+
+proc rlnGetEpochQuota*(
+    registryId, rlnIdentifier: string, timestamp: uint64, timeout = SeamDefaultTimeout
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  let pending = newPending()
+  if pending.isNil:
+    return err("signal alloc failed")
+  var cb: RlnConsumerRlnGetEpochQuotaFn
+  var ud: pointer
+  withLock gLock:
+    cb = gCallbacks.get_epoch_quota
+    if cb.isNil:
+      discard pending.signal.close()
+      deallocShared(pending)
+      return err("RLN module not registered")
+    ud = gUserData
+    linkPending(pending)
+  cb(pending.reqId, registryId.cstring, rlnIdentifier.cstring, timestamp, ud)
+  return await awaitResult(pending, timeout)
+
+proc rlnGenerateProof*(
+    registryId, rlnIdentifier, signalHex: string,
+    timestamp: uint64,
+    timeout = SeamDefaultTimeout,
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  let pending = newPending()
+  if pending.isNil:
+    return err("signal alloc failed")
+  var cb: RlnConsumerRlnGenerateProofFn
+  var ud: pointer
+  withLock gLock:
+    cb = gCallbacks.generate_proof
+    if cb.isNil:
+      discard pending.signal.close()
+      deallocShared(pending)
+      return err("RLN module not registered")
+    ud = gUserData
+    linkPending(pending)
+  cb(
+    pending.reqId, registryId.cstring, rlnIdentifier.cstring, signalHex.cstring,
+    timestamp, ud,
+  )
+  return await awaitResult(pending, timeout)
+
+proc rlnVerifyProof*(
+    registryId, rlnIdentifier, signalHex: string,
+    timestamp: uint64,
+    proofJson: string,
+    timeout = SeamDefaultTimeout,
+): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
+  let pending = newPending()
+  if pending.isNil:
+    return err("signal alloc failed")
+  var cb: RlnConsumerRlnVerifyProofFn
+  var ud: pointer
+  withLock gLock:
+    cb = gCallbacks.verify_proof
+    if cb.isNil:
+      discard pending.signal.close()
+      deallocShared(pending)
+      return err("RLN module not registered")
+    ud = gUserData
+    linkPending(pending)
+  cb(
+    pending.reqId, registryId.cstring, rlnIdentifier.cstring, signalHex.cstring,
+    timestamp, proofJson.cstring, ud,
+  )
+  return await awaitResult(pending, timeout)
+
+# --- C entry points -----------------------------------------------------------
 
 #int rlnconsumer_rln_set_callbacks(const RlnConsumerRlnCallbacks* cbs, void* user_data);
 proc rlnconsumer_rln_set_callbacks(
@@ -117,43 +322,3 @@ proc rlnconsumer_rln_response(
     p.completed = true
     discard p.signal.fireSync()
     return 0
-
-proc rlnInvoke*(
-    op: RlnOp, payloadJson: string, timeout: Duration
-): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
-  ## Fire the host's callback for `op` and await its `rlnconsumer_rln_response`.
-  ## JSON in, JSON out. Fails (in the Result) with "not registered" / "timeout";
-  ## never leaks the pending node, even on cancellation.
-  let p = cast[ptr Pending](allocShared0(sizeof(Pending)))
-  p.signal = ThreadSignalPtr.new().valueOr:
-    deallocShared(p)
-    return err("signal alloc failed")
-
-  # Registered before the insert so a cancellation anywhere below still unlinks
-  # the node and frees the signal, the result buffer and the node itself.
-  defer:
-    withLock gLock:
-      unlinkPending(p)
-    discard p.signal.close()
-    if not p.resultBuf.isNil:
-      deallocShared(p.resultBuf)
-    deallocShared(p)
-
-  var fn: RlnConsumerRlnOpFn
-  withLock gLock: # short critical section, no await inside
-    fn = slotFor(op)
-    if fn.isNil:
-      return err("RLN module not registered")
-    p.reqId = gNextReqId
-    inc gNextReqId
-    p.next = gPending
-    gPending = p
-
-  fn(p.reqId, payloadJson.cstring, gUserData) # returns immediately; host works async
-
-  let answered = await p.signal.wait().withTimeout(timeout)
-
-  if not answered or not p.completed:
-    return
-      err("timeout") # or "module cleared" if completed=false via set_callbacks(nil)
-  return ok($p.resultBuf) # Nim string materialized here, on the chronos thread — safe

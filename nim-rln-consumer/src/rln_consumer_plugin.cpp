@@ -98,9 +98,14 @@ StdLogosResult NimRlnConsumerImpl::createConsumer(const std::string& cfg)
     const std::string registryId = strField(parsed, "registryId");
     const std::string rlnIdentifierHex = strField(parsed, "rlnIdentifierHex");
     const std::string epochSizeSec = strField(parsed, "epochSizeSec", "600");
-    const std::string opTimeoutSec = strField(parsed, "opTimeoutSec", "30");
+    const std::string opTimeoutSec = strField(parsed, "opTimeoutSec", "10");
     const std::string pollIntervalSec = strField(parsed, "pollIntervalSec", "5");
     const std::string confirmBudgetSec = strField(parsed, "confirmBudgetSec", "300");
+
+    // The seam's start op carries no scope (delivery's typed callback is
+    // (req_id) only), so the bridge serves start from this config — the
+    // out-of-band knowledge any real responder needs.
+    bridge->setStartScope(registryId, epochSizeSec);
 
     RlnconsumerCreateCtorReq req;
     req.config.registryId = registryId.c_str();

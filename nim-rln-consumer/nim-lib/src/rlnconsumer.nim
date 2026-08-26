@@ -1,8 +1,9 @@
 ## RlnConsumer — a Nim mock of logos-delivery's RLN integration, hosted as a
 ## logos-core module. The C++ plugin drives this library over the nim-ffi C
 ## ABI; every RLN operation goes out through the mirrored delivery seam
-## (rln_seam.nim) and comes back from the real liblogos_rln_module via the
-## plugin's bridge. See ../../README.md for the architecture.
+## (rln_seam.nim, typed one-callback-per-function) and comes back from the
+## real liblogos_rln_module via the plugin's bridge. See ../../README.md for
+## the architecture.
 ##
 ## Registration is async by design: `registerMembership` returns the module's
 ## reply as soon as the dispatch returns (normally `state:"pending"`) and a
@@ -19,8 +20,7 @@ type
   ConsumerState = object
     registryId: string
     rlnIdentifierHex: string
-    epochSizeSec: int
-    opTimeout: Duration # rlnInvoke budget; "10" reproduces delivery's hard limit
+    opTimeout: Duration # seam budget; default 10s = delivery's hard limit
     pollInterval: Duration
     confirmBudget: Duration
     lastPolled: string # the confirmation poller's most recent state reply
@@ -33,8 +33,8 @@ declareLibrary("rlnconsumer", RlnConsumer, defaultABIFormat = "c")
 type RlnConsumerConfig {.ffi.} = object
   registryId: string # CAIP-10 "logos:<ref>:<64-hex config account>"
   rlnIdentifierHex: string # 64-hex application scope key
-  epochSizeSec: string # abi=c crosses scalars as strings; parsed here
-  opTimeoutSec: string # default "30"
+  epochSizeSec: string # consumed by the C++ bridge (start scope), not here
+  opTimeoutSec: string # default "10" — delivery's hard rlnInvoke budget
   pollIntervalSec: string # default "5"
   confirmBudgetSec: string # default "300"
 
@@ -46,23 +46,52 @@ proc intOr(s: string, fallback: int): int =
   except ValueError:
     fallback
 
-proc scopePayload(s: ref ConsumerState): JsonNode =
-  %*{"registry_id": s.registryId, "rln_identifier_hex": s.rlnIdentifierHex}
-
-proc invokeUnwrap(
-    s: ref ConsumerState, op: RlnOp, payload: JsonNode
-): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
-  ## One seam round-trip. The host answers {"ok":true,"value":<module reply>}
-  ## or {"ok":false,"error":{class,kind,message}}; unwrap to value-or-error.
-  let raw = (await rlnInvoke(op, $payload, s.opTimeout)).valueOr:
+proc unwrapEnvelope(res: Result[string, string]): Result[string, string] =
+  ## One seam reply. The responder answers the documented envelope
+  ## (delivery-module docs/rln.md): {"ok": <op result>} | {"err":
+  ## {"kind","message"}} with the LIP's error kinds. A transport timeout
+  ## surfaces as the TRANSIENT failure delivery's library synthesizes for
+  ## itself at its hard 10s.
+  let raw = res.valueOr:
+    if error == "timeout":
+      return err("""{"kind":"TRANSIENT","message":"seam: timeout"}""")
     return err("seam: " & error)
   try:
     let parsed = parseJson(raw)
-    if parsed{"ok"}.getBool(false):
-      return ok($parsed{"value"})
-    return err($parsed{"error"})
+    if parsed.kind == JObject and parsed.hasKey("ok"):
+      return ok($parsed["ok"])
+    if parsed.kind == JObject and parsed.hasKey("err"):
+      return err($parsed["err"])
+    return err("seam reply is not an ok/err envelope: " & raw)
   except CatchableError as e:
     return err("seam reply not JSON: " & e.msg)
+
+proc lipOptions(rate: int, optionsJson: string): Result[string, string] =
+  ## The seam's RegistryOptions encoding (RLN Module API LIP): a key/value
+  ## pair array — `rate_limit` is an option key, not a separate argument, and
+  ## delivery's bring-up sends exactly this shape. The module-wire options
+  ## OBJECT the harness passes ({"funding_holding_account_id":...} or the
+  ## delegated set) flattens into it; the bridge maps back to the module's
+  ## register(rate_limit, options_object) wire.
+  var arr = newJArray()
+  arr.add %*{"key": "rate_limit", "value": $rate}
+  if optionsJson.strip().len > 0:
+    try:
+      let obj = parseJson(optionsJson)
+      if obj.kind != JObject:
+        return err("optionsJson must be a JSON object")
+      for k, v in obj:
+        arr.add %*{"key": k, "value": (if v.kind == JString: v.getStr else: $v)}
+    except CatchableError as e:
+      return err("optionsJson not JSON: " & e.msg)
+  ok($arr)
+
+proc parseTs(timestampSec: string): Result[uint64, string] =
+  ## Unix-seconds string (the CLI's `str:` form) -> the seam's uint64.
+  try:
+    ok(uint64(parseBiggestInt(timestampSec.strip())))
+  except ValueError as e:
+    err("bad timestamp: " & e.msg)
 
 proc hexToBytes(hex: string): seq[byte] {.raises: [ValueError].} =
   var digits = hex.strip()
@@ -97,13 +126,16 @@ proc buildSignal(payload: seq[byte], contentTopic: string, timestamp: uint64): s
 
 proc rlnconsumerCreate*(config: RlnConsumerConfig): Future[Result[RlnConsumer, string]] {.ffiCtor.} =
   ## Create a consumer bound to one (registry_id, rln_identifier) scope.
+  ## config.epochSizeSec is not read here: the seam's start op carries no
+  ## scope, so the C++ bridge owns the module's start config (it parses the
+  ## same createConsumer JSON) — the same out-of-band knowledge a real
+  ## responder needs.
   if config.registryId.len == 0 or config.rlnIdentifierHex.len == 0:
     return err("registryId and rlnIdentifierHex are required")
   let s = (ref ConsumerState)(
     registryId: config.registryId,
     rlnIdentifierHex: config.rlnIdentifierHex,
-    epochSizeSec: intOr(config.epochSizeSec, 600),
-    opTimeout: intOr(config.opTimeoutSec, 30).seconds,
+    opTimeout: intOr(config.opTimeoutSec, 10).seconds,
     pollInterval: intOr(config.pollIntervalSec, 5).seconds,
     confirmBudget: intOr(config.confirmBudgetSec, 300).seconds,
   )
@@ -124,14 +156,14 @@ proc rlnconsumerSlowPing*(c: RlnConsumer, text: string): Future[Result[string, s
   return ok("slow pong: " & text)
 
 proc rlnconsumerStartRln*(c: RlnConsumer): Future[Result[string, string]] {.ffi.} =
-  ## Seam `start`: configures the module's epoch size and warms the
-  ## registry's root window.
-  let cfg =
-    %*{"epoch_size_sec": c.state.epochSizeSec, "registries": [c.state.registryId]}
-  return await invokeUnwrap(c.state, RlnOpStart, %*{"config_json": $cfg})
+  ## Seam `start`. The op carries NO scope (delivery's typed callback is
+  ## (req_id) only) — the bridge supplies {epoch_size_sec, registries} from
+  ## the createConsumer config, mirroring how any real responder must know
+  ## the start scope out of band.
+  return unwrapEnvelope(await rlnStart(c.state.opTimeout))
 
 proc rlnconsumerStopRln*(c: RlnConsumer): Future[Result[string, string]] {.ffi.} =
-  return await invokeUnwrap(c.state, RlnOpStop, newJObject())
+  return unwrapEnvelope(await rlnStop(c.state.opTimeout))
 
 proc confirmationPoller(s: ref ConsumerState) {.async: (raises: []).} =
   ## The delivery-shaped async-registration follow-up: track the membership
@@ -142,7 +174,9 @@ proc confirmationPoller(s: ref ConsumerState) {.async: (raises: []).} =
     let deadline = Moment.now() + s.confirmBudget
     while Moment.now() < deadline:
       await sleepAsync(s.pollInterval)
-      let reply = await invokeUnwrap(s, RlnOpGetMembershipState, scopePayload(s))
+      let reply = unwrapEnvelope(
+        await rlnGetMembershipState(s.registryId, s.rlnIdentifierHex, s.opTimeout)
+      )
       if reply.isErr:
         continue
       s.lastPolled = reply.get()
@@ -163,14 +197,16 @@ proc rlnconsumerRegisterMembership*(
   ## state:"pending") and leaves confirmation to the background poller, the
   ## re-emitted membership_state_changed event, and getMembershipState.
   ## optionsJson: {"funding_holding_account_id":...} (direct) or
-  ## {"delegated":"true","gifter_peer_id":...,"gifter_multiaddr":...} (gifter).
+  ## {"delegated":"true","gifter_peer_id":...,"gifter_multiaddr":...} (gifter)
+  ## — flattened into the seam's LIP RegistryOptions key/value array.
   let rate = intOr(rateLimit, 0)
   if rate <= 0:
     return err("rateLimit must be a positive integer")
-  var payload = scopePayload(c.state)
-  payload["rate_limit"] = %rate # JSON integer on the wire — a float reads as 0
-  payload["options_json"] = %optionsJson
-  let reply = await invokeUnwrap(c.state, RlnOpRegister, payload)
+  let opts = lipOptions(rate, optionsJson).valueOr:
+    return err(error)
+  let reply = unwrapEnvelope(
+    await rlnRegister(c.state.registryId, c.state.rlnIdentifierHex, opts, c.state.opTimeout)
+  )
   if reply.isOk:
     let st =
       try:
@@ -183,7 +219,9 @@ proc rlnconsumerRegisterMembership*(
 
 proc rlnconsumerGetMembershipState*(c: RlnConsumer): Future[Result[string, string]] {.ffi.} =
   ## Fresh module read, annotated with the background poller's last sighting.
-  let reply = (await invokeUnwrap(c.state, RlnOpGetMembershipState, scopePayload(c.state))).valueOr:
+  let reply = unwrapEnvelope(
+    await rlnGetMembershipState(c.state.registryId, c.state.rlnIdentifierHex, c.state.opTimeout)
+  ).valueOr:
     return err(error)
   try:
     var merged = parseJson(reply)
@@ -199,16 +237,18 @@ proc rlnconsumerGenerateMessageProof*(
   ## Builds the signal the way logos-delivery does (payload ++ contentTopic ++
   ## timestamp bytes) and proves over it. Returns {"signal_hex", "proof"} so a
   ## validator can be handed the exact same signal.
+  let ts = parseTs(timestampSec).valueOr:
+    return err(error)
   var signalHex: string
   try:
-    let ts = uint64(parseBiggestInt(timestampSec.strip()))
     signalHex = bytesToHex(buildSignal(hexToBytes(payloadHex), contentTopic, ts))
   except ValueError as e:
-    return err("bad payloadHex/timestamp: " & e.msg)
-  var payload = scopePayload(c.state)
-  payload["signal_hex"] = %signalHex
-  payload["timestamp"] = %timestampSec.strip() # module wants a STRING
-  let proof = (await invokeUnwrap(c.state, RlnOpGenerateProof, payload)).valueOr:
+    return err("bad payloadHex: " & e.msg)
+  let proof = unwrapEnvelope(
+    await rlnGenerateProof(
+      c.state.registryId, c.state.rlnIdentifierHex, signalHex, ts, c.state.opTimeout
+    )
+  ).valueOr:
     return err(error)
   try:
     return ok($(%*{"signal_hex": signalHex, "proof": parseJson(proof)}))
@@ -219,17 +259,22 @@ proc rlnconsumerValidateMessageProof*(
     c: RlnConsumer, signalHex, timestampSec, proofJson: string
 ): Future[Result[string, string]] {.ffi.} =
   ## Seam `verify_proof` (module: validate_proof). Returns the verdict object.
-  var payload = scopePayload(c.state)
-  payload["signal_hex"] = %signalHex
-  payload["timestamp"] = %timestampSec.strip()
-  payload["proof_json"] = %proofJson
-  return await invokeUnwrap(c.state, RlnOpVerifyProof, payload)
+  let ts = parseTs(timestampSec).valueOr:
+    return err(error)
+  return unwrapEnvelope(
+    await rlnVerifyProof(
+      c.state.registryId, c.state.rlnIdentifierHex, signalHex, ts, proofJson,
+      c.state.opTimeout,
+    )
+  )
 
 proc rlnconsumerGetEpochQuota*(
     c: RlnConsumer, timestampSec: string
 ): Future[Result[string, string]] {.ffi.} =
-  var payload = scopePayload(c.state)
-  payload["timestamp"] = %timestampSec.strip()
-  return await invokeUnwrap(c.state, RlnOpGetEpochQuota, payload)
+  let ts = parseTs(timestampSec).valueOr:
+    return err(error)
+  return unwrapEnvelope(
+    await rlnGetEpochQuota(c.state.registryId, c.state.rlnIdentifierHex, ts, c.state.opTimeout)
+  )
 
 genBindings()

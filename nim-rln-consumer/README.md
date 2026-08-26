@@ -9,8 +9,8 @@ will use in production:
 harness (logoscore --json call)
   └─► nim_rln_consumer plugin (C++, interface "universal")
         └─► librlnconsumer (Nim, nim-ffi 0.3 C ABI)          ┐ the delivery
-              └─► the RLN seam (rlnconsumer_rln.h:           │ sandwich
-                  7 opaque-JSON op callbacks + req_id/response) 
+              └─► the RLN seam (rlnconsumer_rln.h: one typed │ sandwich
+                  callback per RLN function + req_id/response) 
                     └─► plugin's seam bridge (worker thread) ┘
                           └─► lp wire ─► liblogos_rln_module
 ```
@@ -19,12 +19,16 @@ harness (logoscore --json call)
 
 `nim-lib/include/rlnconsumer_rln.h` + `nim-lib/src/rln_seam.nim` are a
 prefix-renamed copy of logos-delivery's RLN module seam (branch
-`impl-plugable-rln-api-module`, 2026-08-25: `library/liblogosdelivery_rln.h`
-+ `library/logos_delivery_api/rln_api.nim`). Same op set, same req_id /
-response contract, same threading discipline. One deliberate divergence:
-**`rlnInvoke` takes a per-op timeout** (config `opTimeoutSec`, default 30s)
-instead of delivery's hard 10 seconds — see "Findings for the delivery
-team".
+`impl-plugable-rln-api-module`, refreshed 2026-08-26:
+`library/liblogosdelivery_rln.h` + `library/logos_delivery_api/rln_api.nim`
+— the typed one-callback-per-function surface). Same op set, same typed
+signatures, same req_id / response contract, same threading discipline.
+Scalar args (`registry_id`, `rln_identifier`, `signal_hex`, `timestamp`
+u64) cross directly; complex args and results are JSON. Register options
+are the LIP's `RegistryOptions` key/value array — `rate_limit` is an option
+key, not an argument. One deliberate divergence: **every outbound proc
+takes a timeout** (config `opTimeoutSec`, default 10s = delivery's hard
+`rlnInvoke` limit) so scenarios can probe other budgets.
 
 Op ↔ RLN-module method mapping (the bridge owns it):
 
@@ -38,11 +42,15 @@ Op ↔ RLN-module method mapping (the bridge owns it):
 | `generate_proof` | `generate_proof` | result |
 | **`verify_proof`** | **`validate_proof`** | result |
 
-The bridge absorbs the module wire's two reply dialects (tstr in-band error
-/ result envelope, both possibly double-encoded) so the Nim side sees one:
-`{"ok":true,"value":...}` | `{"ok":false,"error":{class,kind,message}}`.
-Payloads are JSON objects of the module method's args; timestamps cross as
-strings, `rate_limit` as a JSON integer.
+Results use the reply envelope documented in delivery-module `docs/rln.md`:
+`{"ok": <module reply>}` | `{"err": {"kind","message"}}` with the LIP's
+kinds (`NOT_READY | TRANSIENT | BUDGET_EXHAUSTED | PERMANENT`). The bridge
+absorbs the module wire's two reply dialects (tstr in-band error / result
+envelope, both possibly double-encoded) and maps module error kinds onto
+the LIP vocabulary; verdicts (incl. `invalid`/`duplicate`) are `ok` values,
+never `err`. At the module wire, timestamps cross as strings and
+`rate_limit` as a JSON integer — the bridge adapts the LIP options array
+onto the module's `register(rate_limit, options_object)` shape.
 
 ## Async registration (the design center)
 
@@ -56,15 +64,15 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
 
 ## Findings for the delivery team
 
-1. **A hard 10s `rlnInvoke` timeout cannot survive registration.** The
-   module's `register` dispatch alone can legitimately take up to ~70s (its
-   registry read leg) before returning `pending`, and confirmation takes
-   minutes. Registration must be modeled asynchronously (pending + event /
-   polling), and the seam timeout must at least cover the module's
-   synchronous legs. Reproduce delivery's behavior with
-   `E2E_CONSUMER_OP_TIMEOUT_S=10 ./run.sh consumer-register --target local`
-   and watch the register leg time out at the seam while the module
-   proceeds regardless.
+1. **A hard 10s `rlnInvoke` timeout cannot survive a blocking registration.**
+   The module's `register` dispatch alone can legitimately take up to ~70s
+   (its registry read leg) before returning `pending`, and confirmation
+   takes minutes. Registration must be modeled asynchronously (pending +
+   event / polling) — the model the module already implements, and the one
+   delivery-module's `docs/rln.md` now leans on (the library synthesizes a
+   `TRANSIENT` failure at 10s rather than waiting). This module now runs at
+   the 10s default itself; raise `E2E_CONSUMER_OP_TIMEOUT_S` for slow
+   targets and watch which legs stop fitting.
 2. **The op is named `verify_proof` in the seam but `validate_proof` on the
    module (and `validateProof` in the RlnInterface concept).** One name
    should win before call sites multiply.
@@ -92,11 +100,32 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
    shape — identical to the Rust modules' — is: lp client created on the
    main thread (before its loop runs), blocking work on
    `concurrency:"multi"` dispatch workers, `lp_invoke_async` + semaphore
-   from any other thread. Delivery's host module will face the same
-   constraints when it implements the callbacks.
+   from any other thread. NOTE: delivery-module's own impl branch avoids
+   the whole contract by design — it re-emits the callbacks as
+   `rln*Request` events and lets an EXTERNAL responder answer via
+   `rlnRespond`, and its dispatches never block on lp. The contract above
+   binds any host that bridges to the RLN module in-process over lp (as
+   this module deliberately does, to keep both topologies covered).
 7. **A bare JSON-object argument into a string-typed module method wedges
    the logoscore CLI call** (no error, no coercion) — pass JSON-valued
    strings via `@argfile`.
+8. **The seam's `start` op carries no scope** — the typed callback is
+   `(req_id)` only, so whoever answers must already know the registry and
+   epoch size out of band (this module's bridge takes them from
+   `createConsumer`; the `delivery-rln` scenario's responder takes them
+   from the harness). Worth deciding where that config authoritatively
+   lives before two responders guess differently.
+9. **No `RegistryOptions` key carries funding from the library.** The LIP
+   defines `funding_holding_account_id` as the LEZ registry option, but
+   delivery's bring-up sends only `rate_limit` — every responder today
+   must inject the payer itself. Who funds a registration is an open seam
+   design question.
+10. **The module's register wire predates the LIP's shape**: the LIP says
+    `register(scope, RegistryOptions)` with `rate_limit` as an option key;
+    the module's 0.5.0 wire is `register(registry_id, rln_identifier,
+    rate_limit i64, options OBJECT)`. The array→(rate, object) adapter
+    lives in this bridge (`rln_seam_bridge.cpp`) and in the `delivery-rln`
+    responder — one of the two wires should eventually move.
 
 ## Method surface (what scenarios call)
 

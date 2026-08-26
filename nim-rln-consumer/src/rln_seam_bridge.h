@@ -1,7 +1,7 @@
 #pragma once
 
 // The host side of the mirrored delivery RLN seam (rlnconsumer_rln.h): the 7
-// opaque-JSON op callbacks the Nim library invokes, served against the real
+// typed op callbacks the Nim library invokes, served against the real
 // liblogos_rln_module over the lp wire.
 //
 // Seam contract: op callbacks must return immediately (the Nim side awaits a
@@ -9,12 +9,20 @@
 // owns the RlnModuleClient — lp clients are owner-thread-bound, and a single
 // worker gives every module call a consistent, live owner.
 //
-// Response convention (this pair owns the seam's payload schema):
-//   {"ok":true,"value":<module reply>} |
-//   {"ok":false,"error":{"class","kind","message"}}
+// Response convention — the reply envelope delivery-module docs/rln.md
+// documents for every responder:
+//   {"ok": <module reply>} | {"err": {"kind": <LIP kind>, "message": ...}}
+// with kind one of NOT_READY | TRANSIENT | BUDGET_EXHAUSTED | PERMANENT.
 // The tstr/result dialect split of the module wire is absorbed here, so the
-// Nim side sees one dialect. The seam op `verify_proof` (delivery's name)
-// maps to the module method `validate_proof`.
+// Nim side sees only the envelope. The seam op `verify_proof` (delivery's
+// name) maps to the module method `validate_proof`.
+//
+// The seam's start op carries no scope, so the module's start config
+// ({epoch_size_sec, registries}) is bridge-owned: the plugin hands it over
+// at createConsumer (setStartScope) — the out-of-band knowledge any real
+// responder needs. Register options arrive as the LIP RegistryOptions
+// key/value array; the bridge maps them onto the module's
+// register(rate_limit, options_object) wire.
 
 #include <condition_variable>
 #include <cstdint>
@@ -43,6 +51,10 @@ public:
     // variant deadlocks exactly there.)
     void install();
 
+    // The module start config the seam cannot carry. Called by the plugin's
+    // createConsumer (any dispatch thread).
+    void setStartScope(const std::string& registryId, const std::string& epochSizeSec);
+
     // Subscribe to liblogos_rln_module's membership_state_changed and forward
     // the 5-string payload. Rides the main-owned lp client; callable from any
     // dispatch thread. Returns true once subscribed.
@@ -54,20 +66,40 @@ private:
     enum class Op { Start, Stop, Register, GetState, GetQuota, Generate, Verify };
 
     struct Job {
-        uint64_t reqId;
-        Op op;
-        std::string payload;
+        uint64_t reqId = 0;
+        Op op = Op::Start;
+        // Typed seam args; each op fills what its callback carries.
+        std::string registryId;
+        std::string rlnIdentifier;
+        std::string signalHex;
+        std::string optionsJson; // LIP RegistryOptions key/value array
+        std::string proofJson;
+        uint64_t timestamp = 0;
     };
 
-    void enqueue(uint64_t reqId, Op op, const char* payload);
+    void enqueue(Job job);
     void workerLoop();
-    std::string serveOp(Op op, const std::string& payloadJson);
+    std::string serveOp(const Job& job);
 
-    template <Op O>
-    static void opTrampoline(uint64_t reqId, const char* payload, void* userData)
-    {
-        static_cast<RlnSeamBridge*>(userData)->enqueue(reqId, O, payload);
-    }
+    // One typed trampoline per callback (the shape delivery_module itself
+    // uses): copy the borrowed strings, queue, return.
+    static void startTrampoline(uint64_t reqId, void* userData);
+    static void stopTrampoline(uint64_t reqId, void* userData);
+    static void registerTrampoline(uint64_t reqId, const char* registryId,
+                                   const char* rlnIdentifier, const char* optionsJson,
+                                   void* userData);
+    static void getStateTrampoline(uint64_t reqId, const char* registryId,
+                                   const char* rlnIdentifier, void* userData);
+    static void getQuotaTrampoline(uint64_t reqId, const char* registryId,
+                                   const char* rlnIdentifier, uint64_t timestamp,
+                                   void* userData);
+    static void generateTrampoline(uint64_t reqId, const char* registryId,
+                                   const char* rlnIdentifier, const char* signalHex,
+                                   uint64_t timestamp, void* userData);
+    static void verifyTrampoline(uint64_t reqId, const char* registryId,
+                                 const char* rlnIdentifier, const char* signalHex,
+                                 uint64_t timestamp, const char* proofJson,
+                                 void* userData);
 
     std::mutex m_lock;
     std::condition_variable m_cv;
@@ -75,6 +107,10 @@ private:
     bool m_stopping = false;
     bool m_installed = false;
     std::thread m_worker;
+
+    // start scope (guarded by m_lock; set once at createConsumer)
+    std::string m_startRegistryId;
+    std::string m_startEpochSizeSec;
 
     RlnModuleClient m_rln; // lp client created in install() (main thread)
 };

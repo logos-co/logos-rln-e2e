@@ -18,12 +18,14 @@
 # The async-registration contract this acceptance-tests: no single consumer
 # call blocks for the chain's confirmation latency. The registerMembership
 # reply is the module's immediate view; activation arrives via polling and
-# the event. E2E_CONSUMER_OP_TIMEOUT_S=10 reproduces logos-delivery's hard
-# rlnInvoke timeout for parity probing (see nim-rln-consumer/README.md).
+# the event. The default op timeout IS logos-delivery's hard 10s rlnInvoke
+# budget, so every leg proves it fits delivery's real constraint; raise it
+# for slow targets (testnet reads can exceed 10s cold).
 #
 # Env beyond docs/contract.md:
 #   E2E_RATE_LIMIT=100            registration rate limit
-#   E2E_CONSUMER_OP_TIMEOUT_S=30  the consumer's per-op seam timeout
+#   E2E_CONSUMER_OP_TIMEOUT_S=10  the consumer's per-op seam timeout
+#                                 (delivery parity; set 30 for testnet)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,7 +36,7 @@ for _lib in compat json lgx daemon wallet chain; do
 done
 
 RATE_LIMIT="${E2E_RATE_LIMIT:-100}"
-OP_TIMEOUT="${E2E_CONSUMER_OP_TIMEOUT_S:-30}"
+OP_TIMEOUT="${E2E_CONSUMER_OP_TIMEOUT_S:-10}"
 NODE=n1
 CONTENT_TOPIC="/logos-rln-e2e/1/consumer/proto"
 

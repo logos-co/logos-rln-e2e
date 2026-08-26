@@ -19,7 +19,8 @@
 #
 # Env beyond docs/contract.md:
 #   E2E_RATE_LIMIT=100              registration rate limit
-#   E2E_CONSUMER_OP_TIMEOUT_S=30    the consumer's per-op seam timeout
+#   E2E_CONSUMER_OP_TIMEOUT_S=10    the consumer's per-op seam timeout
+#                                   (delivery's hard rlnInvoke budget)
 #   E2E_GIFTER_PORT=61871           the gifter's libp2p listen port
 set -uo pipefail
 
@@ -31,7 +32,7 @@ for _lib in compat json lgx daemon wallet chain; do
 done
 
 RATE_LIMIT="${E2E_RATE_LIMIT:-100}"
-OP_TIMEOUT="${E2E_CONSUMER_OP_TIMEOUT_S:-30}"
+OP_TIMEOUT="${E2E_CONSUMER_OP_TIMEOUT_S:-10}"
 GIFTER_PORT="${E2E_GIFTER_PORT:-61871}"
 CONTENT_TOPIC="/logos-rln-e2e/1/consumer-gifter/proto"
 

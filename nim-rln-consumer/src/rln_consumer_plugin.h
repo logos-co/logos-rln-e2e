@@ -15,9 +15,10 @@ class RlnSeamBridge;
  *
  * The module sandwiches every RLN operation through the layers logos-delivery
  * will use in production: harness call -> this plugin -> librlnconsumer (Nim,
- * nim-ffi C ABI) -> the mirrored delivery RLN seam (rlnconsumer_rln.h,
- * 7 opaque-JSON op callbacks) -> this plugin's seam bridge -> lp wire ->
- * liblogos_rln_module.
+ * nim-ffi C ABI) -> the mirrored delivery RLN seam (rlnconsumer_rln.h, one
+ * typed callback per RLN function; results in the documented
+ * {"ok":...}|{"err":{kind,message}} envelope) -> this plugin's seam bridge
+ * -> lp wire -> liblogos_rln_module.
  *
  * Lifecycle contract:
  * - call @ref createConsumer exactly once per context
