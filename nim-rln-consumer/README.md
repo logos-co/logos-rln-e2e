@@ -74,8 +74,12 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
    the 10s default itself; raise `E2E_CONSUMER_OP_TIMEOUT_S` for slow
    targets and watch which legs stop fitting.
 2. **The op is named `verify_proof` in the seam but `validate_proof` on the
-   module (and `validateProof` in the RlnInterface concept).** One name
-   should win before call sites multiply.
+   module (and `validateProof` in the RlnInterface concept).** RESOLVED:
+   the `rln/integration-fixes` stack renames the seam's callback typedef,
+   struct field and nim wrapper to `validate_proof` (delivery-module's
+   shim follows; its *event* names stay `rlnVerifyProofRequest`). This
+   module's mirrored header still carries the old name until its next
+   header refresh.
 3. **nim-ffi's generated `<lib>_ctx_*` scalar wrappers free their callback
    box on the FIRST callback — including the non-terminal `RET_STALE_WARN`
    progress tick** — a use-after-free for any no-arg method slower than

@@ -14,11 +14,12 @@
 #      sender and messageReceived at the receivers.
 #
 # NOT yet here: any RLN <-> delivery coupling. When logos-core wires
-# RLN-on-LEZ into delivery, this scenario grows registration + proof-gated
-# send, and TARGETS grows local/testnet. The integration contract to hold:
-# proofs cross module boundaries as DECOMPOSED fields (the protobuf shape),
-# never as zerokit's canonical serialized blob — the stacks pin different
-# zerokit major versions and only the decomposed shape is version-agnostic.
+# RLN-on-LEZ into delivery — scenarios/delivery-rln is where registration
+# and the proof-gated send live. The proof transport settled the other way
+# than this header once predicted: the message wire carries the module's
+# `proof_canonical` blob as ONE opaque field that only the RLN module ever
+# parses (delivery's bundled zerokit v2 never touches it), so the
+# version-skew concern doesn't arise.
 #
 # Delivery facts this leans on (logos-delivery-module):
 #   - peering is config-only (staticnodes multiaddrs); there is no dial RPC.
