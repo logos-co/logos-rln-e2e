@@ -42,7 +42,7 @@
 #   LOGOS_DELIVERY_CHECKOUT   logos-delivery @ rln-acceptance — the fork
 #                             branch with env-configurable bring-up;
 #                             submodules checked out
-#   RLN_MODULES_CHECKOUT      logos-rln-modules with the 0.5.0 stack (until
+#   RLN_MODULES_CHECKOUT      logos-rln-modules with the 0.6.0 stack (until
 #                             the e2e flake pin bumps)
 #
 # Env beyond docs/contract.md:
@@ -233,9 +233,17 @@ print(kv.get("rate_limit", ""))' 2>/dev/null) || EV_RATE=""
     || die "rlnRegisterRequest rate_limit mismatch: options carried '$EV_RATE', want '$RATE_LIMIT' — options: $EV_OPTS"
 say "leg 2: register request carries the configured scope (reqId $REQ_ID2)"
 
+# The event's LIP RegistryOptions array IS the module wire (0.6.0) — the
+# responder passes it through verbatim, appending only the funding pair the
+# seam has no field for.
+REG_OPTS=$(printf '%s' "$EV_OPTS" | python3 -c '
+import json, sys
+opts = json.load(sys.stdin)
+opts.append({"key": "funding_holding_account_id", "value": sys.argv[1]})
+print(json.dumps(opts, separators=(",", ":")))' "$HOLDING") \
+    || die "cannot build register options from the event options: $EV_OPTS"
 REG=$(node_call "$NODE" liblogos_rln_module register \
-    "$EV_REGISTRY" "$(argfile rlnid "$EV_RLNID")" "$EV_RATE" \
-    "{\"funding_holding_account_id\":\"$HOLDING\"}" | jres) || REG=""
+    "$EV_REGISTRY" "$(argfile rlnid "$EV_RLNID")" "$REG_OPTS" | jres) || REG=""
 case "$REG" in
     *'"state":"pending"'*) ;;
     *) die "module register failed while answering rlnRegisterRequest: ${REG:-<empty>}" ;;

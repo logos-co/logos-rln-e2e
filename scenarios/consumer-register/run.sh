@@ -205,7 +205,7 @@ SIGNAL_HEX=$(printf '%s' "$GEN" | jfield signal_hex)
 PROOF_JSON=$(printf '%s' "$GEN" | python3 -c \
     'import json,sys; print(json.dumps(json.load(sys.stdin)["proof"], separators=(",",":")))') \
     || die "cannot extract proof from: $GEN"
-say "proof issued (epoch $(printf '%s' "$PROOF_JSON" | jfield epoch))"
+say "proof issued (epoch $(printf '%s' "$PROOF_JSON" | jfield epoch_index))"
 
 QUOTA=$(node_call "$NODE" nim_rln_consumer getEpochQuota "str:$TS" | jres | jval) || QUOTA=""
 case "$QUOTA" in
@@ -214,7 +214,7 @@ case "$QUOTA" in
 esac
 REMAINING=$(printf '%s' "$QUOTA" | jfield remaining)
 Q_EPOCH=$(printf '%s' "$QUOTA" | jfield epoch_index)
-PROOF_EPOCH=$(printf '%s' "$PROOF_JSON" | jfield epoch)
+PROOF_EPOCH=$(printf '%s' "$PROOF_JSON" | jfield epoch_index)
 if [ "$Q_EPOCH" = "$PROOF_EPOCH" ]; then
     [ "$REMAINING" = "$((RATE_LIMIT - 1))" ] \
         || die "quota remaining $REMAINING != $((RATE_LIMIT - 1)) after one proof"

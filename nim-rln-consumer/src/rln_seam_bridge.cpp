@@ -268,42 +268,13 @@ std::string RlnSeamBridge::serveOp(const Job& job)
     case Op::Stop:
         r = m_rln.result("stop", json::array(), kReadMs);
         break;
-    case Op::Register: {
-        // optionsJson is the LIP RegistryOptions key/value array (rate_limit
-        // is an option key). The module's wire predates that shape:
-        // register(registry_id, rln_identifier, rate_limit i64, options
-        // OBJECT) — map array -> (rate, object) here.
-        json opts = json::parse(job.optionsJson, nullptr, /*allow_exceptions=*/false);
-        if (!opts.is_array()) {
-            return makeErr("PERMANENT", "register options are not a RegistryOptions array");
-        }
-        int64_t rate = 0;
-        json moduleOpts = json::object();
-        for (const auto& o : opts) {
-            if (!o.is_object() || !o.contains("key") || !o["key"].is_string()) {
-                continue;
-            }
-            const std::string key = o["key"].get<std::string>();
-            const std::string val = o.contains("value") && o["value"].is_string()
-                ? o["value"].get<std::string>()
-                : "";
-            if (key == "rate_limit") {
-                rate = strtoll(val.c_str(), nullptr, 10);
-            } else {
-                moduleOpts[key] = val;
-            }
-        }
-        if (rate <= 0) {
-            // The LIP lets rate_limit default registry-side; the module's
-            // current wire requires it. Surface the gap instead of guessing.
-            return makeErr("PERMANENT",
-                "options carry no usable rate_limit (the module wire requires one)");
-        }
+    case Op::Register:
+        // The seam's LIP RegistryOptions array IS the module wire (0.6.0) —
+        // pass it through verbatim; the module lifts the common rate_limit
+        // key (and applies its default when absent) itself.
         r = m_rln.tstr("register",
-            json::array({job.registryId, job.rlnIdentifier, rate, moduleOpts.dump()}),
-            kRegisterMs);
+            json::array({job.registryId, job.rlnIdentifier, job.optionsJson}), kRegisterMs);
         break;
-    }
     case Op::GetState:
         r = m_rln.tstr("get_membership_state",
             json::array({job.registryId, job.rlnIdentifier}), kReadMs);

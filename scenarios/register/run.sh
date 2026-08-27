@@ -144,10 +144,12 @@ case "$UNLOCK" in
     *) die "unlock_keystore failed: ${UNLOCK:-<empty>}" ;;
 esac
 
-OPTIONS_JSON="{\"funding_holding_account_id\":\"$HOLDING\"}"
+# The spec RegistryOptions array (module wire 0.6.0): rate_limit is the
+# common option key, funding the logos-namespace one.
+OPTIONS_JSON="[{\"key\":\"rate_limit\",\"value\":\"$RATE_LIMIT\"},{\"key\":\"funding_holding_account_id\",\"value\":\"$HOLDING\"}]"
 say "register($REGISTRY_ID, rate $RATE_LIMIT) via membership module"
 REG=$(node_call "$NODE" liblogos_rln_module register \
-    "$REGISTRY_ID" "$(argfile rlnid "$RLN_ID")" "$RATE_LIMIT" "$OPTIONS_JSON" | jres) || REG=""
+    "$REGISTRY_ID" "$(argfile rlnid "$RLN_ID")" "$OPTIONS_JSON" | jres) || REG=""
 case "$REG" in
     *'"state":"pending"'*) ;;
     *'provider_failure'*)
@@ -238,7 +240,7 @@ case "$PROOF_JSON" in
     *) die "generate_proof failed: ${PROOF_JSON:-<empty>} (envelope: ${PROOF_RAW:-<none>})" ;;
 esac
 MESSAGE_ID=$(printf '%s' "$PROOF_JSON" | jfield message_id)
-say "proof issued (message_id ${MESSAGE_ID:-?}, epoch $(printf '%s' "$PROOF_JSON" | jfield epoch))"
+say "proof issued (message_id ${MESSAGE_ID:-?}, epoch $(printf '%s' "$PROOF_JSON" | jfield epoch_index))"
 
 # The quota snapshot (logos-delivery's QuotaProvider shape): numeric
 # epoch_index + rate_limit + remaining, decremented by the proof above —

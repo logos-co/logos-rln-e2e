@@ -32,7 +32,7 @@ takes a timeout** (config `opTimeoutSec`, default 10s = delivery's hard
 
 Op ↔ RLN-module method mapping (the bridge owns it):
 
-| seam op (delivery's name) | module method (0.5.0) | dialect |
+| seam op (delivery's name) | module method (0.6.0) | dialect |
 |---|---|---|
 | `start` | `start` | result |
 | `stop` | `stop` | result |
@@ -48,9 +48,9 @@ kinds (`NOT_READY | TRANSIENT | BUDGET_EXHAUSTED | PERMANENT`). The bridge
 absorbs the module wire's two reply dialects (tstr in-band error / result
 envelope, both possibly double-encoded) and maps module error kinds onto
 the LIP vocabulary; verdicts (incl. `invalid`/`duplicate`) are `ok` values,
-never `err`. At the module wire, timestamps cross as strings and
-`rate_limit` as a JSON integer — the bridge adapts the LIP options array
-onto the module's `register(rate_limit, options_object)` shape.
+never `err`. At the module wire, timestamps cross as strings; register
+options pass through VERBATIM — the module (wire 0.6.0) speaks the same
+LIP RegistryOptions array the seam carries.
 
 ## Async registration (the design center)
 
@@ -120,12 +120,12 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
    delivery's bring-up sends only `rate_limit` — every responder today
    must inject the payer itself. Who funds a registration is an open seam
    design question.
-10. **The module's register wire predates the LIP's shape**: the LIP says
-    `register(scope, RegistryOptions)` with `rate_limit` as an option key;
-    the module's 0.5.0 wire is `register(registry_id, rln_identifier,
-    rate_limit i64, options OBJECT)`. The array→(rate, object) adapter
-    lives in this bridge (`rln_seam_bridge.cpp`) and in the `delivery-rln`
-    responder — one of the two wires should eventually move.
+10. **RESOLVED (module wire 0.6.0)**: the module's register now speaks the
+    LIP shape — `register(registry_id, rln_identifier, options_json)` with
+    the RegistryOptions key/value array carrying `rate_limit` (absent →
+    the module's default). The bridge and the `delivery-rln` responder pass
+    the seam's options through verbatim; the old array→(rate, object)
+    adapters are gone.
 
 ## Method surface (what scenarios call)
 
