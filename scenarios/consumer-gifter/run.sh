@@ -85,6 +85,9 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 
 # ---------- n1: the gifter --------------------------------------------------
 section "gifter node (n1)"
+# The module default is full-lazy self-owned keystore custody; this
+# scenario exercises MANUAL passwords — opt its daemons out.
+export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start n1 || die "daemon_start n1 failed"
 NODES_UP="n1"
 daemon_load_modules n1 lez_core liblogos_lez_rln_module liblogos_rln_module \

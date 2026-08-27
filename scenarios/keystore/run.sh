@@ -121,6 +121,10 @@ gen_proof() { # <argtag>
 
 # ---------- bring-up + the one paid registration ------------------------------
 section "setup: node, wallet, funding"
+# Probes A–H exercise MANUAL-password custody; the module default is
+# full-lazy self-owned custody, so opt n1's daemons out (probe I strips
+# this again for n2 to exercise the default).
+export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start "$NODE" || die "daemon_start failed"
 NODE_UP=1
 daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
@@ -399,6 +403,40 @@ case "$QP" in
     *'"proof"'*) die "a proof was issued from QUARANTINED counters — slot reissue risk" ;;
     *) die "expected no_usable_membership for the quarantined scope, got: ${QP:-<empty>}" ;;
 esac
+
+# ---------- I: full-lazy module-owned custody (the default) -------------------
+# A fresh node WITHOUT the opt-out env: the module self-provisions its own
+# keystore password at init (rln_autounlock.secret, 0600) and every restart
+# resumes it — zero unlock calls, the delivery-integration default. No chain
+# interaction needed: this probes only the custody machinery.
+section "I: full-lazy self-owned custody on a fresh node"
+export E2E_DAEMON_ENV="${E2E_DAEMON_ENV/LOGOS_RLN_DISABLE_AUTO_UNLOCK=1/}"
+daemon_start n2 || die "daemon_start n2 failed"
+daemon_load_modules n2 liblogos_rln_module || die_node n2 "n2 load-module failed"
+# Module init is asynchronous relative to load-module returning — poll for
+# the self-provisioned file rather than racing it.
+AUTO_FILE=""
+for _t in $(seq 1 15); do
+    AUTO_FILE=$(ls "$E2E_RUN_DIR"/nodes/n2/config/*/liblogos_rln_module/*/rln_autounlock.secret \
+        "$E2E_RUN_DIR"/nodes/n2/config/*/*/liblogos_rln_module/*/rln_autounlock.secret 2>/dev/null | head -1)
+    [ -n "$AUTO_FILE" ] && break
+    sleep 1
+done
+[ -n "$AUTO_FILE" ] || die_node n2 "no rln_autounlock.secret self-provisioned at init (within 15s)"
+MODE=$(stat -f '%Lp' "$AUTO_FILE" 2>/dev/null || stat -c '%a' "$AUTO_FILE" 2>/dev/null)
+[ "$MODE" = "600" ] || die "secret file mode $MODE, want 600 ($AUTO_FILE)"
+SECRET_BEFORE=$(cat "$AUTO_FILE")
+say "self-provisioned at init: ${AUTO_FILE#"$E2E_RUN_DIR"/} (0600)"
+daemon_restart n2 || die_node n2 "n2 restart failed"
+daemon_load_modules n2 liblogos_rln_module || die_node n2 "n2 reload failed"
+[ "$(cat "$AUTO_FILE")" = "$SECRET_BEFORE" ] \
+    || die "the auto secret changed across a restart — resume must reuse, never re-mint"
+AUTO=$(node_call n2 liblogos_rln_module unlock_keystore_auto | jres) || AUTO=""
+case "$AUTO" in
+    *'"source":"existing"'*) say "restart resumed the module-owned session (source existing)" ;;
+    *) die_node n2 "auto-unlock after restart should resume, got: ${AUTO:-<empty>}" ;;
+esac
+daemon_stop n2
 
 echo
 echo "e2e: PASS — keystore lifecycle acceptance"

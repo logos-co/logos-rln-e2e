@@ -89,6 +89,9 @@ say "registry: $REGISTRY_ID (consumer op timeout ${OP_TIMEOUT}s)"
 
 # ---------- node ------------------------------------------------------------
 section "node"
+# The module default is full-lazy self-owned keystore custody; this
+# scenario exercises MANUAL passwords — opt its daemons out.
+export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start "$NODE" || die "daemon_start $NODE failed"
 NODE_UP=1
 daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
