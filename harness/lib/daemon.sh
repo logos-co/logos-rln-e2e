@@ -199,6 +199,34 @@ daemon_stop() {
     sv NODEPID "$node" ""
 }
 
+# Usage: daemon_stop_wait <node> [timeout_s=30]
+# daemon_stop, then wait for the process to actually exit. SIGTERM is
+# asynchronous: anything that must observe the daemon's resources released
+# (the RLN module's exclusive keystore lock, ports) needs this, not a bare
+# daemon_stop.
+daemon_stop_wait() {
+    local node="${1:?daemon_stop_wait <node>}" timeout="${2:-30}" pid _t
+    pid=$(gv NODEPID "$node")
+    daemon_stop "$node"
+    [ -n "$pid" ] || return 0
+    for _t in $(seq 1 "$timeout"); do
+        kill -0 "$pid" 2>/dev/null || return 0
+        sleep 1
+    done
+    die_node "$node" "daemon $pid did not exit within ${timeout}s of SIGTERM"
+}
+
+# Usage: daemon_restart <node>
+# Stop the daemon (waiting for real exit) and start a fresh one over the
+# SAME state dir — the restart/persistence probe primitive. Module loading
+# is per-daemon-lifetime: the caller re-runs daemon_load_modules (and any
+# node_watch_start) itself.
+daemon_restart() {
+    local node="${1:?daemon_restart <node>}"
+    daemon_stop_wait "$node"
+    daemon_start "$node"
+}
+
 daemon_stop_all() {
     local node
     if [ "${E2E_KEEP:-0}" = "1" ]; then
