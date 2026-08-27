@@ -99,12 +99,14 @@ probes D/G):
 
 ## 5. Validator path
 
-- A **freshly-activated membership's proof validates `invalid` — not
-  `not_ready` — for roughly one root-window refresh (~10s)**. For a
-  just-activated registrant, treat `invalid` as retryable before scoring
-  spam (`scenarios/register/run.sh` polls exactly this away). A
-  module-side softening (on-demand root refresh on window miss) is under
-  consideration; until then this is yours to absorb.
+- A **freshly-activated membership's proof can validate `invalid` — not
+  `not_ready` — until its just-published root reaches the validator's
+  window**. The module softens this: a warm-window root miss triggers a
+  rate-limited on-demand window refresh in the background, so the race
+  typically resolves on the next retry (~a provider round-trip) instead of
+  a full refresh interval (~10s). You still own the one retry: for a
+  just-activated registrant, treat a first `invalid` as retryable before
+  scoring spam (`scenarios/register/run.sh` polls exactly this away).
 - **Double-signal detection is the module's job now** (spec change):
   `validate_proof` owns the nullifier log and returns `duplicate` /
   `rate_limit_violation` — your gossipsub validator should stop keeping
