@@ -1,12 +1,14 @@
 /* The RLN module seam, mirrored from logos-delivery's
- * library/liblogosdelivery_rln.h (branch impl-plugable-rln-api-module,
- * refreshed 2026-08-26 — the typed one-callback-per-function surface) with
- * the prefix renamed. Scalar args cross directly; complex args (options,
- * proof) and every result are JSON strings. Results use the reply envelope
- * {"ok": <result>} | {"err": {"kind","message"}} (delivery-module
- * docs/rln.md). Op names are delivery's; the host maps `verify_proof` to
- * the RLN module's `validate_proof` method. All strings are borrowed for
- * the duration of the call — copy before returning. */
+ * library/liblogosdelivery_rln.h (branch impl-plugable-rln-api-module +
+ * the rln/integration-fixes stack, refreshed 2026-08-27 — the typed
+ * one-callback-per-function surface, now carrying the verify_proof ->
+ * validate_proof rename) with the prefix renamed. Scalar args cross
+ * directly; complex args (options, proof) and every result are JSON
+ * strings. Results use the reply envelope {"ok": <result>} | {"err":
+ * {"kind","message"}} (delivery-module docs/rln.md). The op and the RLN
+ * module method are both named `validate_proof` — one name end to end.
+ * All strings are borrowed for the duration of the call — copy before
+ * returning. */
 #pragma once
 #ifndef __rlnconsumer_rln__
 #define __rlnconsumer_rln__
@@ -37,7 +39,7 @@ typedef void (*RlnConsumerRlnGenerateProofFn)(uint64_t req_id, const char* regis
                                               const char* signal_hex,
                                               uint64_t timestamp, void* user_data);
 
-typedef void (*RlnConsumerRlnVerifyProofFn)(uint64_t req_id, const char* registry_id,
+typedef void (*RlnConsumerRlnValidateProofFn)(uint64_t req_id, const char* registry_id,
                                             const char* rln_identifier,
                                             const char* signal_hex, uint64_t timestamp,
                                             const char* proof_json, void* user_data);
@@ -49,7 +51,7 @@ typedef struct {
   RlnConsumerRlnGetMembershipStateFn get_membership_state;
   RlnConsumerRlnGetEpochQuotaFn get_epoch_quota;
   RlnConsumerRlnGenerateProofFn generate_proof;
-  RlnConsumerRlnVerifyProofFn verify_proof;
+  RlnConsumerRlnValidateProofFn validate_proof;
 } RlnConsumerRlnCallbacks;
 
 /* library ← shell: register once, before any consumer method. NULL clears and

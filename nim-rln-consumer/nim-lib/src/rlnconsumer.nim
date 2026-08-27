@@ -69,10 +69,10 @@ proc unwrapEnvelope(res: Result[string, string]): Result[string, string] =
 proc lipOptions(rate: int, optionsJson: string): Result[string, string] =
   ## The seam's RegistryOptions encoding (RLN Module API LIP): a key/value
   ## pair array — `rate_limit` is an option key, not a separate argument, and
-  ## delivery's bring-up sends exactly this shape. The module-wire options
-  ## OBJECT the harness passes ({"funding_holding_account_id":...} or the
-  ## delegated set) flattens into it; the bridge maps back to the module's
-  ## register(rate_limit, options_object) wire.
+  ## delivery's bring-up sends exactly this shape. The options OBJECT the
+  ## harness passes ({"funding_holding_account_id":...} or the delegated set)
+  ## flattens into it; since wire 0.6.0 the array IS the module wire and the
+  ## bridge passes it through verbatim.
   var arr = newJArray()
   arr.add %*{"key": "rate_limit", "value": $rate}
   if optionsJson.strip().len > 0:
@@ -111,15 +111,15 @@ proc bytesToHex(bs: openArray[byte]): string =
     result[i * 2 + 1] = digits[int(b and 0x0f)]
 
 # The signal logos-delivery proves over: payload ++ contentTopic ++ timestamp
-# (waku/rln/proof.nim toRLNSignal). Timestamp bytes use stew toBytes(uint64)'s
-# default order; both proving and validating go through this one function, so
-# the e2e is internally consistent either way — parity with delivery's exact
-# byte order is asserted when the integration lands.
+# (waku/rln/proof.nim toRLNSignal). Delivery's timestamp bytes are stew
+# toBytes(uint64) at its default — system.cpuEndian, LITTLE-endian on every
+# supported target — so the low byte goes first here for byte parity with
+# what delivery's own prover and validator hash.
 proc buildSignal(payload: seq[byte], contentTopic: string, timestamp: uint64): seq[byte] =
   result = payload
   result.add cast[seq[byte]](contentTopic)
   var ts = timestamp
-  for i in countdown(7, 0):
+  for i in 0 .. 7:
     result.add byte((ts shr (i * 8)) and 0xff)
 
 # ------------------------------------------------------- lifecycle + surface
@@ -236,7 +236,10 @@ proc rlnconsumerGenerateMessageProof*(
 ): Future[Result[string, string]] {.ffi.} =
   ## Builds the signal the way logos-delivery does (payload ++ contentTopic ++
   ## timestamp bytes) and proves over it. Returns {"signal_hex", "proof"} so a
-  ## validator can be handed the exact same signal.
+  ## validator can be handed the exact same signal. The reply's
+  ## `proof.proof_canonical` (wire 0.6.1) is the message-wire blob: delivery
+  ## ships exactly those bytes as message.proof, and validate_proof accepts
+  ## them back as `{"proof": "<hex>"}` alone.
   let ts = parseTs(timestampSec).valueOr:
     return err(error)
   var signalHex: string
@@ -258,11 +261,12 @@ proc rlnconsumerGenerateMessageProof*(
 proc rlnconsumerValidateMessageProof*(
     c: RlnConsumer, signalHex, timestampSec, proofJson: string
 ): Future[Result[string, string]] {.ffi.} =
-  ## Seam `verify_proof` (module: validate_proof). Returns the verdict object.
+  ## Seam `validate_proof` — one name end to end since the
+  ## rln/integration-fixes rename. Returns the verdict object.
   let ts = parseTs(timestampSec).valueOr:
     return err(error)
   return unwrapEnvelope(
-    await rlnVerifyProof(
+    await rlnValidateProof(
       c.state.registryId, c.state.rlnIdentifierHex, signalHex, ts, proofJson,
       c.state.opTimeout,
     )

@@ -1,8 +1,10 @@
 ## The RLN module seam, mirrored from logos-delivery so the e2e exercises the
 ## exact contract delivery is building (logos-delivery branch
-## impl-plugable-rln-api-module: library/logos_delivery_api/rln_api.nim +
-## library/liblogosdelivery_rln.h, refreshed 2026-08-26 — the typed
-## one-callback-per-function surface). Scalar args are passed directly,
+## impl-plugable-rln-api-module + the rln/integration-fixes stack:
+## library/logos_delivery_api/rln_api.nim + library/liblogosdelivery_rln.h,
+## refreshed 2026-08-27 — the typed one-callback-per-function surface, now
+## carrying the verify_proof -> validate_proof rename). Scalar args are
+## passed directly,
 ## complex args (options, proof) as JSON, and every call's result comes back
 ## as JSON via `rlnconsumer_rln_response` — the reply envelope
 ## {"ok": <result>} | {"err": {"kind","message"}} documented in
@@ -51,7 +53,7 @@ type
     userData: pointer,
   ) {.cdecl, gcsafe, raises: [].}
 
-  RlnConsumerRlnVerifyProofFn = proc(
+  RlnConsumerRlnValidateProofFn = proc(
     reqId: uint64,
     registryId, rlnIdentifier, signalHex: cstring,
     timestamp: uint64,
@@ -66,9 +68,9 @@ type
     get_membership_state: RlnConsumerRlnGetMembershipStateFn
     get_epoch_quota: RlnConsumerRlnGetEpochQuotaFn
     generate_proof: RlnConsumerRlnGenerateProofFn
-    verify_proof: RlnConsumerRlnVerifyProofFn ## delivery's op name; the host
-                                              ## maps it to the module's
-                                              ## `validate_proof` (0.5.0 rename)
+    validate_proof: RlnConsumerRlnValidateProofFn ## one name end to end since
+                                                  ## the rln/integration-fixes
+                                                  ## rename (module: 0.5.0)
 
   Pending = object
     reqId: uint64
@@ -258,7 +260,7 @@ proc rlnGenerateProof*(
   )
   return await awaitResult(pending, timeout)
 
-proc rlnVerifyProof*(
+proc rlnValidateProof*(
     registryId, rlnIdentifier, signalHex: string,
     timestamp: uint64,
     proofJson: string,
@@ -267,10 +269,10 @@ proc rlnVerifyProof*(
   let pending = newPending()
   if pending.isNil:
     return err("signal alloc failed")
-  var cb: RlnConsumerRlnVerifyProofFn
+  var cb: RlnConsumerRlnValidateProofFn
   var ud: pointer
   withLock gLock:
-    cb = gCallbacks.verify_proof
+    cb = gCallbacks.validate_proof
     if cb.isNil:
       discard pending.signal.close()
       deallocShared(pending)

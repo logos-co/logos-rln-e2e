@@ -28,8 +28,8 @@ class RlnSeamBridge;
  *   @ref getMembershipState polling and the re-emitted
  *   `membership_state_changed` event — never a long-blocking call.
  *
- * The seam op `verify_proof` (delivery's name) maps to the RLN module method
- * `validate_proof` (its 0.5.0 name) inside the bridge.
+ * The seam op and the RLN module method are both named `validate_proof` —
+ * one name end to end since the rln/integration-fixes rename.
  */
 class NimRlnConsumerImpl : public LogosModuleContext
 {
@@ -80,7 +80,7 @@ public:
         const std::string& contentTopic,
         const std::string& timestampSec);
 
-    /** @brief Validate a proof (seam `verify_proof` -> module `validate_proof`).
+    /** @brief Validate a proof (seam and module: `validate_proof`).
      *  @return the verdict object, e.g. {"verdict":"valid"}. */
     StdLogosResult validateMessageProof(
         const std::string& signalHex,

@@ -99,7 +99,7 @@ void RlnSeamBridge::install()
     cbs.get_membership_state = &RlnSeamBridge::getStateTrampoline;
     cbs.get_epoch_quota = &RlnSeamBridge::getQuotaTrampoline;
     cbs.generate_proof = &RlnSeamBridge::generateTrampoline;
-    cbs.verify_proof = &RlnSeamBridge::verifyTrampoline;
+    cbs.validate_proof = &RlnSeamBridge::validateTrampoline;
     rlnconsumer_rln_set_callbacks(&cbs, this);
     m_installed = true;
 }
@@ -192,14 +192,14 @@ void RlnSeamBridge::generateTrampoline(uint64_t reqId, const char* registryId,
     static_cast<RlnSeamBridge*>(userData)->enqueue(std::move(j));
 }
 
-void RlnSeamBridge::verifyTrampoline(uint64_t reqId, const char* registryId,
+void RlnSeamBridge::validateTrampoline(uint64_t reqId, const char* registryId,
                                      const char* rlnIdentifier, const char* signalHex,
                                      uint64_t timestamp, const char* proofJson,
                                      void* userData)
 {
     Job j;
     j.reqId = reqId;
-    j.op = Op::Verify;
+    j.op = Op::Validate;
     j.registryId = toStringOrEmpty(registryId);
     j.rlnIdentifier = toStringOrEmpty(rlnIdentifier);
     j.signalHex = toStringOrEmpty(signalHex);
@@ -287,9 +287,9 @@ std::string RlnSeamBridge::serveOp(const Job& job)
         r = m_rln.result("generate_proof",
             json::array({job.registryId, job.rlnIdentifier, job.signalHex, ts}), kReadMs);
         break;
-    case Op::Verify:
-        // Seam op name is delivery's `verify_proof`; the module method is
-        // `validate_proof` (the 0.5.0 rename). THE mapping.
+    case Op::Validate:
+        // One name end to end: the seam op followed the module's 0.5.0
+        // validate_proof rename in the rln/integration-fixes stack.
         r = m_rln.result("validate_proof",
             json::array({job.registryId, job.rlnIdentifier, job.signalHex, ts,
                          job.proofJson}),

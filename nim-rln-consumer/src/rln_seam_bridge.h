@@ -14,8 +14,9 @@
 //   {"ok": <module reply>} | {"err": {"kind": <LIP kind>, "message": ...}}
 // with kind one of NOT_READY | TRANSIENT | BUDGET_EXHAUSTED | PERMANENT.
 // The tstr/result dialect split of the module wire is absorbed here, so the
-// Nim side sees only the envelope. The seam op `verify_proof` (delivery's
-// name) maps to the module method `validate_proof`.
+// Nim side sees only the envelope. The seam op and the module method are
+// both named `validate_proof` (one name end to end since the
+// rln/integration-fixes rename).
 //
 // The seam's start op carries no scope, so the module's start config
 // ({epoch_size_sec, registries}) is bridge-owned: the plugin hands it over
@@ -63,7 +64,7 @@ public:
                            const std::string&, const std::string&)> onEvent);
 
 private:
-    enum class Op { Start, Stop, Register, GetState, GetQuota, Generate, Verify };
+    enum class Op { Start, Stop, Register, GetState, GetQuota, Generate, Validate };
 
     struct Job {
         uint64_t reqId = 0;
@@ -96,7 +97,7 @@ private:
     static void generateTrampoline(uint64_t reqId, const char* registryId,
                                    const char* rlnIdentifier, const char* signalHex,
                                    uint64_t timestamp, void* userData);
-    static void verifyTrampoline(uint64_t reqId, const char* registryId,
+    static void validateTrampoline(uint64_t reqId, const char* registryId,
                                  const char* rlnIdentifier, const char* signalHex,
                                  uint64_t timestamp, const char* proofJson,
                                  void* userData);

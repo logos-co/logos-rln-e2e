@@ -11,9 +11,12 @@
 #   -> registerMembership (ASYNC BY DESIGN: returns "pending" fast)
 #   -> poll getMembershipState to "active"
 #   -> assert the re-emitted membership_state_changed event
-#   -> generateMessageProof (delivery-shaped signal) -> getEpochQuota
+#   -> generateMessageProof (delivery-shaped signal; reply carries
+#      proof_canonical, the message-wire blob) -> getEpochQuota
 #   -> validateMessageProof (valid) -> tampered payload (invalid)
 #   -> identical re-validate (duplicate — the module's nullifier log)
+#   -> blob-only re-validate ({"proof": proof_canonical} alone -> duplicate:
+#      the blob is accepted AND decodes to the byte-identical proof)
 #
 # The async-registration contract this acceptance-tests: no single consumer
 # call blocks for the chain's confirmation latency. The registerMembership
@@ -208,7 +211,12 @@ SIGNAL_HEX=$(printf '%s' "$GEN" | jfield signal_hex)
 PROOF_JSON=$(printf '%s' "$GEN" | python3 -c \
     'import json,sys; print(json.dumps(json.load(sys.stdin)["proof"], separators=(",",":")))') \
     || die "cannot extract proof from: $GEN"
-say "proof issued (epoch $(printf '%s' "$PROOF_JSON" | jfield epoch_index))"
+# The message-wire blob (0.6.1): delivery ships exactly these bytes as
+# message.proof. 289 bytes = 578 hex chars.
+PROOF_BLOB=$(printf '%s' "$PROOF_JSON" | jfield proof_canonical)
+[ "${#PROOF_BLOB}" = "578" ] \
+    || die "proof_canonical missing or wrong length (${#PROOF_BLOB} hex chars, want 578): $PROOF_JSON"
+say "proof issued (epoch $(printf '%s' "$PROOF_JSON" | jfield epoch_index); proof_canonical 289B)"
 
 QUOTA=$(node_call "$NODE" nim_rln_consumer getEpochQuota "str:$TS" | jres | jval) || QUOTA=""
 case "$QUOTA" in
@@ -233,11 +241,13 @@ for _t in $(seq 1 "$(polls "$E2E_ROOT_WINDOW_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"
         "$(argfile sig "$SIGNAL_HEX")" "str:$TS" "$(argfile proof "$PROOF_JSON")" | jres | jval) || VERIFY=""
     case "$VERIFY" in
         *'"verdict":"valid"'*)   VALID=yes; break ;;
-        # A proof generated right after activation can be one root-refresh
-        # (~10s) ahead of the validator's window: warm-but-stale windows
-        # answer "invalid", not not_ready. Real consumer-facing behavior —
-        # retry within the window budget. (The tampered check below still
-        # expects invalid immediately, once a valid verdict proved freshness.)
+        # A proof generated right after activation can be ahead of the
+        # validator's window: warm-but-stale windows answer "invalid", not
+        # not_ready. Since 0.6.1 the miss also nudges a rate-limited window
+        # refresh and generate adopts its own fresh root, so this typically
+        # clears in ONE retry — but the consumer still owns that retry.
+        # (The tampered check below still expects invalid immediately, once
+        # a valid verdict proved freshness.)
         *'"verdict":"invalid"'*) say "  invalid — root window likely one refresh behind ($_t)"; sleep "$E2E_POLL_INTERVAL_S" ;;
         *'not_ready'*)           say "  root window still cold ($_t)"; sleep "$E2E_POLL_INTERVAL_S" ;;
         *) die "validateMessageProof failed: ${VERIFY:-<empty>}" ;;
@@ -267,6 +277,18 @@ DVERIFY=$(node_call "$NODE" nim_rln_consumer validateMessageProof \
 case "$DVERIFY" in
     *'"verdict":"duplicate"'*) say "identical re-validate correctly duplicate" ;;
     *) die "duplicate detection failed: ${DVERIFY:-<empty>}" ;;
+esac
+
+# The blob-only form — delivery's actual message wire: {"proof": <hex>} with
+# no decomposed fields. `duplicate` (not invalid, not an error) proves the
+# blob is accepted AND lands in the byte-identical verified representation
+# (same nullifier) as the decomposed validate above.
+BVERIFY=$(node_call "$NODE" nim_rln_consumer validateMessageProof \
+    "$(argfile sig4 "$SIGNAL_HEX")" "str:$TS" \
+    "$(argfile proof4 "{\"proof\":\"$PROOF_BLOB\"}")" | jres | jval) || BVERIFY=""
+case "$BVERIFY" in
+    *'"verdict":"duplicate"'*) say "blob-only validate ({\"proof\": proof_canonical}) correctly duplicate" ;;
+    *) die "blob-only validate failed (want duplicate): ${BVERIFY:-<empty>}" ;;
 esac
 
 echo
