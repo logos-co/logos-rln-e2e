@@ -51,12 +51,13 @@ probes D/G):
   `retryable` flag) moments later. Activation arrives via
   `get_membership_state` polling or the `membership_state_changed` event —
   your own docs/rln.md's async model; the consuming half is what's missing.
-- **The 10s `rlnInvoke` timeout is fine as-is** — `register` returns
-  `pending` fast, and a dropped late response self-heals: registration
-  continues module-side, and your next start's re-register returns the
-  existing membership (idempotent per scope, `pending`/`active`/
-  `grace_period` never double-mint; probe G proves it across a real
-  restart).
+- **Timeouts are now per-op** (your 95e7e3c7, matching the module's
+  documented budgets): 95 s for the registry-read ops (`register`,
+  `get_membership_state`, `generate_proof`), 10 s for the local rest.
+  A dropped late response still self-heals: registration continues
+  module-side, and your next start's re-register returns the existing
+  membership (idempotent per scope, `pending`/`active`/`grace_period`
+  never double-mint; probe G proves it across a real restart).
 - **`erased` can hit an active membership at any time.** Recovery from any
   terminal state (`failed`, `expired`, `erased`) is just calling
   `register` again.
@@ -67,27 +68,27 @@ probes D/G):
 
 ## 3. The wire, post-0.6.0
 
-- **`validate_proof` is the name** — the LIP and the module agree; your
-  seam's `verify_proof` was the last outlier. The rename is carried by the
-  `rln/integration-fixes` stack (callback typedef, struct field, nim
-  wrapper, plus the delivery-module shim's initializer) — the shim's
-  *event* names stay `rlnVerifyProofRequest`.
+- **`validate_proof` is the name** — the LIP and the module agree, and
+  your 95e7e3c7 carries the rename natively now (the stack's rename
+  commit retired). The delivery-module shim follows; its *event* names
+  stay `rlnVerifyProofRequest`.
 - **Verdict spelling is the module wire, lowercase snake_case** —
   `valid` / `invalid` / `duplicate` / `rate_limit_violation`, crossing
-  verbatim inside `ok` (a responder passes the module reply through
-  untouched). Your original parser matched `"VALID"` etc. — spelling that
-  matches neither the wire nor the LIP's serialization of its `PROOF_*`
-  constants — so every real validation fell through to "unknown verdict"
-  → Reject. Fixed in the stack; the spelling is now also pinned in your
-  delivery-module `docs/rln.md` and asserted live by the send leg.
-- **Your `RegistryOptions` array is the module wire verbatim** — a
-  responder passes `options_json` straight through, no adaptation. The
-  LIP (#376) is the single schema authority.
-- Verdicts are `ok` values, never `err`. The four error kinds map onto
-  your `NOT_READY | TRANSIENT | BUDGET_EXHAUSTED | PERMANENT` (envelope
-  kinds are UPPER_SNAKE; only they are); **`permanent` means never
-  retry** (epoch below the persisted floor, epoch-size mismatch —
-  re-register to recover).
+  verbatim (your 95e7e3c7 parses the module's native replies; the
+  UPPERCASE parser is history) and asserted live by the send leg.
+- **The ok/err envelope is retired** — your library now parses the
+  module's own wire dialects and the responder forwards replies VERBATIM:
+  the LogosResult envelope for `start`/`stop`/`get_epoch_quota`/
+  `generate_proof`/`validate_proof`, the compact tstr reply (in-band
+  `{"error":{"class":…}}`) for `register`/`get_membership_state`. Error
+  `class` is lowercase; **`permanent` means never retry** (epoch below
+  the persisted floor, epoch-size mismatch — re-register to recover).
+- **Your `RegistryOptions` array is the module wire verbatim** — with the
+  stack's register retype (your 95e7e3c7's positional `rate_limit` +
+  flat options object was the module's 0.5 wire): the module's 0.6
+  `register()` takes the key/value-pair ARRAY with `rate_limit` as a
+  key, the same shape as your own `RlnInterface`. The LIP (#376) is the
+  single schema authority.
 - **The message wire carries ONE opaque proof field**: `generate_proof`
   replies include `proof_canonical` (wire 0.6.1) — the full 289-byte
   canonical zerokit serialization as hex. Ship exactly those bytes as
@@ -158,24 +159,23 @@ Your branch surfaced these; our stopgaps are marked:
 
 1. **Bring-up scope — ANSWERED at a48f8b8a**: `rln-relay-lez` /
    `rln-relay-registry-id` / `rln-relay-identifier` /
-   `rln-relay-user-message-limit` in `createNode`'s flat conf; the env
-   fork is retired and the acceptance drives these keys directly. Loose
-   ends: options collapsed to just `rate_limit` (= userMessageLimit), and
-   `epochSizeSec`/`creds` are carried into `WakuRlnLezConfig` but never
-   read on the LEZ path — either wire `rln-relay-epoch-sec` into
-   `start()` scope (see 2) or drop the fields.
-2. **`start` carries no scope**, so every responder must know registry +
-   epoch size out of band (two responders currently guess separately).
-   Recommendation: the party that calls `logosdelivery_rln_set_callbacks`
-   owns `start()` config, sourced from the same node-conf section, using
-   the module's per-registry `epoch_size_sec`/`max_epoch_gap` overrides.
-3. **No options key carries funding** — our responder injects
-   `funding_holding_account_id` itself. Who pays for a registration is an
-   open design question; the module passes the key through today.
+   `rln-relay-user-message-limit` / `rln-relay-registry-options` in
+   `createNode`'s flat conf; the env fork is retired and the acceptance
+   drives these keys directly.
+2. **RESOLVED (your 95e7e3c7): `start` carries the module's start
+   config** — `{"epoch_size_sec", "registries"}` built from the node's
+   own conf, so responders no longer need the scope out of band. The
+   acceptance asserts the event's config carries the configured epoch and
+   registry.
+3. **RESOLVED: funding rides the conf** — `rln-relay-registry-options`
+   (flat JSON object) feeds registry-specific pairs into the register
+   options array; the acceptance passes `funding_holding_account_id`
+   this way and asserts it crosses — the responder injects nothing.
 
 ## 7. Responder contract (for whoever answers the events)
 
-Reply envelope: `{"ok": <module reply>}` or
-`{"err":{"kind":…,"message":…}}` with the four kinds above — enforced by
-`scenarios/delivery-rln/run.sh:196-200`, which also greps your library's
-own log lines to prove the responses landed inside the 10s windows.
+Forward the module's reply VERBATIM — a responder is a router, not a
+translator. `scenarios/delivery-rln/run.sh` is the reference: it routes
+each `rln*Request` to `liblogos_rln_module` and hands the raw reply to
+`rlnRespond`, and it greps your library's own log lines to prove the
+responses landed inside the per-op budgets.

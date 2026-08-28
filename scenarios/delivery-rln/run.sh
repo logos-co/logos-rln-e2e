@@ -1,32 +1,39 @@
 #!/usr/bin/env bash
 # scenarios/delivery-rln — end-to-end acceptance for logos-delivery's RLN
-# integration (branch impl-plugable-rln-api-module + the rln/integration-fixes
-# stack on BOTH logos-delivery and logos-delivery-module) against the REAL
-# RLN module stack.
+# integration (branch impl-plugable-rln-api-module REBASED onto
+# feat/rln-api-structure a0560b5d — the rln/integration-fixes stacks on
+# BOTH logos-delivery and logos-delivery-module) against the REAL RLN
+# module stack.
 #
 # The seam under test is event-out/respond-in: liblogosdelivery's rlnInvoke
 # fires a C callback into delivery_module, which re-emits it as an
 # rln*Request logos event; whoever handles it answers via
 # delivery_module.rlnRespond(reqId, resultJson). THIS SCRIPT runs a
 # background responder per node, bridging every request to
-# liblogos_rln_module and feeding the real reply back.
+# liblogos_rln_module and feeding the MODULE'S REPLY BACK VERBATIM — since
+# the seam rework (delivery's 95e7e3c7) the library parses the module's own
+# wire dialects and the ok/err envelope is gone.
 #
 # What it proves:
 #   1. co-residency: the RLN stack + the RLN-enabled delivery_module load in
 #      one daemon, on both nodes.
 #   2. bring-up via the REAL config surface: rln-relay-lez /
 #      rln-relay-registry-id / rln-relay-identifier /
-#      rln-relay-user-message-limit ride createNode's flat conf (the
-#      env-injection fork is retired), and the rlnRegisterRequest that
-#      crosses is asserted byte-exact against what we configured.
+#      rln-relay-user-message-limit / rln-relay-registry-options ride
+#      createNode's flat conf, the rlnStartRequest carries the module's
+#      start config (epoch + registries — no more out-of-band responder
+#      knowledge), and the rlnRegisterRequest options array is asserted to
+#      carry the configured scope, rate AND the conf-fed funding pair (the
+#      responder injects nothing).
 #   3. keystore custody default: NO unlock call anywhere — the module
 #      self-provisions its own secret (the headless deployment shape;
 #      contract: docs/delivery-integration.md §1).
 #   4. registration is REAL on n1 (pending -> active on the target chain),
-#      answered inside the library's hard 10s rlnInvoke windows. n2's
-#      register is answered with an err ON PURPOSE: a failed best-effort
-#      registration must degrade (the node still starts, relays and
-#      validates) instead of failing bring-up.
+#      answered inside the library's per-op budgets (95 s for registry-read
+#      ops, 10 s local). n2's register is answered with a module-shaped
+#      error ON PURPOSE: a failed best-effort registration must degrade
+#      (the node still starts, relays and validates) instead of failing
+#      bring-up.
 #   5. the message path, end to end: n1 send -> rlnGenerateProofRequest ->
 #      module generate_proof (its proof_canonical bytes become
 #      message.proof) -> gossipsub -> n2's validator ->
@@ -38,11 +45,13 @@
 #
 # Required checkouts (the integration branches have no flake pins):
 #   DELIVERY_MODULE_CHECKOUT  logos-delivery-module @ rln/integration-fixes
-#                             (validate_proof struct field + verdict docs)
+#                             (rebased: start-config event + verbatim-reply
+#                             docs; fork adklempner/logos-delivery-module)
 #   LOGOS_DELIVERY_CHECKOUT   logos-delivery @ rln/integration-fixes
-#                             (a48f8b8a + rln/api types + verdict parsing +
-#                             errors->Ignore + the prover leg); submodules
-#                             checked out
+#                             (impl branch rebased onto the api structure +
+#                             errors->Ignore + prover leg + RegistryOptions
+#                             register; fork adklempner/logos-delivery);
+#                             submodules checked out
 #   RLN_MODULES_CHECKOUT      logos-rln-modules with the 0.6.1 stack
 #                             (proof_canonical on generate_proof replies)
 #
@@ -154,30 +163,21 @@ say "registry: $REGISTRY_ID (bring-up scope, rate $RATE_LIMIT)"
 
 # ---------- the responder (one background loop per node) ---------------------
 # Bridges every rln*Request the delivery module emits to liblogos_rln_module
-# and answers with the reply envelope every responder must speak
-# (delivery-module docs/rln.md): {"ok": <module reply>} |
-# {"err":{"kind","message"}}. Verdicts/statuses inside ok are the module's
-# lowercase wire verbatim; envelope kinds are the seam's UPPER_SNAKE.
+# and answers with THE MODULE'S REPLY VERBATIM (delivery-module docs/rln.md):
+# the library parses the module's two wire dialects itself — the LogosResult
+# envelope for start/stop/get_epoch_quota/generate_proof/validate_proof, the
+# compact tstr reply (in-band {"error":{...}}) for register_membership /
+# get_membership_state. No re-wrapping, no kind mapping: a responder is a
+# router, not a translator.
 # reqId values >= 2^63 print negative — echoed back unchanged.
 
 b64d() { printf '%s' "$1" | base64 -d; }
 
-# Map a module error reply onto the seam's envelope err (THE kind mapping a
-# production router owes the seam): not_ready/budget_exhausted pass through
-# uppercased, permanent+invalid_argument are PERMANENT, the rest TRANSIENT.
-seam_err_from_module() {
-    printf '%s' "$1" | python3 -c '
-import json, sys
-try:
-    kind = json.load(sys.stdin).get("kind", "")
-except Exception:
-    kind = ""
-seam = {"not_ready": "NOT_READY", "budget_exhausted": "BUDGET_EXHAUSTED",
-        "permanent": "PERMANENT", "invalid_argument": "PERMANENT"}.get(kind, "TRANSIENT")
-print(json.dumps({"err": {"kind": seam, "message": "module: " + (kind or "no reply")}},
-                 separators=(",", ":")))' 2>/dev/null \
-        || printf '{"err":{"kind":"TRANSIENT","message":"module: no reply"}}'
-}
+# Module-shaped failures for when the module CALL itself dies (no reply at
+# all) — result dialect / tstr dialect respectively.
+RESULT_FAIL='{"success":false,"error":"{\"class\":\"transient\",\"kind\":\"e2e_no_reply\",\"message\":\"module call failed\"}"}'
+TSTR_FAIL='{"error":{"class":"transient","kind":"e2e_no_reply","message":"module call failed"}}'
+TSTR_FAIL_REFUSED='{"error":{"class":"transient","kind":"e2e_refused","message":"validator node registers nothing (deliberate)"}}'
 
 rln_respond() {
     local node="$1" req="$2" payload="$3" note="$4" res
@@ -196,75 +196,82 @@ answer_event() {
     req=$(b64d "$a0")
     case "$ev" in
     rlnStartRequest)
-        local res
-        res=$(node_call "$node" liblogos_rln_module start \
-            "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"]}" \
-            | jres | jval) || res=""
+        # (reqId, configJson) — the start config rides the seam now: epoch
+        # size + registries come from the NODE's conf through the library;
+        # the responder just routes it to the module.
+        local cfg res note
+        cfg=$(b64d "$a1")
+        case "$cfg" in
+            *"$REGISTRY_ID"*) : ;;
+            *) echo "responder[$node]: WARN start config lacks the registry: $cfg" ;;
+        esac
+        res=$(node_call "$node" liblogos_rln_module start "$cfg" | jres) || res=""
+        [ -n "$res" ] || res="$RESULT_FAIL"
         case "$res" in
-            *'"started":true'*) rln_respond "$node" "$req" "{\"ok\":$res}" "start ok" ;;
-            *) rln_respond "$node" "$req" "$(seam_err_from_module "$res")" \
-                "start ERR: ${res:-<empty>}" ;;
-        esac ;;
+            *'"success":true'*) note="start ok" ;;
+            *) note="start ERR: $res" ;;
+        esac
+        rln_respond "$node" "$req" "$res" "$note" ;;
     rlnRegisterRequest)
         if [ "$node" = "n1" ]; then
-            # The event's LIP RegistryOptions array IS the module wire — pass
-            # it through verbatim, appending only the funding pair the seam
-            # has no field for.
-            local opts reg
-            opts=$(b64d "$a3" | python3 -c '
-import json, sys
-o = json.load(sys.stdin)
-o.append({"key": "funding_holding_account_id", "value": sys.argv[1]})
-print(json.dumps(o, separators=(",", ":")))' "$HOLDING") || opts=""
+            # (reqId, registryId, rlnIdentifier, optionsJson) — the options
+            # array arrives COMPLETE from the node's conf (rate_limit + the
+            # funding pair via rln-relay-registry-options); it IS the
+            # module's 0.6 register wire, so it passes through untouched
+            # and the module's tstr reply goes back verbatim.
+            local reg note
             reg=$(node_call "$node" liblogos_rln_module register \
                 "$(b64d "$a1")" "$(argfile "rr_${node}_${RANDOM}" "$(b64d "$a2")")" \
-                "$opts" | jres) || reg=""
+                "$(b64d "$a3")" | jres) || reg=""
+            [ -n "$reg" ] || reg="$TSTR_FAIL"
             case "$reg" in
                 *'"state":"pending"'*)
-                    rln_respond "$node" "$req" "{\"ok\":$reg}" \
-                        "register ok (pending $(printf '%s' "$reg" | jfield membership_hash))" ;;
-                *) rln_respond "$node" "$req" "$(seam_err_from_module "$reg")" \
-                    "register ERR: ${reg:-<empty>}" ;;
+                    note="register ok (pending $(printf '%s' "$reg" | jfield membership_hash))" ;;
+                *) note="register ERR: $reg" ;;
             esac
+            rln_respond "$node" "$req" "$reg" "$note"
         else
             # Deliberate: the validator node keeps no membership. A failed
             # best-effort registration must degrade, not break bring-up —
             # asserted later via n2's own notice log + working validate.
-            rln_respond "$node" "$req" \
-                '{"err":{"kind":"TRANSIENT","message":"e2e: validator node registers nothing (deliberate)"}}' \
+            # The refusal is a module-shaped tstr error.
+            rln_respond "$node" "$req" "$TSTR_FAIL_REFUSED" \
                 "register deliberately refused (degradation probe)"
         fi ;;
     rlnGenerateProofRequest)
-        # (reqId, registryId, rlnIdentifier, signalHex, epochTimestamp)
-        local out
+        # (reqId, registryId, rlnIdentifier, signalHex, epochTimestamp) —
+        # the module's result envelope goes back verbatim; the library digs
+        # value.proof_canonical out itself.
+        local out note
         out=$(node_call "$node" liblogos_rln_module generate_proof \
             "$(b64d "$a1")" "$(argfile "gp_${node}_${RANDOM}" "$(b64d "$a2")")" \
             "$(argfile "gs_${node}_${RANDOM}" "$(b64d "$a3")")" \
-            "str:$(b64d "$a4")" | jres | jval) || out=""
+            "str:$(b64d "$a4")" | jres) || out=""
+        [ -n "$out" ] || out="$RESULT_FAIL"
         case "$out" in
             *'"proof_canonical"'*)
-                rln_respond "$node" "$req" "{\"ok\":$out}" \
-                    "generate ok (slot $(printf '%s' "$out" | jfield message_id))" ;;
-            *) rln_respond "$node" "$req" "$(seam_err_from_module "$out")" \
-                "generate ERR: ${out:-<empty>}" ;;
-        esac ;;
+                note="generate ok (slot $(printf '%s' "$out" | jval | jfield message_id))" ;;
+            *) note="generate ERR: $out" ;;
+        esac
+        rln_respond "$node" "$req" "$out" "$note" ;;
     rlnVerifyProofRequest)
         # (reqId, registryId, rlnIdentifier, signalHex, epochTimestamp,
         #  proofJson) — still Verify-named on the event surface; the module
-        # method is validate_proof (THE mapping).
-        local out verdict
+        # method is validate_proof (THE mapping). Envelope forwarded verbatim.
+        local out verdict note
         out=$(node_call "$node" liblogos_rln_module validate_proof \
             "$(b64d "$a1")" "$(argfile "vp_${node}_${RANDOM}" "$(b64d "$a2")")" \
             "$(argfile "vs_${node}_${RANDOM}" "$(b64d "$a3")")" \
             "str:$(b64d "$a4")" \
-            "$(argfile "vj_${node}_${RANDOM}" "$(b64d "$a5")")" | jres | jval) || out=""
+            "$(argfile "vj_${node}_${RANDOM}" "$(b64d "$a5")")" | jres) || out=""
+        [ -n "$out" ] || out="$RESULT_FAIL"
         case "$out" in
             *'"verdict"'*)
-                verdict=$(printf '%s' "$out" | jfield verdict)
-                rln_respond "$node" "$req" "{\"ok\":$out}" "verify verdict=$verdict" ;;
-            *) rln_respond "$node" "$req" "$(seam_err_from_module "$out")" \
-                "verify ERR: ${out:-<empty>}" ;;
-        esac ;;
+                verdict=$(printf '%s' "$out" | jval | jfield verdict)
+                note="verify verdict=$verdict" ;;
+            *) note="verify ERR: $out" ;;
+        esac
+        rln_respond "$node" "$req" "$out" "$note" ;;
     *)
         echo "responder[$node]: ignoring $ev (reqId $req)" ;;
     esac
@@ -369,9 +376,9 @@ CLAIM_RES=$(node_call n1 liblogos_lez_rln_module claim_tokens \
 [ -n "$CLAIM_RES" ] || die "claim_tokens failed"
 wait_balance n1 "$HOLDING" "$CLAIM" >/dev/null || die "faucet credit never landed (want $CLAIM)"
 
-# Pre-warm both modules' root windows: responder-answered start calls must
-# fit the library's 10s rlnInvoke budget, and a cold start's registry read
-# can eat most of that on a slow target. start is idempotent.
+# Pre-warm both modules' root windows: start sits in the library's 10s
+# LOCAL budget, and a cold start's registry read can eat most of that on a
+# slow target. start is idempotent.
 for n in $NODES_ALL; do
     PREWARM=$(node_call "$n" liblogos_rln_module start \
         "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"]}" | jres | jval) || PREWARM=""
@@ -391,19 +398,21 @@ for n in $NODES_ALL; do
 done
 say "responders: one background bridge per node"
 
-# The RLN scope rides createNode's flat conf — the keys delivery added at
-# a48f8b8a. No env injection, no fork patch.
+# The RLN scope rides createNode's flat conf. n1 additionally carries the
+# funding pair via rln-relay-registry-options — the conf-fed path that
+# retires the responder's payer injection (the seam finally has a field
+# for who funds a registration).
 delivery_cfg() {
-    local port="$1" peers="$2"
-    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"rln-relay":true,"rln-relay-lez":true,"rln-relay-registry-id":"%s","rln-relay-identifier":"%s","rln-relay-user-message-limit":%s,"rln-relay-epoch-sec":%s%s}' \
+    local port="$1" peers="$2" extra="$3"
+    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"rln-relay":true,"rln-relay-lez":true,"rln-relay-registry-id":"%s","rln-relay-identifier":"%s","rln-relay-user-message-limit":%s,"rln-relay-epoch-sec":%s%s%s}' \
         "$port" "$CLUSTER_ID" "$REGISTRY_ID" "$RLN_ID" "$RATE_LIMIT" \
-        "$E2E_EPOCH_SIZE_SEC" "${peers:+,\"staticnodes\":[\"$peers\"]}"
+        "$E2E_EPOCH_SIZE_SEC" "$extra" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
 delivery_up() {
-    local node="$1" peers="$2" port cfg peerid
+    local node="$1" peers="$2" extra="${3:-}" port cfg peerid
     port=$(( BASE_PORT + ${node#n} ))
-    cfg=$(delivery_cfg "$port" "$peers")
+    cfg=$(delivery_cfg "$port" "$peers" "$extra")
     must_call "$node" createNode "createNode" "$(argfile "cfg_$node" "$cfg")" >/dev/null
     must_call "$node" start "start (dispatch)" >/dev/null
     node_wait_event "$node" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
@@ -414,11 +423,24 @@ delivery_up() {
     sv MADDR "$node" "/ip4/127.0.0.1/tcp/$port/p2p/$peerid"
 }
 
-delivery_up n1 ""
+FUNDING_OPTS=$(printf ',"rln-relay-registry-options":"{\\"funding_holding_account_id\\":\\"%s\\"}"' "$HOLDING")
+delivery_up n1 "" "$FUNDING_OPTS"
 delivery_up n2 "$(gv MADDR n1)"
 
 # ---------- bring-up assertions ----------------------------------------------
 section "bring-up assertions"
+
+# The start event must carry the module's start config, built from the
+# node's OWN conf — the epoch size and registry no longer arrive out of
+# band at the responder (the old finding-8 gap, now closed).
+EVT1=$(node_wait_event n1 delivery_module rlnStartRequest 5) \
+    || die "n1 emitted no rlnStartRequest"
+EV_CFG=$(evt_arg "$EVT1" 1)
+case "$EV_CFG" in
+    *'"epoch_size_sec"'*"$REGISTRY_ID"*) ;;
+    *) die "rlnStartRequest config lacks epoch/registry: '$EV_CFG'" ;;
+esac
+say "n1: start request carries the module start config (epoch + registry) from the node conf"
 
 # The register event n1's library emitted must carry the CONFIGURED scope —
 # this is what the real config surface exists to prove.
@@ -437,7 +459,13 @@ kv = {o.get("key"): o.get("value") for o in json.load(sys.stdin) if isinstance(o
 print(kv.get("rate_limit", ""))' 2>/dev/null) || EV_RATE=""
 [ "$EV_RATE" = "$RATE_LIMIT" ] \
     || die "rlnRegisterRequest rate_limit mismatch: options carried '$EV_RATE', want '$RATE_LIMIT' — options: $EV_OPTS"
-say "n1: register request carries the configured scope byte-exact"
+EV_FUNDING=$(printf '%s' "$EV_OPTS" | python3 -c '
+import json, sys
+kv = {o.get("key"): o.get("value") for o in json.load(sys.stdin) if isinstance(o, dict)}
+print(kv.get("funding_holding_account_id", ""))' 2>/dev/null) || EV_FUNDING=""
+[ "$EV_FUNDING" = "$HOLDING" ] \
+    || die "rlnRegisterRequest funding mismatch: options carried '$EV_FUNDING', want '$HOLDING' — options: $EV_OPTS"
+say "n1: register options carry the configured scope, rate AND the conf-fed funding pair"
 
 # Timeouts also resolve the library's awaits (best-effort bring-up), so
 # nodeStarted alone doesn't prove the responses LANDED — the library's own
@@ -454,8 +482,8 @@ for _t in $(seq 1 15); do
     sleep 1
 done
 [ "$REG_LOGGED" = 1 ] \
-    || die "n1's library never logged 'RLN membership registered' — responses may have raced the 10s window"
-say "n1: library log confirms start + register landed inside the 10s windows"
+    || die "n1's library never logged 'RLN membership registered' — responses may have raced the library's budget"
+say "n1: library log confirms start + register landed inside the per-op budgets"
 
 # n2: the deliberately-refused registration degraded instead of breaking
 # bring-up (nodeStarted already proved the node came up).
@@ -537,7 +565,8 @@ say "n1 proofs generated: $GEN_COUNT (each a real slot); n2 verdicts: $N2_VERDIC
 
 echo
 echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
-echo "e2e:   config    rln-relay-lez/-registry-id/-identifier/-user-message-limit (no env fork)"
+echo "e2e:   config    rln-relay-lez/-registry-id/-identifier/-user-message-limit/-registry-options (funding via conf, no responder injection)"
+echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
 echo "e2e:   bring-up  n1 start+register ok (ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH); n2 register refused -> degraded gracefully"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
