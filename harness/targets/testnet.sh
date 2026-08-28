@@ -103,6 +103,14 @@ target_up() {
     cp "$E2E_WALLET_HOME/storage.json.seed" "$E2E_WALLET_HOME/storage.json" \
         || die "no storage.json.seed in $E2E_WALLET_HOME"
 
+    # An old stage.sh emits a wallet_config without the calibration cap;
+    # v0.2.2's open then runs 100 sequential sequencer probes and wedges the
+    # module's dispatch queue on a slow LB — the classic "Statistics not
+    # found, then silence" wallet-open failure. Fail early with the cause.
+    jq -e '.multi_sequencer_client_config.calibration_limit' \
+        "$E2E_WALLET_HOME/wallet_config.json" >/dev/null 2>&1 \
+        || die "staged wallet_config.json lacks multi_sequencer_client_config — this stage.sh predates the calibration fix; point LEZ_RLN_CHECKOUT at a logos-lez-rln with it"
+
     E2E_TREE_ID=$(grep -oE 'LEZ_RLN_TREE_ID_HEX=[0-9a-f]{64}' "$E2E_WALLET_HOME/env.sh" | cut -d= -f2)
     E2E_CONFIG_ACCOUNT=$(tr -d '\n\r' < "$E2E_WALLET_HOME/config_account.txt")
     E2E_FUNDING=$(tr -d '\n\r' < "$E2E_WALLET_HOME/funding.txt")
