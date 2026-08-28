@@ -1,14 +1,27 @@
 /* The RLN module seam, mirrored from logos-delivery's
- * library/liblogosdelivery_rln.h (branch impl-plugable-rln-api-module +
- * the rln/integration-fixes stack, refreshed 2026-08-27 — the typed
- * one-callback-per-function surface, now carrying the verify_proof ->
- * validate_proof rename) with the prefix renamed. Scalar args cross
- * directly; complex args (options, proof) and every result are JSON
- * strings. Results use the reply envelope {"ok": <result>} | {"err":
- * {"kind","message"}} (delivery-module docs/rln.md). The op and the RLN
- * module method are both named `validate_proof` — one name end to end.
- * All strings are borrowed for the duration of the call — copy before
- * returning. */
+ * library/liblogosdelivery_rln.h (branch impl-plugable-rln-api-module
+ * rebased onto feat/rln-api-structure — the rln/integration-fixes stack,
+ * refreshed 2026-08-28) with the prefix renamed. The op set and types
+ * match delivery's client-facing RlnInterface (waku/rln/rln.nim +
+ * waku/rln/types.nim — 7 ops, scope on every call, uint64-seconds
+ * timestamps, 4 verdicts, 9 statuses, 4 error kinds). Scalar args cross
+ * directly; complex args (config, options, proof) and every result are
+ * JSON strings.
+ *
+ * Since the seam rework (delivery's 95e7e3c7) results follow the RLN
+ * module's OWN wire dialects, forwarded verbatim — the ok/err envelope is
+ * retired:
+ * - start/stop/generate_proof/validate_proof/get_epoch_quota answer with
+ *   the module's LogosResult envelope {"success":bool,"value":…,"error":…}
+ *   where a failure's error is the JSON-encoded typed object
+ *   {"class":…,"kind":…,"message":…} (class: not_ready | transient |
+ *   budget_exhausted | permanent).
+ * - register_membership/get_membership_state answer with the module's
+ *   compact JSON reply; failures are the in-band envelope
+ *   {"error":{"class":…,…}}.
+ * The op and the RLN module method are both named `validate_proof` — one
+ * name end to end. All strings are borrowed for the duration of the call —
+ * copy before returning. */
 #pragma once
 #ifndef __rlnconsumer_rln__
 #define __rlnconsumer_rln__
@@ -17,7 +30,11 @@
 extern "C" {
 #endif
 
-typedef void (*RlnConsumerRlnStartFn)(uint64_t req_id, void* user_data);
+/* config_json is the RLN module's start() config — at minimum
+   {"epoch_size_sec":N}, plus "registries" to warm — built by the library
+   from its own configuration and passed to the module verbatim. */
+typedef void (*RlnConsumerRlnStartFn)(uint64_t req_id, const char* config_json,
+                                      void* user_data);
 
 typedef void (*RlnConsumerRlnStopFn)(uint64_t req_id, void* user_data);
 

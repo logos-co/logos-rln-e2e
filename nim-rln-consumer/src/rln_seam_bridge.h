@@ -9,21 +9,21 @@
 // owns the RlnModuleClient — lp clients are owner-thread-bound, and a single
 // worker gives every module call a consistent, live owner.
 //
-// Response convention — the reply envelope delivery-module docs/rln.md
-// documents for every responder:
-//   {"ok": <module reply>} | {"err": {"kind": <LIP kind>, "message": ...}}
-// with kind one of NOT_READY | TRANSIENT | BUDGET_EXHAUSTED | PERMANENT.
-// The tstr/result dialect split of the module wire is absorbed here, so the
-// Nim side sees only the envelope. The seam op and the module method are
-// both named `validate_proof` (one name end to end since the
-// rln/integration-fixes rename).
+// Response convention — since the seam rework (delivery's 95e7e3c7) the
+// responder forwards the MODULE'S REPLY VERBATIM in the module's own wire
+// dialects (delivery-module docs/rln.md): the LogosResult envelope for
+// result-dialect ops, the compact tstr reply (in-band {"error":{...}}) for
+// register_membership / get_membership_state. This bridge is a router, not
+// a translator — only a transport failure (lp call dies outright) is
+// synthesized, in the op's own dialect shape. The Nim side owns the dialect
+// parsing, exactly as delivery's rln_api.nim does. The seam op and the
+// module method are both named `validate_proof` (one name end to end).
 //
-// The seam's start op carries no scope, so the module's start config
-// ({epoch_size_sec, registries}) is bridge-owned: the plugin hands it over
-// at createConsumer (setStartScope) — the out-of-band knowledge any real
-// responder needs. Register options arrive as the LIP RegistryOptions
-// key/value array; the bridge maps them onto the module's
-// register(rate_limit, options_object) wire.
+// The start op carries the module's start config (built by the Nim library
+// from the consumer's own configuration) — the bridge owns no out-of-band
+// start knowledge. Register options arrive as the LIP RegistryOptions
+// key/value array, which IS the module's 0.6 register wire — passed
+// through verbatim.
 
 #include <condition_variable>
 #include <cstdint>
@@ -52,10 +52,6 @@ public:
     // variant deadlocks exactly there.)
     void install();
 
-    // The module start config the seam cannot carry. Called by the plugin's
-    // createConsumer (any dispatch thread).
-    void setStartScope(const std::string& registryId, const std::string& epochSizeSec);
-
     // Subscribe to liblogos_rln_module's membership_state_changed and forward
     // the 5-string payload. Rides the main-owned lp client; callable from any
     // dispatch thread. Returns true once subscribed.
@@ -70,6 +66,7 @@ private:
         uint64_t reqId = 0;
         Op op = Op::Start;
         // Typed seam args; each op fills what its callback carries.
+        std::string configJson; // start: the module's start() config, verbatim
         std::string registryId;
         std::string rlnIdentifier;
         std::string signalHex;
@@ -81,10 +78,15 @@ private:
     void enqueue(Job job);
     void workerLoop();
     std::string serveOp(const Job& job);
+    static bool isTstrOp(Op op);
+    // A module-shaped transport failure in the op's own dialect (the only
+    // thing this bridge ever synthesizes).
+    static std::string transportFail(Op op, const std::string& cls,
+                                     const std::string& kind, const std::string& msg);
 
     // One typed trampoline per callback (the shape delivery_module itself
     // uses): copy the borrowed strings, queue, return.
-    static void startTrampoline(uint64_t reqId, void* userData);
+    static void startTrampoline(uint64_t reqId, const char* configJson, void* userData);
     static void stopTrampoline(uint64_t reqId, void* userData);
     static void registerTrampoline(uint64_t reqId, const char* registryId,
                                    const char* rlnIdentifier, const char* optionsJson,
@@ -108,10 +110,6 @@ private:
     bool m_stopping = false;
     bool m_installed = false;
     std::thread m_worker;
-
-    // start scope (guarded by m_lock; set once at createConsumer)
-    std::string m_startRegistryId;
-    std::string m_startEpochSizeSec;
 
     RlnModuleClient m_rln; // lp client created in install() (main thread)
 };

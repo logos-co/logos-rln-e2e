@@ -59,10 +59,11 @@ case "$OUT" in
 esac
 
 section "RLN op without the RLN module"
-# startRln must travel the whole seam and fail CLEANLY: Nim rlnStart() ->
-# typed op callback -> bridge worker -> lp client fails (no
-# liblogos_rln_module) -> {"err":{"kind","message"}} envelope (or the seam's
-# 10s TRANSIENT timeout, whichever lands first) -> Nim err -> plugin failure.
+# startRln must travel the whole seam and fail CLEANLY: Nim rlnStart(config)
+# -> typed op callback -> bridge worker -> lp client fails (no
+# liblogos_rln_module) -> module-shaped transport failure (result dialect;
+# or the seam's local-op timeout, whichever lands first) -> Nim err ->
+# plugin failure.
 # A hang here means the seam lost a completion; a crash means the bridge
 # didn't survive an lp failure.
 OUT=$(node_call "$NODE" nim_rln_consumer startRln | jres)

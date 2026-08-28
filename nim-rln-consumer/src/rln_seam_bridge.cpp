@@ -18,50 +18,23 @@ std::string toStringOrEmpty(const char* s)
     return s ? s : "";
 }
 
-// The envelope every responder must speak (delivery-module docs/rln.md).
-std::string makeOk(const json& value)
-{
-    return json{{"ok", value}}.dump();
-}
-
-std::string makeErr(const std::string& kind, const std::string& message)
-{
-    return json{{"err", {{"kind", kind}, {"message", message}}}}.dump();
-}
-
-// Mechanical map from the module's {class,kind,message} error onto the LIP's
-// four kinds. No semantic reinterpretation: verdicts (invalid/duplicate/...)
-// are module SUCCESS values and never come through here.
-std::string lipKind(const json& errorObj)
-{
-    auto field = [&errorObj](const char* k) {
-        return errorObj.contains(k) && errorObj[k].is_string()
-            ? errorObj[k].get<std::string>()
-            : std::string();
-    };
-    const std::string kind = field("kind");
-    const std::string cls = field("class");
-    if (kind == "not_ready") {
-        return "NOT_READY";
-    }
-    if (kind == "budget_exhausted" || kind == "quota_exhausted") {
-        return "BUDGET_EXHAUSTED";
-    }
-    if (kind == "transient" || kind == "provider_failure" || cls == "transient") {
-        return "TRANSIENT";
-    }
-    return "PERMANENT";
-}
-
-std::string makeModuleErr(const json& errorObj)
-{
-    std::string msg = errorObj.contains("message") && errorObj["message"].is_string()
-        ? errorObj["message"].get<std::string>()
-        : errorObj.dump();
-    return makeErr(lipKind(errorObj), msg);
-}
-
 } // namespace
+
+bool RlnSeamBridge::isTstrOp(Op op)
+{
+    return op == Op::Register || op == Op::GetState;
+}
+
+std::string RlnSeamBridge::transportFail(Op op, const std::string& cls,
+                                         const std::string& kind, const std::string& msg)
+{
+    const json errorObj{{"class", cls}, {"kind", kind}, {"message", msg}};
+    if (isTstrOp(op)) {
+        return json{{"error", errorObj}}.dump();
+    }
+    // result dialect: the envelope's error arm is a JSON-ENCODED object.
+    return json{{"success", false}, {"error", errorObj.dump()}}.dump();
+}
 
 RlnSeamBridge::RlnSeamBridge() = default;
 
@@ -104,14 +77,6 @@ void RlnSeamBridge::install()
     m_installed = true;
 }
 
-void RlnSeamBridge::setStartScope(const std::string& registryId,
-                                  const std::string& epochSizeSec)
-{
-    std::lock_guard<std::mutex> lock(m_lock);
-    m_startRegistryId = registryId;
-    m_startEpochSizeSec = epochSizeSec;
-}
-
 void RlnSeamBridge::enqueue(Job job)
 {
     // Runs on the Nim chronos thread — return immediately, never call the
@@ -125,11 +90,12 @@ void RlnSeamBridge::enqueue(Job job)
 
 // --- typed trampolines (seam contract: copy the borrowed strings, queue, return)
 
-void RlnSeamBridge::startTrampoline(uint64_t reqId, void* userData)
+void RlnSeamBridge::startTrampoline(uint64_t reqId, const char* configJson, void* userData)
 {
     Job j;
     j.reqId = reqId;
     j.op = Op::Start;
+    j.configJson = toStringOrEmpty(configJson);
     static_cast<RlnSeamBridge*>(userData)->enqueue(std::move(j));
 }
 
@@ -225,7 +191,8 @@ void RlnSeamBridge::workerLoop()
         try {
             out = serveOp(job);
         } catch (const std::exception& e) {
-            out = makeErr("PERMANENT", std::string("bridge exception: ") + e.what());
+            out = transportFail(job.op, "permanent", "bridge_exception",
+                std::string("bridge exception: ") + e.what());
         }
         // Late replies (Nim side timed out) return non-zero; nothing to do.
         rlnconsumer_rln_response(job.reqId, out.c_str());
@@ -235,72 +202,65 @@ void RlnSeamBridge::workerLoop()
 std::string RlnSeamBridge::serveOp(const Job& job)
 {
     // lp timeouts mirror the module's own internal legs (membership module
-    // provider.rs: reads 70s, register submit 190s). The Nim seam's timeout
-    // (delivery's 10s by default) is usually the binding constraint; a late
-    // completion here just gets dropped by rlnconsumer_rln_response (rc 1).
+    // provider.rs: reads 70s, register submit 190s). The Nim seam's per-op
+    // budget (delivery's 95s registry-read / 10s local) is usually the
+    // binding constraint; a late completion here just gets dropped by
+    // rlnconsumer_rln_response (rc 1).
     constexpr int kReadMs = 70'000;
     constexpr int kRegisterMs = 190'000;
 
     const std::string ts = std::to_string(job.timestamp); // module wants a STRING
 
-    RlnModuleResult r;
+    RlnModuleRaw r;
     switch (job.op) {
-    case Op::Start: {
-        // The seam's start carries no scope: serve it from the bridge-owned
-        // config (set at createConsumer).
-        std::string registry, epoch;
-        {
-            std::lock_guard<std::mutex> lock(m_lock);
-            registry = m_startRegistryId;
-            epoch = m_startEpochSizeSec;
-        }
-        if (registry.empty()) {
-            return makeErr("NOT_READY", "start scope not configured (createConsumer first)");
-        }
-        long long epochSec = strtoll(epoch.c_str(), nullptr, 10);
-        if (epochSec <= 0) {
-            epochSec = 600;
-        }
-        const json cfg{{"epoch_size_sec", epochSec}, {"registries", json::array({registry})}};
-        r = m_rln.result("start", json::array({cfg.dump()}), kReadMs);
+    case Op::Start:
+        // The start config rides the seam now — pass it to the module
+        // verbatim; the bridge owns no out-of-band start knowledge.
+        r = m_rln.raw("start", json::array({job.configJson}), kReadMs);
         break;
-    }
     case Op::Stop:
-        r = m_rln.result("stop", json::array(), kReadMs);
+        r = m_rln.raw("stop", json::array(), kReadMs);
         break;
     case Op::Register:
-        // The seam's LIP RegistryOptions array IS the module wire (0.6.0) —
+        // The seam's LIP RegistryOptions array IS the module wire (0.6) —
         // pass it through verbatim; the module lifts the common rate_limit
         // key (and applies its default when absent) itself.
-        r = m_rln.tstr("register",
+        r = m_rln.raw("register",
             json::array({job.registryId, job.rlnIdentifier, job.optionsJson}), kRegisterMs);
         break;
     case Op::GetState:
-        r = m_rln.tstr("get_membership_state",
+        r = m_rln.raw("get_membership_state",
             json::array({job.registryId, job.rlnIdentifier}), kReadMs);
         break;
     case Op::GetQuota:
-        r = m_rln.result("get_epoch_quota",
+        r = m_rln.raw("get_epoch_quota",
             json::array({job.registryId, job.rlnIdentifier, ts}), kReadMs);
         break;
     case Op::Generate:
-        r = m_rln.result("generate_proof",
+        r = m_rln.raw("generate_proof",
             json::array({job.registryId, job.rlnIdentifier, job.signalHex, ts}), kReadMs);
         break;
     case Op::Validate:
-        // One name end to end: the seam op followed the module's 0.5.0
-        // validate_proof rename in the rln/integration-fixes stack.
-        r = m_rln.result("validate_proof",
+        // One name end to end: seam op and module method are validate_proof.
+        r = m_rln.raw("validate_proof",
             json::array({job.registryId, job.rlnIdentifier, job.signalHex, ts,
                          job.proofJson}),
             kReadMs);
         break;
     }
 
-    if (r.ok) {
-        return makeOk(r.value);
+    if (!r.ok) {
+        auto field = [&r](const char* k) {
+            return r.errorObj.contains(k) && r.errorObj[k].is_string()
+                ? r.errorObj[k].get<std::string>()
+                : std::string();
+        };
+        return transportFail(job.op,
+            field("class").empty() ? "transient" : field("class"),
+            field("kind").empty() ? "transport" : field("kind"),
+            field("message").empty() ? r.errorObj.dump() : field("message"));
     }
-    return makeModuleErr(r.errorObj);
+    return r.text; // the module's reply, verbatim
 }
 
 bool RlnSeamBridge::subscribeMembershipEvent(

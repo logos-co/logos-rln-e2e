@@ -192,6 +192,24 @@ RlnModuleResult RlnModuleClient::tstr(const std::string& method, const json& arg
     return res;
 }
 
+RlnModuleRaw RlnModuleClient::raw(const std::string& method, const json& args, int timeoutMs)
+{
+    RlnModuleRaw out;
+    RlnModuleResult fail;
+    std::string text;
+    if (!callRaw(method, args, timeoutMs, text, fail)) {
+        out.errorObj = fail.errorObj;
+        return out;
+    }
+    // A tstr method's lp result is a JSON string holding the module's compact
+    // reply — forward the CONTENT, matching what delivery's reference
+    // responder emits (its parsers still tolerate one leftover string layer).
+    json parsed = json::parse(text, nullptr, /*allow_exceptions=*/false);
+    out.text = parsed.is_string() ? parsed.get<std::string>() : text;
+    out.ok = true;
+    return out;
+}
+
 RlnModuleResult RlnModuleClient::result(const std::string& method, const json& args, int timeoutMs)
 {
     RlnModuleResult res;

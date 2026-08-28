@@ -25,12 +25,24 @@ refreshed 2026-08-27: `library/liblogosdelivery_rln.h` +
 one-callback-per-function surface, now carrying the `verify_proof` →
 `validate_proof` rename). Same op set, same typed
 signatures, same req_id / response contract, same threading discipline.
+The surface also matches delivery's client-facing `RlnInterface` concept
+(branch `feat/rln-api-structure` @ `a0560b5d`, force-pushed 2026-08-28:
+`waku/rln/rln.nim` + `waku/rln/types.nim`) — same 7 ops with the verb
+names (`getMembershipState`, `getEpochQuota`, `validateProof`), scope on
+every call with no module-held defaults, uint64-seconds timestamps, the
+4 verdicts, the 4 error kinds, and the 9 membership statuses (which the
+RLN module's lifecycle enum matches variant-for-variant, same order).
+That branch's restructure also moved `toRLNSignal` to
+`waku/rln/rln_evm_backend/proof.nim` — byte-identical, so the signal
+parity below is unaffected.
 Scalar args (`registry_id`, `rln_identifier`, `signal_hex`, `timestamp`
 u64) cross directly; complex args and results are JSON. Register options
 are the LIP's `RegistryOptions` key/value array — `rate_limit` is an option
 key, not an argument. One deliberate divergence: **every outbound proc
-takes a timeout** (config `opTimeoutSec`, default 10s = delivery's hard
-`rlnInvoke` limit) so scenarios can probe other budgets.
+takes a timeout** — the defaults mirror delivery's per-op budgets (config
+`opTimeoutSec`, default 10s, for local ops; `registryOpTimeoutSec`,
+default 95s, for register / get_membership_state / generate_proof) so
+scenarios can probe other budgets.
 
 Op ↔ RLN-module method mapping (the bridge owns it):
 
@@ -44,15 +56,19 @@ Op ↔ RLN-module method mapping (the bridge owns it):
 | `generate_proof` | `generate_proof` | result |
 | `validate_proof` | `validate_proof` | result |
 
-Results use the reply envelope documented in delivery-module `docs/rln.md`:
-`{"ok": <module reply>}` | `{"err": {"kind","message"}}` with the LIP's
-kinds (`NOT_READY | TRANSIENT | BUDGET_EXHAUSTED | PERMANENT`). The bridge
-absorbs the module wire's two reply dialects (tstr in-band error / result
-envelope, both possibly double-encoded) and maps module error kinds onto
-the LIP vocabulary; verdicts (incl. `invalid`/`duplicate`) are `ok` values,
-never `err`. At the module wire, timestamps cross as strings; register
-options pass through VERBATIM — the module (wire 0.6.1) speaks the same
-LIP RegistryOptions array the seam carries.
+Results are the module's replies forwarded VERBATIM (delivery-module
+`docs/rln.md` since the seam rework — the ok/err envelope is retired): the
+LogosResult envelope `{"success","value","error"}` for the result-dialect
+ops, the compact tstr reply (in-band `{"error":{class,kind,message}}`) for
+`register` / `get_membership_state`. The bridge is a router — it
+synthesizes only transport failures, in the op's own dialect shape — and
+the Nim side parses the dialects exactly as delivery's `rln_api.nim` does
+(double-encoding tolerated; verdicts incl. `invalid`/`duplicate` are
+successful values, never errors). At the module wire, timestamps cross as
+strings; register options pass through VERBATIM — the module (wire 0.6.1)
+speaks the same LIP RegistryOptions array the seam carries, and `start`
+carries the module's start config built Nim-side from `createConsumer`'s
+cfg.
 
 Proof transport: `generate_proof` replies carry `proof_canonical` (wire
 0.6.1) — the full 289-byte canonical zerokit serialization as hex. That is
@@ -78,11 +94,12 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
    The module's `register` dispatch alone can legitimately take up to ~70s
    (its registry read leg) before returning `pending`, and confirmation
    takes minutes. Registration must be modeled asynchronously (pending +
-   event / polling) — the model the module already implements, and the one
-   delivery-module's `docs/rln.md` now leans on (the library synthesizes a
-   `TRANSIENT` failure at 10s rather than waiting). This module now runs at
-   the 10s default itself; raise `E2E_CONSUMER_OP_TIMEOUT_S` for slow
-   targets and watch which legs stop fitting.
+   event / polling) — the model the module already implements. RESOLVED at
+   delivery's `95e7e3c7`: per-op budgets from the module's documented time
+   budgets — 95s for registry-read ops (`register`,
+   `get_membership_state`, `generate_proof`), 10s local for the rest. This
+   module still runs a flat 10s default; raise `E2E_CONSUMER_OP_TIMEOUT_S`
+   for slow targets.
 2. **The op was named `verify_proof` in the seam but `validate_proof` on
    the module.** RESOLVED: the `rln/integration-fixes` stack renames the
    seam's callback typedef, struct field and nim wrapper to
@@ -123,20 +140,20 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
 7. **A bare JSON-object argument into a string-typed module method wedges
    the logoscore CLI call** (no error, no coercion) — pass JSON-valued
    strings via `@argfile`.
-8. **The seam's `start` op carries no scope** — the typed callback is
-   `(req_id)` only, so whoever answers must already know the registry and
-   epoch size out of band (this module's bridge takes them from
-   `createConsumer`; the `delivery-rln` scenario's responder takes them
-   from the harness). PARTLY RESOLVED at a48f8b8a: the scope now lives in
-   `createNode`'s conf (`rln-relay-lez` / `-registry-id` / `-identifier` /
-   `-user-message-limit`) — but `start` itself still crosses scope-less,
-   and the conf's `rln-relay-epoch-sec` is carried yet never read, so the
-   responder still guesses the epoch size. Wire it through `start()`.
-9. **No `RegistryOptions` key carries funding from the library.** The LIP
-   defines `funding_holding_account_id` as the LEZ registry option, but
-   delivery's bring-up sends only `rate_limit` — every responder today
-   must inject the payer itself. Who funds a registration is an open seam
-   design question.
+8. **The seam's `start` op carries no scope** — RESOLVED at delivery's
+   `95e7e3c7`: `start` now crosses with `config_json`, the module's start
+   config (`{"epoch_size_sec","registries"}`) built from the node's own
+   conf, so no responder needs the scope out of band. The `delivery-rln`
+   scenario asserts the event's config carries the configured epoch and
+   registry. This module's mirror follows: `start` crosses with the
+   config built from `createConsumer`'s cfg; the bridge-owned start scope
+   is gone.
+9. **No `RegistryOptions` key carries funding from the library.** RESOLVED:
+   `rln-relay-registry-options` (delivery's `95e7e3c7`, a flat JSON object
+   in the node conf) feeds registry-specific pairs — with the rebased
+   stack's register retype they land in the RegistryOptions array, so
+   `funding_holding_account_id` rides the conf and the responder injects
+   nothing (asserted end-to-end by `delivery-rln`).
 10. **RESOLVED (module wire 0.6.0)**: the module's register now speaks the
     LIP shape — `register(registry_id, rln_identifier, options_json)` with
     the RegistryOptions key/value array carrying `rate_limit` (absent →
@@ -147,7 +164,12 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
     replies carry `proof_canonical` (wire 0.6.1); delivery ships those
     bytes as `message.proof` and the validator hands them back whole as
     `{"proof": "<hex>"}` — no consumer ever assembles or parses proof
-    bytes, and delivery's bundled zerokit v2 never touches them.
+    bytes, and delivery's bundled zerokit v2 never touches them. Note:
+    the typed `RlnInterface` (feat/rln-api-structure) models the proof
+    as the DECOMPOSED LIP object (`proof[128]` + six 32-byte fields), so
+    the blob is a gossip-wire detail — the blob ↔ typed-object adapter is
+    delivery's, at its message boundary; consumers still never craft
+    proof bytes.
 12. **A validator node's module needs a live registry provider.** The root
     window is fed by registry reads (lez_core with an OPEN wallet in this
     stack); without one the window stays permanently cold and every
@@ -156,15 +178,46 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
 13. **The reply envelope must actually be parsed.** Delivery's library
     originally returned any responder JSON as success, so an
     `{"err":...}` answer to `register` was logged as "RLN membership
-    registered" and a failed best-effort registration was invisible. The
-    `rln/integration-fixes` stack unwraps the envelope on every call —
-    keep that property when the seam grows new ops.
+    registered" and a failed best-effort registration was invisible.
+    OVERTAKEN at delivery's `95e7e3c7`: the ok/err envelope is retired
+    outright — the library parses the MODULE's own wire dialects
+    (LogosResult envelope for result methods, compact tstr with in-band
+    `{"error":{...}}` for register/get_membership_state) and the
+    responder forwards module replies verbatim. This module's mirror
+    follows: the bridge routes module replies verbatim and the Nim side
+    parses the native dialects, mirroring delivery's `rln_api.nim`.
+14. **`feat/rln-api-structure` was force-pushed 2026-08-28 (`1dda5d02` →
+    `a0560b5d`) and the layout the impl branch imports no longer
+    exists.** The `waku/rln/api/` folder is gone — the client-facing
+    interface now lives at `waku/rln/rln.nim` (a typed `RlnInterface`
+    concept) + `waku/rln/types.nim`; `group_manager` became
+    `rln_evm_backend/`; the placeholder `waku/api/rln.nim` and the RLN
+    functions in `kernel_api.nim` were removed; the get ops grew verbs
+    (`getMembershipState`, `getEpochQuota`). `impl-plugable-rln-api-module`
+    imports `waku/rln/api/types`, and the `rln/integration-fixes` stack's
+    base cherry-pick carries the OLD api/ layout — both need a rebase onto
+    the reworked structure before the branches can merge. DONE on the
+    forks (2026-08-28): `adklempner/logos-delivery` and
+    `adklempner/logos-delivery-module` `rln/integration-fixes` now carry
+    the impl branch (through `95e7e3c7`) rebased onto `a0560b5d` plus the
+    surviving fixes (errors→Ignore, prover leg, register→RegistryOptions
+    array); the `delivery-rln` scenario runs against them. The consumer
+    mirror is caught up to the reworked seam (start config, verbatim
+    dialects, per-op budgets) as of the same date. The naming split
+    is the tell for where integration lands: `rln_evm_backend/` (the
+    renamed group_manager) sits beside a seeded `rln_lez_backend/` — THE
+    slot where the `RlnInterface` implementation backed by
+    liblogos_rln_module goes, i.e. the seam this mirror exists to
+    exercise. Today it holds only a byte-identical copy of `types.nim`
+    (it should probably import the shared types instead — worth asking,
+    since a fork of the client types would let the two drift).
 
 ## Method surface (what scenarios call)
 
 `createConsumer(cfgJson)` — one consumer per context, bound to a scope:
 `{"registryId","rlnIdentifierHex","epochSizeSec"?,"opTimeoutSec"?,
-"pollIntervalSec"?,"confirmBudgetSec"?}` (string values).
+"registryOpTimeoutSec"?,"pollIntervalSec"?,"confirmBudgetSec"?}` (string
+values).
 `startRln` / `stopRln`, `registerMembership(rateLimit, optionsJson)`,
 `getMembershipState`, `generateMessageProof(payloadHex, contentTopic,
 timestampSec)` (builds the delivery-shaped signal `payload ++ contentTopic

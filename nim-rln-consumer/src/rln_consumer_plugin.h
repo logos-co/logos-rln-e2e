@@ -16,8 +16,9 @@ class RlnSeamBridge;
  * The module sandwiches every RLN operation through the layers logos-delivery
  * will use in production: harness call -> this plugin -> librlnconsumer (Nim,
  * nim-ffi C ABI) -> the mirrored delivery RLN seam (rlnconsumer_rln.h, one
- * typed callback per RLN function; results in the documented
- * {"ok":...}|{"err":{kind,message}} envelope) -> this plugin's seam bridge
+ * typed callback per RLN function; results are the RLN module's own
+ * replies forwarded VERBATIM in the module's two wire dialects — the
+ * ok/err envelope is retired) -> this plugin's seam bridge
  * -> lp wire -> liblogos_rln_module.
  *
  * Lifecycle contract:
@@ -42,14 +43,16 @@ public:
      *
      * @param cfg UTF-8 JSON object: {"registryId": "logos:<ref>:<64-hex>",
      *   "rlnIdentifierHex": "<64-hex>", "epochSizeSec"?: "600",
-     *   "opTimeoutSec"?: "30", "pollIntervalSec"?: "5",
-     *   "confirmBudgetSec"?: "300"}. All values are strings.
-     *   `opTimeoutSec:"10"` reproduces logos-delivery's hard rlnInvoke limit.
+     *   "opTimeoutSec"?: "10", "registryOpTimeoutSec"?: "95",
+     *   "pollIntervalSec"?: "5", "confirmBudgetSec"?: "300"}. All values are
+     *   strings. The two timeout knobs default to logos-delivery's per-op
+     *   budgets (10s local ops, 95s registry-read ops).
      * @return success with an empty value, or the Nim-side error.
      */
     StdLogosResult createConsumer(const std::string& cfg);
 
-    /** @brief Seam `start`: configure epoch size, warm the registry roots. */
+    /** @brief Seam `start`: carries the module's start config (epoch +
+     *  registry, built from createConsumer's cfg), warms the root window. */
     StdLogosResult startRln();
 
     /** @brief Seam `stop`. */

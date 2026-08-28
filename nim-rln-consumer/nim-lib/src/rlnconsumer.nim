@@ -20,7 +20,10 @@ type
   ConsumerState = object
     registryId: string
     rlnIdentifierHex: string
-    opTimeout: Duration # seam budget; default 10s = delivery's hard limit
+    epochSizeSec: int # rides the seam's start config since the rework
+    opTimeout: Duration # local-op budget; default 10s = delivery's
+    readTimeout: Duration # registry-read budget (register/get_membership_state/
+                          # generate_proof); default 95s = delivery's
     pollInterval: Duration
     confirmBudget: Duration
     lastPolled: string # the confirmation poller's most recent state reply
@@ -33,8 +36,9 @@ declareLibrary("rlnconsumer", RlnConsumer, defaultABIFormat = "c")
 type RlnConsumerConfig {.ffi.} = object
   registryId: string # CAIP-10 "logos:<ref>:<64-hex config account>"
   rlnIdentifierHex: string # 64-hex application scope key
-  epochSizeSec: string # consumed by the C++ bridge (start scope), not here
-  opTimeoutSec: string # default "10" — delivery's hard rlnInvoke budget
+  epochSizeSec: string # rides startRln's seam config (default "600")
+  opTimeoutSec: string # local-op budget, default "10" (delivery's)
+  registryOpTimeoutSec: string # registry-read budget, default "95" (delivery's)
   pollIntervalSec: string # default "5"
   confirmBudgetSec: string # default "300"
 
@@ -46,25 +50,75 @@ proc intOr(s: string, fallback: int): int =
   except ValueError:
     fallback
 
-proc unwrapEnvelope(res: Result[string, string]): Result[string, string] =
-  ## One seam reply. The responder answers the documented envelope
-  ## (delivery-module docs/rln.md): {"ok": <op result>} | {"err":
-  ## {"kind","message"}} with the LIP's error kinds. A transport timeout
-  ## surfaces as the TRANSIENT failure delivery's library synthesizes for
-  ## itself at its hard 10s.
+# Seam replies are the RLN module's own wire, forwarded verbatim by the
+# responder (the ok/err envelope is retired since delivery's 95e7e3c7).
+# These parsers mirror delivery's rln_api.nim reply-parsing helpers.
+
+proc parseSeamJson(raw: string): Result[JsonNode, string] =
+  ## Parses a module reply, tolerating the SDK's known double-encoding quirk
+  ## (a JSON string containing the actual JSON reply).
+  var node =
+    try:
+      parseJson(raw)
+    except CatchableError as e:
+      return err("invalid module reply JSON: " & e.msg)
+  if node.kind == JString:
+    try:
+      node = parseJson(node.getStr())
+    except CatchableError:
+      return err("module reply is a plain string: " & node.getStr())
+  if node.kind != JObject:
+    return err("module reply is not a JSON object")
+  ok(node)
+
+proc formatModuleError(errNode: JsonNode): string =
+  errNode{"class"}.getStr("transient") & ": " & errNode{"message"}.getStr("") &
+    " (kind: " & errNode{"kind"}.getStr("") & ")"
+
+proc seamTransport(res: Result[string, string]): Result[string, string] =
+  ## The transport leg: a timeout is the failure delivery's library
+  ## synthesizes for itself at its per-op budget.
   let raw = res.valueOr:
     if error == "timeout":
-      return err("""{"kind":"TRANSIENT","message":"seam: timeout"}""")
+      return err("transient: seam timeout — no response within the op budget")
     return err("seam: " & error)
-  try:
-    let parsed = parseJson(raw)
-    if parsed.kind == JObject and parsed.hasKey("ok"):
-      return ok($parsed["ok"])
-    if parsed.kind == JObject and parsed.hasKey("err"):
-      return err($parsed["err"])
-    return err("seam reply is not an ok/err envelope: " & raw)
-  except CatchableError as e:
-    return err("seam reply not JSON: " & e.msg)
+  ok(raw)
+
+proc unwrapResultDialect(res: Result[string, string]): Result[string, string] =
+  ## result-dialect reply (start/stop/get_epoch_quota/generate_proof/
+  ## validate_proof): the LogosResult envelope's `value` on success; a
+  ## failure's `error` is the JSON-encoded {class,kind,message} object.
+  let raw = ?seamTransport(res)
+  let node = ?parseSeamJson(raw)
+  if not node.hasKey("success"):
+    return err("module reply has no success field")
+  if not node{"success"}.getBool(false):
+    let errField = node{"error"}
+    if not errField.isNil() and errField.kind == JString:
+      try:
+        return err(formatModuleError(parseJson(errField.getStr())))
+      except CatchableError:
+        return err(errField.getStr())
+    return err("module call failed with no error detail")
+  var value = node{"value"}
+  if value.isNil():
+    return err("module reply has no value field")
+  if value.kind == JString:
+    # the value itself may arrive JSON-encoded; a genuine string stays as-is
+    try:
+      value = parseJson(value.getStr())
+    except CatchableError:
+      discard
+  ok($value)
+
+proc unwrapTstrDialect(res: Result[string, string]): Result[string, string] =
+  ## tstr-dialect reply (register/get_membership_state): the compact JSON
+  ## object, or the in-band {"error":{class,kind,message}}.
+  let raw = ?seamTransport(res)
+  let node = ?parseSeamJson(raw)
+  if node.hasKey("error"):
+    return err(formatModuleError(node{"error"}))
+  ok($node)
 
 proc lipOptions(rate: int, optionsJson: string): Result[string, string] =
   ## The seam's RegistryOptions encoding (RLN Module API LIP): a key/value
@@ -111,7 +165,9 @@ proc bytesToHex(bs: openArray[byte]): string =
     result[i * 2 + 1] = digits[int(b and 0x0f)]
 
 # The signal logos-delivery proves over: payload ++ contentTopic ++ timestamp
-# (waku/rln/proof.nim toRLNSignal). Delivery's timestamp bytes are stew
+# (toRLNSignal — waku/rln/rln_evm_backend/proof.nim since the 2026-08-28
+# feat/rln-api-structure restructure; byte-identical, only the path moved).
+# Delivery's timestamp bytes are stew
 # toBytes(uint64) at its default — system.cpuEndian, LITTLE-endian on every
 # supported target — so the low byte goes first here for byte parity with
 # what delivery's own prover and validator hash.
@@ -126,16 +182,17 @@ proc buildSignal(payload: seq[byte], contentTopic: string, timestamp: uint64): s
 
 proc rlnconsumerCreate*(config: RlnConsumerConfig): Future[Result[RlnConsumer, string]] {.ffiCtor.} =
   ## Create a consumer bound to one (registry_id, rln_identifier) scope.
-  ## config.epochSizeSec is not read here: the seam's start op carries no
-  ## scope, so the C++ bridge owns the module's start config (it parses the
-  ## same createConsumer JSON) — the same out-of-band knowledge a real
-  ## responder needs.
+  ## Since the seam rework the start op carries the module's start config,
+  ## so epochSizeSec is consumed HERE (startRln builds the config) — no
+  ## layer needs out-of-band start knowledge anymore.
   if config.registryId.len == 0 or config.rlnIdentifierHex.len == 0:
     return err("registryId and rlnIdentifierHex are required")
   let s = (ref ConsumerState)(
     registryId: config.registryId,
     rlnIdentifierHex: config.rlnIdentifierHex,
+    epochSizeSec: intOr(config.epochSizeSec, 600),
     opTimeout: intOr(config.opTimeoutSec, 10).seconds,
+    readTimeout: intOr(config.registryOpTimeoutSec, 95).seconds,
     pollInterval: intOr(config.pollIntervalSec, 5).seconds,
     confirmBudget: intOr(config.confirmBudgetSec, 300).seconds,
   )
@@ -156,14 +213,15 @@ proc rlnconsumerSlowPing*(c: RlnConsumer, text: string): Future[Result[string, s
   return ok("slow pong: " & text)
 
 proc rlnconsumerStartRln*(c: RlnConsumer): Future[Result[string, string]] {.ffi.} =
-  ## Seam `start`. The op carries NO scope (delivery's typed callback is
-  ## (req_id) only) — the bridge supplies {epoch_size_sec, registries} from
-  ## the createConsumer config, mirroring how any real responder must know
-  ## the start scope out of band.
-  return unwrapEnvelope(await rlnStart(c.state.opTimeout))
+  ## Seam `start`. Since the seam rework the op CARRIES the module's start
+  ## config — built here from the consumer's own configuration, exactly as
+  ## delivery's startNode builds it from the node conf.
+  let cfg =
+    $(%*{"epoch_size_sec": c.state.epochSizeSec, "registries": [c.state.registryId]})
+  return unwrapResultDialect(await rlnStart(cfg, c.state.opTimeout))
 
 proc rlnconsumerStopRln*(c: RlnConsumer): Future[Result[string, string]] {.ffi.} =
-  return unwrapEnvelope(await rlnStop(c.state.opTimeout))
+  return unwrapResultDialect(await rlnStop(c.state.opTimeout))
 
 proc confirmationPoller(s: ref ConsumerState) {.async: (raises: []).} =
   ## The delivery-shaped async-registration follow-up: track the membership
@@ -174,8 +232,8 @@ proc confirmationPoller(s: ref ConsumerState) {.async: (raises: []).} =
     let deadline = Moment.now() + s.confirmBudget
     while Moment.now() < deadline:
       await sleepAsync(s.pollInterval)
-      let reply = unwrapEnvelope(
-        await rlnGetMembershipState(s.registryId, s.rlnIdentifierHex, s.opTimeout)
+      let reply = unwrapTstrDialect(
+        await rlnGetMembershipState(s.registryId, s.rlnIdentifierHex, s.readTimeout)
       )
       if reply.isErr:
         continue
@@ -204,8 +262,10 @@ proc rlnconsumerRegisterMembership*(
     return err("rateLimit must be a positive integer")
   let opts = lipOptions(rate, optionsJson).valueOr:
     return err(error)
-  let reply = unwrapEnvelope(
-    await rlnRegister(c.state.registryId, c.state.rlnIdentifierHex, opts, c.state.opTimeout)
+  let reply = unwrapTstrDialect(
+    await rlnRegister(
+      c.state.registryId, c.state.rlnIdentifierHex, opts, c.state.readTimeout
+    )
   )
   if reply.isOk:
     let st =
@@ -219,8 +279,10 @@ proc rlnconsumerRegisterMembership*(
 
 proc rlnconsumerGetMembershipState*(c: RlnConsumer): Future[Result[string, string]] {.ffi.} =
   ## Fresh module read, annotated with the background poller's last sighting.
-  let reply = unwrapEnvelope(
-    await rlnGetMembershipState(c.state.registryId, c.state.rlnIdentifierHex, c.state.opTimeout)
+  let reply = unwrapTstrDialect(
+    await rlnGetMembershipState(
+      c.state.registryId, c.state.rlnIdentifierHex, c.state.readTimeout
+    )
   ).valueOr:
     return err(error)
   try:
@@ -247,9 +309,9 @@ proc rlnconsumerGenerateMessageProof*(
     signalHex = bytesToHex(buildSignal(hexToBytes(payloadHex), contentTopic, ts))
   except ValueError as e:
     return err("bad payloadHex: " & e.msg)
-  let proof = unwrapEnvelope(
+  let proof = unwrapResultDialect(
     await rlnGenerateProof(
-      c.state.registryId, c.state.rlnIdentifierHex, signalHex, ts, c.state.opTimeout
+      c.state.registryId, c.state.rlnIdentifierHex, signalHex, ts, c.state.readTimeout
     )
   ).valueOr:
     return err(error)
@@ -265,7 +327,7 @@ proc rlnconsumerValidateMessageProof*(
   ## rln/integration-fixes rename. Returns the verdict object.
   let ts = parseTs(timestampSec).valueOr:
     return err(error)
-  return unwrapEnvelope(
+  return unwrapResultDialect(
     await rlnValidateProof(
       c.state.registryId, c.state.rlnIdentifierHex, signalHex, ts, proofJson,
       c.state.opTimeout,
@@ -277,8 +339,10 @@ proc rlnconsumerGetEpochQuota*(
 ): Future[Result[string, string]] {.ffi.} =
   let ts = parseTs(timestampSec).valueOr:
     return err(error)
-  return unwrapEnvelope(
-    await rlnGetEpochQuota(c.state.registryId, c.state.rlnIdentifierHex, ts, c.state.opTimeout)
+  return unwrapResultDialect(
+    await rlnGetEpochQuota(
+      c.state.registryId, c.state.rlnIdentifierHex, ts, c.state.opTimeout
+    )
   )
 
 genBindings()

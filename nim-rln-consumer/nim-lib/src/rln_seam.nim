@@ -2,17 +2,22 @@
 ## exact contract delivery is building (logos-delivery branch
 ## impl-plugable-rln-api-module + the rln/integration-fixes stack:
 ## library/logos_delivery_api/rln_api.nim + library/liblogosdelivery_rln.h,
-## refreshed 2026-08-27 — the typed one-callback-per-function surface, now
-## carrying the verify_proof -> validate_proof rename). Scalar args are
-## passed directly,
-## complex args (options, proof) as JSON, and every call's result comes back
-## as JSON via `rlnconsumer_rln_response` — the reply envelope
-## {"ok": <result>} | {"err": {"kind","message"}} documented in
-## logos-delivery-module docs/rln.md (kinds from the RLN Module API LIP).
+## refreshed 2026-08-28 — the rebased rln/integration-fixes stack: typed
+## one-callback-per-function surface, validate_proof name, start carrying
+## the module's start config). The op set and types match delivery's
+## client-facing RlnInterface concept (feat/rln-api-structure:
+## waku/rln/rln.nim + waku/rln/types.nim). Scalar args are passed directly,
+## complex args (config, options, proof) as JSON, and every call's result
+## comes back as JSON via `rlnconsumer_rln_response` — the RLN module's OWN
+## reply, forwarded verbatim (the ok/err envelope is retired since
+## delivery's 95e7e3c7): the LogosResult envelope for result-dialect ops,
+## the compact tstr reply (in-band {"error":{...}}) for register /
+## get_membership_state. rlnconsumer.nim owns the dialect parsing, exactly
+## as delivery's rln_api.nim does.
 ##
 ## ONE deliberate divergence from delivery: every outbound proc takes a
-## timeout (default 10s — delivery's hard `rlnInvoke` limit) so scenarios can
-## probe other budgets. See README.md "Findings for the delivery team".
+## timeout (delivery hardcodes its per-op budgets — 95s registry reads, 10s
+## local) so scenarios can probe other budgets. See README.md "Findings for the delivery team".
 ##
 ## Threading: host callbacks may complete on a foreign thread, so the
 ## crossing uses `ThreadSignalPtr` + `allocShared` (no GC memory shared
@@ -22,11 +27,17 @@
 import std/locks
 import chronos, chronos/threadsync, results
 
-const SeamDefaultTimeout* = 10.seconds ## delivery's hard rlnInvoke budget
+const
+  SeamLocalTimeout* = 10.seconds ## delivery's budget for local-computation ops
+  SeamRegistryReadTimeout* = 95.seconds ## delivery's budget for ops that may
+                                        ## perform one registry read (register,
+                                        ## get_membership_state, generate_proof)
+  SeamDefaultTimeout* = SeamLocalTimeout
 
 type
-  RlnConsumerRlnStartFn =
-    proc(reqId: uint64, userData: pointer) {.cdecl, gcsafe, raises: [].}
+  RlnConsumerRlnStartFn = proc(
+    reqId: uint64, configJson: cstring, userData: pointer
+  ) {.cdecl, gcsafe, raises: [].}
 
   RlnConsumerRlnStopFn =
     proc(reqId: uint64, userData: pointer) {.cdecl, gcsafe, raises: [].}
@@ -68,9 +79,9 @@ type
     get_membership_state: RlnConsumerRlnGetMembershipStateFn
     get_epoch_quota: RlnConsumerRlnGetEpochQuotaFn
     generate_proof: RlnConsumerRlnGenerateProofFn
-    validate_proof: RlnConsumerRlnValidateProofFn ## one name end to end since
-                                                  ## the rln/integration-fixes
-                                                  ## rename (module: 0.5.0)
+    validate_proof: RlnConsumerRlnValidateProofFn ## one name end to end
+                                                  ## (delivery renamed natively
+                                                  ## in 95e7e3c7)
 
   Pending = object
     reqId: uint64
@@ -142,7 +153,7 @@ proc awaitResult(
 # can't deadlock), then await the JSON result.
 
 proc rlnStart*(
-    timeout = SeamDefaultTimeout
+    configJson: string, timeout = SeamLocalTimeout
 ): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
   let pending = newPending()
   if pending.isNil:
@@ -157,7 +168,7 @@ proc rlnStart*(
       return err("RLN module not registered")
     ud = gUserData
     linkPending(pending)
-  cb(pending.reqId, ud)
+  cb(pending.reqId, configJson.cstring, ud)
   return await awaitResult(pending, timeout)
 
 proc rlnStop*(

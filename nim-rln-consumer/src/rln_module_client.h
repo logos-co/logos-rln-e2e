@@ -32,6 +32,13 @@ struct RlnModuleResult {
     nlohmann::json errorObj; // {class,kind,message}-shaped on failure
 };
 
+struct RlnModuleRaw {
+    bool ok = false;
+    std::string text;        // the module's reply VERBATIM (one JSON-string
+                             // transport layer removed for tstr methods)
+    nlohmann::json errorObj; // {class,kind,message}-shaped transport failure
+};
+
 class RlnModuleClient {
 public:
     RlnModuleClient() = default;
@@ -49,6 +56,13 @@ public:
                          int timeoutMs);
     RlnModuleResult result(const std::string& method, const nlohmann::json& args,
                            int timeoutMs);
+
+    // The module's reply text verbatim, either dialect — what a seam
+    // responder forwards since the rework retired the ok/err envelope. Only
+    // transport failures are synthesized (errorObj); the module's own
+    // failures stay inside `text` in the module's shape.
+    RlnModuleRaw raw(const std::string& method, const nlohmann::json& args,
+                     int timeoutMs);
 
     // Subscribe to the module's membership_state_changed (5-string payload).
     // Rides the SAME main-owned client, so event delivery has a pumping
