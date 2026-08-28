@@ -18,6 +18,9 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 | `register` | in progress | full single-node membership lifecycle: faucet claim → register → merkle proof + registry cross-check → generate/verify proof (valid + tampered) |
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
 | `delivery` | scaffold | 3-daemon co-residency (RLN module stack + delivery_module in one process) and 3-node static-peer relay propagation, chainless (`--target none`); grows RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
+| `delivery-rln` | **active** | the real logos-delivery RLN integration end to end: bring-up via delivery's config surface, real registration on chain, proof-gated relay n1→n2, negative control (tampered message NOT delivered). **Delivery devs start at [docs/delivery-integration.md]** |
+| `keystore` | active | the RLN module's keystore custody modes (module-owned default, opt-out) |
+| `consumer-selftest` / `consumer-register` / `consumer-gifter` | active | the nim-rln-consumer mock of delivery's RLN seam: layer liveness (chainless), full register→prove→validate through the mirrored seam, delegated registration via the open gifter |
 | `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
@@ -26,6 +29,11 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 ./run.sh register --target testnet   # runs against a committed testnet deployment
 ./run.sh delivery --target none      # chainless: 3 daemons, module co-residency, relay mesh
 ```
+
+**Working on logos-delivery's RLN integration?** Start at
+[docs/delivery-integration.md] — it has the copy-paste quickstart (clone
+commands, branch names, the local and testnet one-liners) for the
+`delivery-rln` acceptance scenario.
 
 A scenario is `scenarios/<id>/{scenario.env,run.sh}` driven through the
 harness contract (`docs/contract.md`); a target
@@ -103,3 +111,4 @@ tools/                  check-naming.sh
 
 Dual-licensed under [MIT](./LICENSE-MIT) or
 [Apache 2.0](./LICENSE-APACHE-v2), at your option.
+[docs/delivery-integration.md]: docs/delivery-integration.md

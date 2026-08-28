@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # logos-rln-e2e — run one scenario against one target chain.
 #
-#   ./run.sh <scenario> [--target local|testnet] [--keep]
+#   ./run.sh <scenario> [--target local|testnet|none] [--keep]
 #   ./run.sh --list
 #
 # A scenario is scenarios/<id>/{scenario.env,run.sh}: scenario.env declares
@@ -54,6 +54,17 @@ case " ${TARGETS:-local testnet} " in
     *" $TARGET "*) ;;
     *) die "scenario '$SCENARIO' does not support target '$TARGET' (supports: ${TARGETS:-local testnet})" ;;
 esac
+
+# Scenario-declared env preflight, checked BEFORE any artifact build or chain
+# bring-up: each space-separated entry in PREFLIGHT_ANY is a |-separated group
+# of env vars of which at least one must be set.
+for _group in ${PREFLIGHT_ANY:-}; do
+    _ok=0
+    for _v in ${_group//|/ }; do
+        if eval "[ -n \"\${$_v:-}\" ]"; then _ok=1; break; fi
+    done
+    [ "$_ok" = 1 ] || die "scenario '$SCENARIO' needs one of: ${_group//|/ or } — ${PREFLIGHT_MSG:-see scenarios/$SCENARIO/run.sh header}"
+done
 TARGET_SH="$HERE/harness/targets/$TARGET.sh"
 [ -f "$TARGET_SH" ] || die "unknown target '$TARGET'"
 

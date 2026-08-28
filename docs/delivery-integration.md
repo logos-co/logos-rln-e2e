@@ -3,22 +3,54 @@
 The contract obligations a consumer of `liblogos_rln_module` (wire 0.6.0)
 takes on, written down from what this repo's acceptance scenarios actually
 enforce. Every claim here is pinned by a runnable probe — file references
-point at the scenario that proves it. Run them against your branch with:
+point at the scenario that proves it.
+
+## Quickstart
+
+Clone the three inputs (or substitute your own working trees — any
+checkout path works, the branches below are the known-good stack):
 
 ```sh
-RLN_MODULES_CHECKOUT=<logos-rln-modules> \
-LOGOS_DELIVERY_CHECKOUT=<logos-delivery @ rln/integration-fixes> \
-DELIVERY_MODULE_CHECKOUT=<logos-delivery-module @ rln/integration-fixes> \
-E2E_EPOCH_SIZE_SEC=1800 ./run.sh delivery-rln --target local
-RLN_MODULES_CHECKOUT=<...> E2E_EPOCH_SIZE_SEC=1800 ./run.sh keystore --target local
+git clone -b rln/integration-fixes --recurse-submodules \
+    https://github.com/adklempner/logos-delivery.git
+git clone -b rln/integration-fixes \
+    https://github.com/adklempner/logos-delivery-module.git
+git clone -b feat/lip-alignment \
+    https://github.com/logos-co/logos-rln-modules.git
 ```
+
+**Hosted testnet** — no chain to build, registration lands on the real
+sequencer (fastest first run):
+
+```sh
+RLN_MODULES_CHECKOUT=$PWD/logos-rln-modules \
+LOGOS_DELIVERY_CHECKOUT=$PWD/logos-delivery \
+DELIVERY_MODULE_CHECKOUT=$PWD/logos-delivery-module \
+E2E_DEPLOYMENT=testnet-shrink-verify ./run.sh delivery-rln --target testnet
+```
+
+**Local chain** — additionally needs a logos-lez-rln checkout able to run
+`dev.sh` (sequencer + provisioning; first provision takes ~6 min):
+
+```sh
+RLN_MODULES_CHECKOUT=$PWD/logos-rln-modules \
+LOGOS_DELIVERY_CHECKOUT=$PWD/logos-delivery \
+DELIVERY_MODULE_CHECKOUT=$PWD/logos-delivery-module \
+./run.sh delivery-rln --target local
+RLN_MODULES_CHECKOUT=$PWD/logos-rln-modules ./run.sh keystore --target local
+```
+
+Missing knobs fail at second zero with the fix named (run.sh preflight),
+not minutes into a chain bring-up. The first delivery build from source is
+long (~10 min); later runs hit the nix cache.
 
 (`delivery-rln` drives your `impl-plugable-rln-api-module` branch — plus the
 `rln/integration-fixes` patch stack on both delivery repos — end to end:
-bring-up via the real config surface, registration to active, and a
-proof-gated send validated on a second node. `keystore` pins the custody
-and lifecycle behaviors below. `nim-rln-consumer/README.md` carries the
-numbered findings list this doc consolidates.)
+bring-up via the real config surface, registration to active, a proof-gated
+send validated on a second node, and a negative control proving a tampered
+message is NOT delivered. `keystore` pins the custody and lifecycle
+behaviors below. `nim-rln-consumer/README.md` carries the numbered findings
+list this doc consolidates.)
 
 ## 1. The keystore needs nothing from you
 
@@ -76,6 +108,9 @@ probes D/G):
   `valid` / `invalid` / `duplicate` / `rate_limit_violation`, crossing
   verbatim (your 95e7e3c7 parses the module's native replies; the
   UPPERCASE parser is history) and asserted live by the send leg.
+  `rate_limit_violation` + `recovered_secret` need a dishonest prover and
+  are deliberately out of e2e scope — the wire is pinned by the module's
+  own unit test (`validate_proof` rate-limit-violation secret recovery).
 - **The ok/err envelope is retired** — your library now parses the
   module's own wire dialects and the responder forwards replies VERBATIM:
   the LogosResult envelope for `start`/`stop`/`get_epoch_quota`/

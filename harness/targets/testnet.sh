@@ -106,10 +106,16 @@ target_up() {
     # An old stage.sh emits a wallet_config without the calibration cap;
     # v0.2.2's open then runs 100 sequential sequencer probes and wedges the
     # module's dispatch queue on a slow LB — the classic "Statistics not
-    # found, then silence" wallet-open failure. Fail early with the cause.
-    jq -e '.multi_sequencer_client_config.calibration_limit' \
-        "$E2E_WALLET_HOME/wallet_config.json" >/dev/null 2>&1 \
-        || die "staged wallet_config.json lacks multi_sequencer_client_config — this stage.sh predates the calibration fix; point LEZ_RLN_CHECKOUT at a logos-lez-rln with it"
+    # found, then silence" wallet-open failure. Patch the cap in so the
+    # pinned stage.sh works without a LEZ_RLN_CHECKOUT.
+    if ! jq -e '.multi_sequencer_client_config.calibration_limit' \
+        "$E2E_WALLET_HOME/wallet_config.json" >/dev/null 2>&1; then
+        jq '. + {multi_sequencer_client_config:{distribution_limit:1, calibration_limit:3}}' \
+            "$E2E_WALLET_HOME/wallet_config.json" > "$E2E_WALLET_HOME/wallet_config.json.tmp" \
+            && mv "$E2E_WALLET_HOME/wallet_config.json.tmp" "$E2E_WALLET_HOME/wallet_config.json" \
+            || die "cannot patch calibration cap into staged wallet_config.json"
+        say "staged wallet_config: calibration cap patched in (stage.sh predates it)"
+    fi
 
     E2E_TREE_ID=$(grep -oE 'LEZ_RLN_TREE_ID_HEX=[0-9a-f]{64}' "$E2E_WALLET_HOME/env.sh" | cut -d= -f2)
     E2E_CONFIG_ACCOUNT=$(tr -d '\n\r' < "$E2E_WALLET_HOME/config_account.txt")
