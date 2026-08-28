@@ -21,9 +21,9 @@
 # The async-registration contract this acceptance-tests: no single consumer
 # call blocks for the chain's confirmation latency. The registerMembership
 # reply is the module's immediate view; activation arrives via polling and
-# the event. The default op timeout IS logos-delivery's hard 10s rlnInvoke
-# budget, so every leg proves it fits delivery's real constraint; raise it
-# for slow targets (testnet reads can exceed 10s cold).
+# the event. Timeouts mirror logos-delivery's per-op budgets: the registry-
+# read legs (register/state/generate) run the 95s budget, everything else
+# the 10s local one. E2E_CONSUMER_OP_TIMEOUT_S tunes the local budget.
 #
 # Env beyond docs/contract.md:
 #   E2E_RATE_LIMIT=100            registration rate limit
@@ -231,7 +231,9 @@ if [ "$Q_EPOCH" = "$PROOF_EPOCH" ]; then
         || die "quota remaining $REMAINING != $((RATE_LIMIT - 1)) after one proof"
     say "epoch quota: remaining $REMAINING/$RATE_LIMIT in epoch $Q_EPOCH"
 else
-    say "epoch rolled between proof and quota (proof $PROOF_EPOCH, quota $Q_EPOCH) — remaining $REMAINING"
+    # Both calls used the same $TS, so the epochs MUST agree — a mismatch is
+    # an epoch-derivation or quota-accounting regression, never a roll.
+    die "epoch mismatch for identical timestamp: proof $PROOF_EPOCH vs quota $Q_EPOCH"
 fi
 
 say "validateMessageProof (polling not_ready away while the root window warms)…"

@@ -31,7 +31,7 @@ daemon_start "$NODE"
 daemon_load_modules "$NODE" nim_rln_consumer
 
 section "createConsumer"
-CFG='{"registryId":"logos:selftest:0000000000000000000000000000000000000000000000000000000000000000","rlnIdentifierHex":"1111111111111111111111111111111111111111111111111111111111111111","epochSizeSec":"60","opTimeoutSec":"10"}'
+CFG='{"registryId":"logos:selftest:0000000000000000000000000000000000000000000000000000000000000000","rlnIdentifierHex":"1111111111111111111111111111111111111111111111111111111111111111","epochSizeSec":"60","opTimeoutSec":"10","registryOpTimeoutSec":"10"}'
 OUT=$(node_call "$NODE" nim_rln_consumer createConsumer "$(argfile cfg1 "$CFG")" | jres)
 case "$OUT" in
     *'"success":true'*) say "createConsumer OK" ;;
@@ -70,6 +70,15 @@ OUT=$(node_call "$NODE" nim_rln_consumer startRln | jres)
 case "$OUT" in
     *'"success":false'*) say "startRln failed cleanly through the seam: $OUT" ;;
     *) die "expected a clean seam failure from startRln, got: $OUT" ;;
+esac
+
+# Same probe through the OTHER dialect: getMembershipState is a tstr-dialect
+# op, so its synthesized transport failure crosses as the in-band
+# {"error":{...}} shape — proving both bridge failure paths parse.
+OUT=$(node_call "$NODE" nim_rln_consumer getMembershipState | jres)
+case "$OUT" in
+    *'"success":false'*) say "getMembershipState failed cleanly (tstr dialect): $OUT" ;;
+    *) die "expected a clean tstr-dialect seam failure, got: $OUT" ;;
 esac
 
 # ...and the module must still be alive afterwards.

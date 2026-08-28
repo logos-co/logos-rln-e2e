@@ -41,7 +41,11 @@
 #      "valid" verdict crosses verbatim -> messageReceived on n2. A
 #      fresh-root "invalid" on an early attempt is tolerated: the module
 #      nudges its root window and a later send passes — the send leg
-#      retries with fresh messages (each attempt spends a real slot).
+#      retries with fresh messages; slot accounting is asserted (one
+#      distinct message_id per attempt).
+#   6. the NEGATIVE control: n2's responder corrupts the signal for one
+#      probe message, the module answers "invalid", and the scenario
+#      asserts n2 does NOT deliver it — the verdict actually gates.
 #
 # Required checkouts (the integration branches have no flake pins):
 #   DELIVERY_MODULE_CHECKOUT  logos-delivery-module @ rln/integration-fixes
@@ -89,10 +93,19 @@ for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
 done
 [ "$E2E_FUNDING" = "faucet" ] \
     || die "target '$E2E_TARGET' provides funding=$E2E_FUNDING — the responder pays the registration from a faucet claim; pick a faucet deployment"
-# Without the delivery override this runs against pinned delivery master,
-# which has no RLN seam — fail with the pointer instead of a confusing hang.
-[ -n "${DELIVERY_LGX:-}" ] || [ -n "${DELIVERY_MODULE_CHECKOUT:-}" ] \
-    || die "delivery-rln needs the integration branches: set DELIVERY_MODULE_CHECKOUT + LOGOS_DELIVERY_CHECKOUT (rln/integration-fixes) or a prebuilt DELIVERY_LGX"
+# Without the right overrides this runs against stale pins — fail with the
+# pointer instead of a confusing hang or a minutes-later assertion.
+# A prebuilt DELIVERY_LGX carries both halves; otherwise BOTH checkouts are
+# needed (the DM flake pins the pre-fixes logos-delivery, so a shim-only
+# override silently tests the wrong Nim library).
+if [ -z "${DELIVERY_LGX:-}" ]; then
+    [ -n "${DELIVERY_MODULE_CHECKOUT:-}" ] && [ -n "${LOGOS_DELIVERY_CHECKOUT:-}" ] \
+        || die "delivery-rln needs the integration branches: set BOTH DELIVERY_MODULE_CHECKOUT and LOGOS_DELIVERY_CHECKOUT (rln/integration-fixes) or a prebuilt DELIVERY_LGX"
+fi
+# The e2e flake pin predates the 0.6.1 module wire (proof_canonical +
+# RegistryOptions register) this scenario asserts.
+[ -n "${RLN_LGX:-}" ] || [ -n "${RLN_MODULES_CHECKOUT:-}" ] \
+    || die "delivery-rln needs the 0.6.1 module stack — the flake pin predates it; set RLN_MODULES_CHECKOUT (or RLN_LGX)"
 
 polls() {
     local n=$(( $1 / $2 ))
@@ -258,10 +271,22 @@ answer_event() {
         # (reqId, registryId, rlnIdentifier, signalHex, epochTimestamp,
         #  proofJson) — still Verify-named on the event surface; the module
         # method is validate_proof (THE mapping). Envelope forwarded verbatim.
-        local out verdict note
+        local out verdict note sig
+        sig=$(b64d "$a3")
+        if [ -f "$E2E_RUN_DIR/tamper-$node" ]; then
+            # Negative-control hook: corrupt the SIGNAL (not the proof — a
+            # mangled proof can fail deserialization and come back a module
+            # ERROR, which delivery maps to Ignore; a bad signal is a clean
+            # deterministic "invalid" verdict).
+            sig=$(printf '%s' "$sig" | python3 -c '
+import sys
+s = sys.stdin.read().strip()
+print(s[:-1] + ("0" if s[-1] != "0" else "1"))')
+            echo "responder[$node]: TAMPER active — signal corrupted for reqId=$req"
+        fi
         out=$(node_call "$node" liblogos_rln_module validate_proof \
             "$(b64d "$a1")" "$(argfile "vp_${node}_${RANDOM}" "$(b64d "$a2")")" \
-            "$(argfile "vs_${node}_${RANDOM}" "$(b64d "$a3")")" \
+            "$(argfile "vs_${node}_${RANDOM}" "$sig")" \
             "str:$(b64d "$a4")" \
             "$(argfile "vj_${node}_${RANDOM}" "$(b64d "$a5")")" | jres) || out=""
         [ -n "$out" ] || out="$RESULT_FAIL"
@@ -273,7 +298,11 @@ answer_event() {
         esac
         rln_respond "$node" "$req" "$out" "$note" ;;
     *)
-        echo "responder[$node]: ignoring $ev (reqId $req)" ;;
+        # Answer instead of starving the library's await; the post-run check
+        # turns any occurrence into a failure, so a future seam leg (stop /
+        # get_membership_state / get_epoch_quota) fails loudly, not by timeout.
+        echo "responder[$node]: UNHANDLED op $ev (reqId $req)"
+        rln_respond "$node" "$req" "$RESULT_FAIL" "UNHANDLED $ev" ;;
     esac
 }
 
@@ -436,11 +465,16 @@ section "bring-up assertions"
 EVT1=$(node_wait_event n1 delivery_module rlnStartRequest 5) \
     || die "n1 emitted no rlnStartRequest"
 EV_CFG=$(evt_arg "$EVT1" 1)
-case "$EV_CFG" in
-    *'"epoch_size_sec"'*"$REGISTRY_ID"*) ;;
-    *) die "rlnStartRequest config lacks epoch/registry: '$EV_CFG'" ;;
-esac
-say "n1: start request carries the module start config (epoch + registry) from the node conf"
+printf '%s' "$EV_CFG" | python3 -c '
+import json, sys
+cfg = json.load(sys.stdin)
+assert int(cfg["epoch_size_sec"]) == int(sys.argv[1]), \
+    "epoch_size_sec %r != configured %s" % (cfg.get("epoch_size_sec"), sys.argv[1])
+assert sys.argv[2] in cfg.get("registries", []), \
+    "registry %s not in registries %r" % (sys.argv[2], cfg.get("registries"))
+' "$E2E_EPOCH_SIZE_SEC" "$REGISTRY_ID" \
+    || die "rlnStartRequest config mismatch: '$EV_CFG' (want epoch $E2E_EPOCH_SIZE_SEC + registry $REGISTRY_ID)"
+say "n1: start request carries the node conf's exact epoch + registry"
 
 # The register event n1's library emitted must carry the CONFIGURED scope —
 # this is what the real config surface exists to prove.
@@ -555,13 +589,50 @@ while [ "$ATTEMPT" -lt "$SEND_ATTEMPTS" ]; do
 done
 [ "$RECEIVED" = 1 ] || die "n2 never received a proof-gated message in $SEND_ATTEMPTS attempts — n2 responder log tail: $(tail -5 "$E2E_RUN_DIR/responder-n2.log")"
 
+# Every attempt spent a real slot: one generate per attempt, all slots distinct.
+sleep 1 # let the last responder log line flush
+GEN_SLOTS=$(grep -o "generate ok (slot [0-9]*" "$E2E_RUN_DIR/responder-n1.log" | grep -o '[0-9]*$')
+GEN_COUNT=$(printf '%s\n' "$GEN_SLOTS" | grep -c . || true)
+[ "$GEN_COUNT" = "$ATTEMPT" ] \
+    || die "slot accounting: $GEN_COUNT proofs generated for $ATTEMPT send attempts — slots: $(printf '%s' "$GEN_SLOTS" | tr '\n' ' ')"
+[ "$(printf '%s\n' "$GEN_SLOTS" | sort -u | grep -c .)" = "$GEN_COUNT" ] \
+    || die "slot accounting: duplicate message_id slots issued: $(printf '%s' "$GEN_SLOTS" | tr '\n' ' ')"
+say "slot accounting: $GEN_COUNT attempts spent $GEN_COUNT distinct slots"
+
+# ---------- negative control: the verdict actually GATES ----------------------
+# n2's responder now corrupts the SIGNAL before validating, forcing a real
+# "invalid" verdict from the module. Delivery must Reject: the message
+# propagates from n1 but must NOT surface as messageReceived on n2.
+section "negative control (tampered validation must NOT deliver)"
+: >"$E2E_RUN_DIR/tamper-n2"
+PAYLOAD="rln-gated ping TAMPER from n1"
+REQID=$(must_call n1 send "send (tamper probe)" "$TOPIC" "$(argfile pay_tamper "$PAYLOAD")")
+PROP=$(node_wait_event n1 delivery_module messagePropagated "$EVT_TIMEOUT" "$REQID") \
+    || die "tamper probe never propagated from n1"
+MSGHASH_T=$(printf '%s' "$PROP" | python3 -c \
+    'import json,sys; print(json.load(sys.stdin)["data"].get("arg1",""))')
+if node_wait_event n2 delivery_module messageReceived "$RECV_WAIT_S" "$MSGHASH_T" >/dev/null; then
+    die "NEGATIVE CONTROL FAILED: n2 delivered a message its module called invalid — delivery is not gating on the verdict"
+fi
+grep -q "TAMPER active" "$E2E_RUN_DIR/responder-n2.log" \
+    || die "tamper hook never fired on n2 (probe did not reach validation?)"
+grep -q "verify verdict=invalid" "$E2E_RUN_DIR/responder-n2.log" \
+    || die "n2's module never answered 'invalid' for the tampered signal — responder tail: $(tail -3 "$E2E_RUN_DIR/responder-n2.log")"
+rm -f "$E2E_RUN_DIR/tamper-n2"
+say "tampered message: verdict=invalid crossed, n2 did NOT deliver — the gate is real"
+
+# No seam op may go unanswered: an UNHANDLED line means delivery grew a leg
+# the responder (and this scenario) must learn.
+if grep -q "UNHANDLED op" "$E2E_RUN_DIR"/responder-n1.log "$E2E_RUN_DIR"/responder-n2.log 2>/dev/null; then
+    die "responder hit unhandled seam ops: $(grep -h 'UNHANDLED op' "$E2E_RUN_DIR"/responder-*.log | sort -u | tr '\n' ' ')"
+fi
+
 # The verdict that let the message through crossed the seam verbatim:
 # lowercase module wire, parsed by the library, Accepted by the validator.
 grep -q "verify verdict=valid" "$E2E_RUN_DIR/responder-n2.log" \
     || die "n2's responder never answered a validate_proof with verdict=valid"
-GEN_COUNT=$(grep -c "generate ok" "$E2E_RUN_DIR/responder-n1.log" || true)
 N2_VERDICTS=$(grep -o "verify verdict=[a-z_]*" "$E2E_RUN_DIR/responder-n2.log" | sed 's/verify verdict=//' | tr '\n' ',' | sed 's/,$//')
-say "n1 proofs generated: $GEN_COUNT (each a real slot); n2 verdicts: $N2_VERDICTS"
+say "n2 verdict trail: $N2_VERDICTS"
 
 echo
 echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
@@ -570,4 +641,5 @@ echo "e2e:   seam      start carries the module config; module replies forwarded
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
 echo "e2e:   bring-up  n1 start+register ok (ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH); n2 register refused -> degraded gracefully"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
+echo "e2e:   gate      tampered signal -> \"invalid\" -> NOT delivered (negative control); $GEN_COUNT attempts = $GEN_COUNT distinct slots"
 echo "e2e:   verdicts  n2 saw: $N2_VERDICTS (lowercase module wire, crossing verbatim)"

@@ -138,5 +138,7 @@ private:
 
     bool membershipEventSubscribed;
 
-    static constexpr std::chrono::seconds CALLBACK_TIMEOUT{60};
+    // Above the largest Nim-side seam budget (95s registry reads), so the
+    // Nim timeout — which produces the dialect-correct failure — fires first.
+    static constexpr std::chrono::seconds CALLBACK_TIMEOUT{100};
 };

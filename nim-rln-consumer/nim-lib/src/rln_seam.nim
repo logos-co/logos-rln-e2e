@@ -191,7 +191,7 @@ proc rlnStop*(
   return await awaitResult(pending, timeout)
 
 proc rlnRegister*(
-    registryId, rlnIdentifier, optionsJson: string, timeout = SeamDefaultTimeout
+    registryId, rlnIdentifier, optionsJson: string, timeout = SeamRegistryReadTimeout
 ): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
   let pending = newPending()
   if pending.isNil:
@@ -210,7 +210,7 @@ proc rlnRegister*(
   return await awaitResult(pending, timeout)
 
 proc rlnGetMembershipState*(
-    registryId, rlnIdentifier: string, timeout = SeamDefaultTimeout
+    registryId, rlnIdentifier: string, timeout = SeamRegistryReadTimeout
 ): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
   let pending = newPending()
   if pending.isNil:
@@ -250,7 +250,7 @@ proc rlnGetEpochQuota*(
 proc rlnGenerateProof*(
     registryId, rlnIdentifier, signalHex: string,
     timestamp: uint64,
-    timeout = SeamDefaultTimeout,
+    timeout = SeamRegistryReadTimeout,
 ): Future[Result[string, string]] {.async: (raises: [CancelledError]).} =
   let pending = newPending()
   if pending.isNil:

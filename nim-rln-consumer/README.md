@@ -97,9 +97,8 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
    event / polling) — the model the module already implements. RESOLVED at
    delivery's `95e7e3c7`: per-op budgets from the module's documented time
    budgets — 95s for registry-read ops (`register`,
-   `get_membership_state`, `generate_proof`), 10s local for the rest. This
-   module still runs a flat 10s default; raise `E2E_CONSUMER_OP_TIMEOUT_S`
-   for slow targets.
+   `get_membership_state`, `generate_proof`), 10s local for the rest; this
+   module's defaults mirror them (`opTimeoutSec` / `registryOpTimeoutSec`).
 2. **The op was named `verify_proof` in the seam but `validate_proof` on
    the module.** RESOLVED: the `rln/integration-fixes` stack renames the
    seam's callback typedef, struct field and nim wrapper to
