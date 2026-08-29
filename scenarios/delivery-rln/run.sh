@@ -16,7 +16,10 @@
 #
 # What it proves:
 #   1. co-residency: the RLN stack + the RLN-enabled delivery_module load in
-#      one daemon, on both nodes.
+#      one daemon, on both nodes — and BOTH responder topologies work: n1
+#      runs delivery_module's in-process bridge (rlnBridgeAttach — the
+#      production default, no responder loop), n2 the external
+#      event-out/respond-in responder.
 #   2. bring-up via the REAL config surface: rln-relay-lez /
 #      rln-relay-registry-id / rln-relay-identifier /
 #      rln-relay-user-message-limit / rln-relay-registry-options ride
@@ -419,13 +422,24 @@ done
 
 # ---------- responders up, then the delivery nodes ---------------------------
 section "delivery nodes (bring-up via the real config surface)"
+# MIXED TOPOLOGY, both production-relevant shapes in one run:
+#   n1: delivery_module's IN-PROCESS bridge (rlnBridgeAttach) answers its own
+#       seam — no responder, the production default.
+#   n2: the external event-out/respond-in responder — the topology that also
+#       hosts the negative control's tamper hook (an in-process answer leaves
+#       no seam to corrupt at).
 for n in $NODES_ALL; do
     node_watch_start "$n" delivery_module
     : >"$E2E_RUN_DIR/responder-$n.log"
-    responder_loop "$n" &
-    RESPONDER_PIDS="$RESPONDER_PIDS $!"
 done
-say "responders: one background bridge per node"
+ATTACH=$(node_call n1 delivery_module rlnBridgeAttach "liblogos_rln_module" | jres)
+case "$ATTACH" in
+    *'"success":true'*) say "n1: in-process rln bridge attached (no responder)" ;;
+    *) die "n1: rlnBridgeAttach failed: ${ATTACH:-<empty>}" ;;
+esac
+responder_loop n2 &
+RESPONDER_PIDS="$RESPONDER_PIDS $!"
+say "n2: external responder up (event-out/respond-in topology)"
 
 # The RLN scope rides createNode's flat conf. n1 additionally carries the
 # funding pair via rln-relay-registry-options — the conf-fed path that
@@ -589,15 +603,15 @@ while [ "$ATTEMPT" -lt "$SEND_ATTEMPTS" ]; do
 done
 [ "$RECEIVED" = 1 ] || die "n2 never received a proof-gated message in $SEND_ATTEMPTS attempts — n2 responder log tail: $(tail -5 "$E2E_RUN_DIR/responder-n2.log")"
 
-# Every attempt spent a real slot: one generate per attempt, all slots distinct.
-sleep 1 # let the last responder log line flush
-GEN_SLOTS=$(grep -o "generate ok (slot [0-9]*" "$E2E_RUN_DIR/responder-n1.log" | grep -o '[0-9]*$')
-GEN_COUNT=$(printf '%s\n' "$GEN_SLOTS" | grep -c . || true)
+# Every attempt spent a real slot: one generate request per attempt (n1 is
+# bridged, so the module's replies are not harness-visible — the request
+# events still are, and the module's own quota assertions live in
+# consumer-register).
+sleep 1 # let the last event line flush
+GEN_COUNT=$(grep -c '"event":"rlnGenerateProofRequest"' "$(gv NODEEVT n1_delivery_module)" || true)
 [ "$GEN_COUNT" = "$ATTEMPT" ] \
-    || die "slot accounting: $GEN_COUNT proofs generated for $ATTEMPT send attempts — slots: $(printf '%s' "$GEN_SLOTS" | tr '\n' ' ')"
-[ "$(printf '%s\n' "$GEN_SLOTS" | sort -u | grep -c .)" = "$GEN_COUNT" ] \
-    || die "slot accounting: duplicate message_id slots issued: $(printf '%s' "$GEN_SLOTS" | tr '\n' ' ')"
-say "slot accounting: $GEN_COUNT attempts spent $GEN_COUNT distinct slots"
+    || die "slot accounting: $GEN_COUNT generate requests for $ATTEMPT send attempts"
+say "slot accounting: $GEN_COUNT attempts drove $GEN_COUNT generate requests"
 
 # ---------- negative control: the verdict actually GATES ----------------------
 # n2's responder now corrupts the SIGNAL before validating, forcing a real
@@ -641,5 +655,6 @@ echo "e2e:   seam      start carries the module config; module replies forwarded
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
 echo "e2e:   bring-up  n1 start+register ok (ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH); n2 register refused -> degraded gracefully"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
-echo "e2e:   gate      tampered signal -> \"invalid\" -> NOT delivered (negative control); $GEN_COUNT attempts = $GEN_COUNT distinct slots"
+echo "e2e:   topology  n1 IN-PROCESS bridge (rlnBridgeAttach, no responder); n2 external responder"
+echo "e2e:   gate      tampered signal -> \"invalid\" -> NOT delivered (negative control); $ATTEMPT attempts = $GEN_COUNT generate requests"
 echo "e2e:   verdicts  n2 saw: $N2_VERDICTS (lowercase module wire, crossing verbatim)"
