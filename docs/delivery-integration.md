@@ -207,10 +207,17 @@ Your branch surfaced these; our stopgaps are marked:
    options array; the acceptance passes `funding_holding_account_id`
    this way and asserts it crosses — the responder injects nothing.
 
-## 7. Responder contract (for whoever answers the events)
+## 7. Answering the seam: in-process bridge, or an external responder
 
-Forward the module's reply VERBATIM — a responder is a router, not a
-translator. `scenarios/delivery-rln/run.sh` is the reference: it routes
-each `rln*Request` to `liblogos_rln_module` and hands the raw reply to
+The simplest production shape needs no responder at all: delivery-module
+0.3.0's `rlnBridgeAttach` serves the seam in-process — every op invokes
+the co-resident RLN module over lp and the reply crosses back verbatim
+(two internal lanes keep a ~70s register from blocking validate on the
+relay hot path). The acceptance runs n1 this way.
+
+For an external responder (n2's topology): forward the module's reply
+VERBATIM — a responder is a router, not a translator.
+`scenarios/delivery-rln/run.sh` is the reference: it routes each
+`rln*Request` to `liblogos_rln_module` and hands the raw reply to
 `rlnRespond`, and it greps your library's own log lines to prove the
 responses landed inside the per-op budgets.
