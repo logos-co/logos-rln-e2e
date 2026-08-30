@@ -151,7 +151,7 @@ esac
 # common option key, funding the logos-namespace one.
 OPTIONS_JSON="[{\"key\":\"rate_limit\",\"value\":\"$RATE_LIMIT\"},{\"key\":\"funding_holding_account_id\",\"value\":\"$HOLDING\"}]"
 say "register($REGISTRY_ID, rate $RATE_LIMIT) via membership module"
-REG=$(node_call "$NODE" liblogos_rln_module register \
+REG=$(node_call "$NODE" liblogos_rln_module register_membership \
     "$REGISTRY_ID" "$(argfile rlnid "$RLN_ID")" "$OPTIONS_JSON" | jres) || REG=""
 case "$REG" in
     *'"state":"pending"'*) ;;

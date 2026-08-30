@@ -233,10 +233,10 @@ answer_event() {
             # (reqId, registryId, rlnIdentifier, optionsJson) — the options
             # array arrives COMPLETE from the node's conf (rate_limit + the
             # funding pair via rln-relay-registry-options); it IS the
-            # module's 0.6 register wire, so it passes through untouched
+            # module's register_membership wire, so it passes through untouched
             # and the module's tstr reply goes back verbatim.
             local reg note
-            reg=$(node_call "$node" liblogos_rln_module register \
+            reg=$(node_call "$node" liblogos_rln_module register_membership \
                 "$(b64d "$a1")" "$(argfile "rr_${node}_${RANDOM}" "$(b64d "$a2")")" \
                 "$(b64d "$a3")" | jres) || reg=""
             [ -n "$reg" ] || reg="$TSTR_FAIL"

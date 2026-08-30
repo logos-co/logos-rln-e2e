@@ -225,7 +225,7 @@ std::string RlnSeamBridge::serveOp(const Job& job)
         // The seam's LIP RegistryOptions array IS the module wire (0.6) —
         // pass it through verbatim; the module lifts the common rate_limit
         // key (and applies its default when absent) itself.
-        r = m_rln.raw("register",
+        r = m_rln.raw("register_membership",
             json::array({job.registryId, job.rlnIdentifier, job.optionsJson}), kRegisterMs);
         break;
     case Op::GetState:

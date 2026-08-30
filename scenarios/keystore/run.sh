@@ -150,7 +150,7 @@ section "setup: register + activate"
 UNLOCK=$(node_call "$NODE" liblogos_rln_module unlock_keystore "$PASSWORD" | jres) || UNLOCK=""
 case "$UNLOCK" in *'"unlocked":true'*) ;; *) die "unlock failed: ${UNLOCK:-<empty>}" ;; esac
 OPTIONS_JSON="[{\"key\":\"rate_limit\",\"value\":\"$RATE_LIMIT\"},{\"key\":\"funding_holding_account_id\",\"value\":\"$HOLDING\"}]"
-REG=$(node_call "$NODE" liblogos_rln_module register \
+REG=$(node_call "$NODE" liblogos_rln_module register_membership \
     "$REGISTRY_ID" "$(argfile rlnid "$RLN_ID")" "$OPTIONS_JSON" | jres) || REG=""
 case "$REG" in *'"state":"pending"'*) ;; *) die "register failed: ${REG:-<empty>}" ;; esac
 MEMBERSHIP_HASH=$(printf '%s' "$REG" | jfield membership_hash)
@@ -229,13 +229,13 @@ case "$DP" in
     *) die "generate_proof on a locked store must fail 'locked', got: ${DP:-<empty>}" ;;
 esac
 FRESH_ID=$(openssl rand -hex 32)
-FREG=$(node_call "$NODE" liblogos_rln_module register \
+FREG=$(node_call "$NODE" liblogos_rln_module register_membership \
     "$REGISTRY_ID" "$(argfile fresh "$FRESH_ID")" "[{\"key\":\"rate_limit\",\"value\":\"$RATE_LIMIT\"}]" | jres) || FREG=""
 case "$FREG" in
     *locked*) say "fresh-scope register while locked: clean 'locked' (no mint)" ;;
     *) die "fresh-scope register on a locked store must fail 'locked', got: ${FREG:-<empty>}" ;;
 esac
-RREG=$(node_call "$NODE" liblogos_rln_module register \
+RREG=$(node_call "$NODE" liblogos_rln_module register_membership \
     "$REGISTRY_ID" "$(argfile rereg "$RLN_ID")" "$OPTIONS_JSON" | jres) || RREG=""
 case "$RREG" in
     *"$MEMBERSHIP_HASH"*) say "LIVE-scope re-register while locked short-circuits to the existing membership — delivery's register-on-every-start survives a locked store" ;;
@@ -316,7 +316,7 @@ SJSON=$(node_call "$NODE" liblogos_rln_module get_membership_state \
 STATE=$(printf '%s' "$SJSON" | jfield state)
 case "$STATE" in active|grace_period) ;; \
     *) die "membership state after restart: ${STATE:-<none>} (reply: ${SJSON:-<empty>})" ;; esac
-RREG=$(node_call "$NODE" liblogos_rln_module register \
+RREG=$(node_call "$NODE" liblogos_rln_module register_membership \
     "$REGISTRY_ID" "$(argfile rereg2 "$RLN_ID")" "$OPTIONS_JSON" | jres) || RREG=""
 case "$RREG" in
     *"$MEMBERSHIP_HASH"*) say "re-register after restart is idempotent (same membership, no second mint)" ;;

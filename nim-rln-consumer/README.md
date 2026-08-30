@@ -46,11 +46,11 @@ scenarios can probe other budgets.
 
 Op ↔ RLN-module method mapping (the bridge owns it):
 
-| seam op (delivery's name) | module method (0.6.1) | dialect |
+| seam op (delivery's name) | module method (0.7.0) | dialect |
 |---|---|---|
 | `start` | `start` | result |
 | `stop` | `stop` | result |
-| `register_membership` | `register` | tstr |
+| `register_membership` | `register_membership` | tstr |
 | `get_membership_state` | `get_membership_state` | tstr |
 | `get_epoch_quota` | `get_epoch_quota` | result |
 | `generate_proof` | `generate_proof` | result |
@@ -153,7 +153,9 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
    stack's register retype they land in the RegistryOptions array, so
    `funding_holding_account_id` rides the conf and the responder injects
    nothing (asserted end-to-end by `delivery-rln`).
-10. **RESOLVED (module wire 0.6.0)**: the module's register now speaks the
+10. **RESOLVED (module wire 0.6.0; renamed register_membership at 0.7.0 —
+    "register" is a C/C++ keyword generated clients could not carry, and the
+    seam already used the escaped name)**: the module's register now speaks the
     LIP shape — `register(registry_id, rln_identifier, options_json)` with
     the RegistryOptions key/value array carrying `rate_limit` (absent →
     the module's default). The bridge and the `delivery-rln` responder pass
