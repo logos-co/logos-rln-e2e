@@ -309,10 +309,19 @@ for _ in range(200):
     if d.get("id") != 1:
         continue
     r = d.get("result", d)
-    if isinstance(r, dict) and set(r) == {"value"}:
-        r = r["value"]
-    if isinstance(r, str) and r[:1] in "{[":
-        pass  # module reply JSON: print verbatim
+    # callCoreModuleMethod returns a QString wrapping the module's reply as
+    # {"result": <variantToJsonValue(result)>} (CoreModuleManager.cpp) —
+    # unwrap that one layer so a tstr reply prints as the module's own
+    # JSON, an int as an int; its {"error": ...} shape stays visible.
+    if isinstance(r, str) and r[:1] == "{":
+        try:
+            inner = json.loads(r)
+            if isinstance(inner, dict) and set(inner) == {"result"}:
+                r = inner["result"]
+        except Exception:
+            pass
+    if isinstance(r, bool):
+        r = "true" if r else "false"
     elif isinstance(r, (dict, list)):
         r = json.dumps(r)
     print(r if r is not None else "")
