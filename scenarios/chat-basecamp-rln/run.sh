@@ -209,7 +209,12 @@ wait_balance n1 "$HOLDING" "$CLAIM" >/dev/null || die "faucet credit never lande
 # Basecamp's wallet: its OWN copy of the home, taken AFTER the claim so its
 # storage carries the holding account's derivation (deterministic chain, but
 # the wallet signs only for accounts its storage knows). Two lez_core
-# instances must never share one mutable storage.json.
+# instances must never share one mutable storage.json. storage.json is only
+# flushed at checkpoints — a raw copy handed basecamp a wallet parked at the
+# FIRST sync chunk (3000) — so persist n1's in-memory state (sync height +
+# the derived payer) first.
+SAVE=$(node_call n1 lez_core save | jres) || SAVE=""
+say "n1: wallet state saved (reply ${SAVE:-<empty>})"
 sleep 2
 cp -R "$E2E_WALLET_HOME" "$E2E_RUN_DIR/wallet-basecamp" \
     || die "cannot copy wallet home for basecamp"
@@ -318,6 +323,21 @@ PYEOF
 
 bc_eval() { printf '%s' "$1" | python3 "$INSP" "$INSPECTOR_PORT" eval 2>>"$E2E_RUN_DIR/inspector.log"; }
 bc_call() { printf '%s' "${3:-[]}" | python3 "$INSP" "$INSPECTOR_PORT" call "$1" "$2" 2>>"$E2E_RUN_DIR/inspector.log"; }
+# Strict integer parse of a reply — an error JSON carries digits too (a
+# timed-out call's code), never mistake those for a block height.
+bc_int() { python3 -c '
+import json, sys
+r = sys.stdin.read().strip()
+try:
+    d = json.loads(r)
+except Exception:
+    sys.exit(0)
+if isinstance(d, dict):
+    d = d.get("value")
+if isinstance(d, int) and not isinstance(d, bool):
+    print(d)
+'; }
+bc_synced() { bc_call lez_core get_last_synced_block | bc_int; }
 
 BC_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 2 ))" "$N1_MADDR" \
     "$(printf ',"rln-relay-registry-options":"{\\"funding_holding_account_id\\":\\"%s\\"}"' "$HOLDING")")
@@ -374,25 +394,39 @@ OPEN_ARGS=$(jq -cn --arg c "$BHOME/wallet_config.json" --arg s "$BHOME/storage.j
 bc_call lez_core open "$OPEN_ARGS" >/dev/null   # reply unreliable; probe below
 BSYNC=""
 for _t in $(seq 1 9); do
-    BSYNC=$(bc_call lez_core get_last_synced_block | grep -oE '[0-9]+' | head -1) || BSYNC=""
+    BSYNC=$(bc_synced) || BSYNC=""
     [ -n "$BSYNC" ] && break
     sleep 10
 done
 [ -n "$BSYNC" ] || die "basecamp wallet never became usable after open"
-say "basecamp wallet open (synced to $BSYNC)"
-SYNC_STEP=3000
+say "basecamp wallet open (synced to $BSYNC, head $CHAIN_HEAD)"
+# The wallet serves NO reads while sync_to_block runs and the app-side call
+# times out long before a chunk lands (the membership-ui patience lesson):
+# drive modest chunks, never re-issue a chunk still in flight, treat an
+# unanswered probe as "busy", and fail only after E2E_SYNC_STALL_S of zero
+# progress. With the saved storage above this is normally a few blocks.
+SYNC_STEP="${E2E_BASECAMP_SYNC_STEP:-500}"
+STALL_S="${E2E_SYNC_STALL_S:-180}"
 CUR="$BSYNC"
+TGT="$CUR"
+LAST_PROGRESS=$(date +%s)
 while [ "$CUR" -lt "$CHAIN_HEAD" ]; do
-    TGT=$(( CUR + SYNC_STEP ))
-    [ "$TGT" -gt "$CHAIN_HEAD" ] && TGT="$CHAIN_HEAD"
-    bc_call lez_core sync_to_block "[$TGT]" >/dev/null
-    NEXT=$(bc_call lez_core get_last_synced_block | grep -oE '[0-9]+' | head -1) || NEXT=""
-    case "$NEXT" in ''|*[!0-9]*) break ;; esac
-    [ "$NEXT" = "$CUR" ] && break
-    CUR="$NEXT"
-    say "  basecamp wallet sync: $CUR / $CHAIN_HEAD"
+    if [ "$CUR" -ge "$TGT" ]; then
+        TGT=$(( CUR + SYNC_STEP ))
+        [ "$TGT" -gt "$CHAIN_HEAD" ] && TGT="$CHAIN_HEAD"
+        bc_call lez_core sync_to_block "[$TGT]" >/dev/null 2>&1 || true
+    fi
+    NEXT=$(bc_synced) || NEXT=""
+    if [ -n "$NEXT" ] && [ "$NEXT" -gt "$CUR" ]; then
+        CUR="$NEXT"
+        LAST_PROGRESS=$(date +%s)
+        say "  basecamp wallet sync: $CUR / $CHAIN_HEAD"
+    elif [ $(( $(date +%s) - LAST_PROGRESS )) -ge "$STALL_S" ]; then
+        die "basecamp wallet sync stalled at $CUR for ${STALL_S}s (head $CHAIN_HEAD, chunk target $TGT)"
+    else
+        sleep 3
+    fi
 done
-[ "$CUR" -ge "$CHAIN_HEAD" ] || die "basecamp wallet sync stalled at $CUR (head $CHAIN_HEAD)"
 say "basecamp wallet synced to head"
 
 # ---------- basecamp RLN + bridge + chat -------------------------------------
