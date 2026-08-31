@@ -571,6 +571,30 @@ done
 say "both nodes subscribed to $TOPIC"
 sleep 1
 
+# n2 never registered, so its valid-root window warms only through its own
+# registry reads — which go lez-rln -> lez_core (the wallet). On testnet the
+# wallet can still be churning through a long sync here (thousands of
+# "Stored persistent accounts" writes), and while its event loop is
+# saturated the remote object is unacquirable: every validate_proof then
+# answers not_ready ("valid-root window not warm yet") and delivery Ignores
+# the message. Wait for n2's read path before sending; validate nudges the
+# window's own refresh once reads work.
+ROOTS_WARM_BUDGET_S="${E2E_ROOTS_WARM_BUDGET_S:-300}"
+say "waiting for n2's registry read path (valid roots via lez_core; budget ${ROOTS_WARM_BUDGET_S}s)…"
+ROOTS_T0=$(date +%s)
+ROOTS_N2=""
+while :; do
+    ROOTS_N2=$(node_call n2 liblogos_rln_module get_valid_roots "$REGISTRY_ID" 2>/dev/null | jres) || ROOTS_N2=""
+    case "$ROOTS_N2" in
+        *'"valid_roots":["'*) break ;;
+    esac
+    if [ $(( $(date +%s) - ROOTS_T0 )) -ge "$ROOTS_WARM_BUDGET_S" ]; then
+        die_node n2 "registry read path never warmed in ${ROOTS_WARM_BUDGET_S}s (wallet still syncing?) — last reply: ${ROOTS_N2:-<empty>}"
+    fi
+    sleep 5
+done
+say "n2 registry read path warm after $(( $(date +%s) - ROOTS_T0 ))s"
+
 # ---------- send leg: proof-gated relay n1 -> n2 -----------------------------
 section "send leg (proof-gated relay, n1 -> n2)"
 RECEIVED=0
