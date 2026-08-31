@@ -82,6 +82,35 @@ _delivery_lgx() {
     lgx_of "$out"
 }
 
+# chat_module rides its own repo's flake (no pin in the e2e flake yet — the
+# fork branch is a moving target). Its delivery dependency is the flake
+# input named `logos-delivery-module` (NOT this repo's `delivery-module`),
+# which nests the Nim library as `logos-delivery`; the same two checkouts
+# that override the delivery bundle override chat's copy of it, so the
+# chat_module and delivery_module .lgx bundles are built from the SAME
+# forked trees. Reuses the staged copies _delivery_lgx already made.
+_chat_lgx() {
+    local -a overrides=()
+    local src dm ld out
+    [ -n "${CHAT_MODULE_CHECKOUT:-}" ] \
+        || die "chat_module requested: set CHAT_LGX or CHAT_MODULE_CHECKOUT (no flake pin yet)"
+    say "chat-lgx: building from a filtered copy of $CHAT_MODULE_CHECKOUT" >&2
+    src=$(staged_tree "$CHAT_MODULE_CHECKOUT" chat-module)
+    if [ -n "${DELIVERY_MODULE_CHECKOUT:-}" ]; then
+        dm="$E2E_RUN_DIR/src-delivery-module"
+        [ -d "$dm" ] || dm=$(staged_tree "$DELIVERY_MODULE_CHECKOUT" delivery-module)
+        overrides+=(--override-input logos-delivery-module "path:$dm")
+    fi
+    if [ -n "${LOGOS_DELIVERY_CHECKOUT:-}" ]; then
+        ld="$E2E_RUN_DIR/src-logos-delivery"
+        [ -d "$ld" ] || ld=$(staged_tree "$LOGOS_DELIVERY_CHECKOUT" logos-delivery)
+        overrides+=(--override-input logos-delivery-module/logos-delivery "path:$ld")
+    fi
+    out=$(cd "$src" && nix build --no-link --print-out-paths --accept-flake-config \
+        ".#lgx" "${overrides[@]}") || die "nix build chat-module .#lgx failed"
+    lgx_of "$out"
+}
+
 # rln-layouts is the on-chain wire: the module stack decodes chain state with
 # it, so its pinned lez-rln rev must be the rev whose programs are deployed.
 _check_pins() {
@@ -150,6 +179,14 @@ resolve_artifacts() {
             ;;
     esac
 
+    # chat_module (chat-basecamp-rln): checkout-or-env only, see _chat_lgx.
+    case " ${NEEDS_MODULES:-} " in
+        *" chat_module "*)
+            [ -n "${CHAT_LGX:-}" ] || CHAT_LGX=$(_chat_lgx)
+            export CHAT_LGX
+            ;;
+    esac
+
     # Gifter-path artifacts (consumer-gifter): not pinned in this repo's flake
     # yet — the gifter needs a register-target fix that hasn't merged (its
     # lp.rs still calls the pre-rename module name), so these resolve from an
@@ -175,6 +212,28 @@ resolve_artifacts() {
             ;;
     esac
 
+    # Applications (NEEDS_APPS) — not .lgx bundles, not installed into
+    # E2E_MODULES_DIR; each resolves to an executable the scenario launches
+    # itself. basecamp: the dev #app build ONLY — its wrapper sets the Qt
+    # paths, the QML inspector is compiled in, and (critically) only the
+    # non-portable build appends the `-dev` variant liblogos discovery needs
+    # to load the harness-built module bundles; the portable inspector
+    # bundle would silently load zero side-loaded modules.
+    case " ${NEEDS_APPS:-} " in
+        *" basecamp "*)
+            if [ -z "${BASECAMP_APP:-}" ]; then
+                [ -n "${BASECAMP_CHECKOUT:-}" ] \
+                    || die "basecamp requested: set BASECAMP_APP or BASECAMP_CHECKOUT"
+                say "basecamp: building #app from $BASECAMP_CHECKOUT"
+                out=$(cd "$BASECAMP_CHECKOUT" && nix build .#app --no-link --print-out-paths --accept-flake-config | tail -1)
+                BASECAMP_APP="$out/bin/LogosBasecamp"
+            fi
+            [ -x "$BASECAMP_APP" ] || die "basecamp binary not executable: $BASECAMP_APP"
+            export BASECAMP_APP
+            say "basecamp app: $BASECAMP_APP"
+            ;;
+    esac
+
     E2E_MODULES_DIR="$E2E_RUN_DIR/modules"
     export E2E_MODULES_DIR
     mkdir -p "$E2E_MODULES_DIR"
@@ -182,6 +241,7 @@ resolve_artifacts() {
     install_lgx "$LEZ_RLN_LGX"
     install_lgx "$RLN_LGX"
     [ -n "${DELIVERY_LGX:-}" ] && install_lgx "$DELIVERY_LGX"
+    [ -n "${CHAT_LGX:-}" ] && install_lgx "$CHAT_LGX"
     [ -n "${CONSUMER_LGX:-}" ] && install_lgx "$CONSUMER_LGX"
     [ -n "${LIBP2P_LGX:-}" ] && install_lgx "$LIBP2P_LGX"
     [ -n "${GIFTER_LGX:-}" ] && install_lgx "$GIFTER_LGX"
