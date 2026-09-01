@@ -332,10 +332,22 @@ IDC=$(printf '%s' "$MEMS" | jq -r '.memberships[0].credential.identity_commitmen
 [ -n "$IDC" ] && [ "$IDC" != "null" ] || die "cannot extract identity_commitment: $MEMS"
 say "basecamp identity commitment: ${IDC:0:18}…"
 
-# Chain oracle via n2 — the service node that paid (its registry module is
-# busy anyway and demonstrably healthy); n1 stays the message-leg verifier.
-confirm_and_ready n2 "$IDC" "" basecamp \
-    || die "registry never confirmed basecamp's membership (registered:true)"
+# Chain oracle: n1 first (the idle verifier), n2 as fallback. Either node's
+# liblogos_lez_rln_module can be freshly WEDGED — the module is
+# single-threaded and one blocked handler (n2: the gifter's own
+# register_member sits in it right now; n1: a roots refresh against a busy
+# wallet) starves every later call until the process is killed — so never
+# bet the whole budget on one reader.
+_CONFIRM_SAVED="$E2E_CONFIRM_TIMEOUT_S"
+E2E_CONFIRM_TIMEOUT_S=300
+if ! confirm_and_ready n1 "$IDC" "" basecamp; then
+    say "n1 oracle inconclusive within 300s — retrying via n2 (the payer)"
+    confirm_and_ready n2 "$IDC" "" basecamp || {
+        E2E_CONFIRM_TIMEOUT_S="$_CONFIRM_SAVED"
+        die "registry never confirmed basecamp's membership (registered:true) via n1 OR n2"
+    }
+fi
+E2E_CONFIRM_TIMEOUT_S="$_CONFIRM_SAVED"
 say "on-chain: registered:true at leaf $E2E_ACTUAL_LEAF"
 
 # Who paid: the gifter's holding dropped; basecamp's wallet is untouched.
