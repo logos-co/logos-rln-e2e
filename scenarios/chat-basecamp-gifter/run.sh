@@ -340,8 +340,10 @@ say "basecamp identity commitment: ${IDC:0:18}…"
 # bet the whole budget on one reader.
 _CONFIRM_SAVED="$E2E_CONFIRM_TIMEOUT_S"
 E2E_CONFIRM_TIMEOUT_S=300
+ORACLE=n1
 if ! confirm_and_ready n1 "$IDC" "" basecamp; then
     say "n1 oracle inconclusive within 300s — retrying via n2 (the payer)"
+    ORACLE=n2
     confirm_and_ready n2 "$IDC" "" basecamp || {
         E2E_CONFIRM_TIMEOUT_S="$_CONFIRM_SAVED"
         die "registry never confirmed basecamp's membership (registered:true) via n1 OR n2"
@@ -439,6 +441,6 @@ echo "e2e: PASS — chat-basecamp-gifter (target $E2E_TARGET)"
 echo "e2e:   service   n2 = logoscore + libp2p_module + rln_gifter_module (open gifter, faucet-funded $GHOLD)"
 echo "e2e:   product   chat_module -> delivery_module -> RLN module -> gifter client -> libp2p -> the service, all INSIDE Basecamp"
 echo "e2e:   config    rln-relay-registry-options = {delegated:true, gifter_peer_id, gifter_multiaddr} via CHAT_DELIVERY_CONF_OVERRIDE"
-echo "e2e:   register  delegated, through chat's own boot: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: n2)"
+echo "e2e:   register  delegated, through chat's own boot: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: $ORACLE)"
 echo "e2e:   payer     the gifter paid $PAID RLNTOK; basecamp's wallet (accounts + balances) unchanged"
 echo "e2e:   message   basecamp send_message -> proof attached -> gossipsub -> n1 validate -> chat message_received (attempt $ATTEMPT/$SEND_ATTEMPTS)"
