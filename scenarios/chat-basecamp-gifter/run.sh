@@ -332,11 +332,13 @@ IDC=$(printf '%s' "$MEMS" | jq -r '.memberships[0].credential.identity_commitmen
 [ -n "$IDC" ] && [ "$IDC" != "null" ] || die "cannot extract identity_commitment: $MEMS"
 say "basecamp identity commitment: ${IDC:0:18}…"
 
-confirm_and_ready n1 "$IDC" "" basecamp \
+# Chain oracle via n2 — the service node that paid (its registry module is
+# busy anyway and demonstrably healthy); n1 stays the message-leg verifier.
+confirm_and_ready n2 "$IDC" "" basecamp \
     || die "registry never confirmed basecamp's membership (registered:true)"
 say "on-chain: registered:true at leaf $E2E_ACTUAL_LEAF"
 
-# Who paid: the gifter's holding dropped; basecamp still holds nothing.
+# Who paid: the gifter's holding dropped; basecamp's wallet is untouched.
 GBAL1=$(node_call n2 liblogos_lez_rln_module get_token_balance "$(argfile gb1 "$GHOLD")" | jres | jfield balance)
 case "$GBAL1" in ''|*[!0-9]*) die "cannot read the gifter's balance after registration: '${GBAL1:-<empty>}'" ;; esac
 [ "$GBAL1" -lt "$GBAL0" ] \
@@ -425,6 +427,6 @@ echo "e2e: PASS — chat-basecamp-gifter (target $E2E_TARGET)"
 echo "e2e:   service   n2 = logoscore + libp2p_module + rln_gifter_module (open gifter, faucet-funded $GHOLD)"
 echo "e2e:   product   chat_module -> delivery_module -> RLN module -> gifter client -> libp2p -> the service, all INSIDE Basecamp"
 echo "e2e:   config    rln-relay-registry-options = {delegated:true, gifter_peer_id, gifter_multiaddr} via CHAT_DELIVERY_CONF_OVERRIDE"
-echo "e2e:   register  delegated, through chat's own boot: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: n1)"
+echo "e2e:   register  delegated, through chat's own boot: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: n2)"
 echo "e2e:   payer     the gifter paid $PAID RLNTOK; basecamp's wallet (accounts + balances) unchanged"
 echo "e2e:   message   basecamp send_message -> proof attached -> gossipsub -> n1 validate -> chat message_received (attempt $ATTEMPT/$SEND_ATTEMPTS)"

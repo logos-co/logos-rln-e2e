@@ -50,22 +50,51 @@ wallet_open() {
 }
 
 # Sync to the chain head in SYNC_STEP chunks (a single jump over a long chain
-# times the sequencer poll out). Prints the block actually reached; stops early
-# when a chunk makes no progress.
+# times the sequencer poll out). Prints the block actually reached; returns 1
+# when the head is NOT reached within E2E_SYNC_STALL_S of zero progress.
+#
+# The wallet answers no reads mid-chunk and the CLI call can time out while
+# the chunk keeps running daemon-side, so "height unchanged after a chunk" is
+# NOT "done": an unanswered probe means BUSY (wait), an answered-but-unchanged
+# height means IDLE (the chunk ended early — re-issue it). The old
+# stop-on-no-progress shape left n1 parked at block 3000 with a "synced"
+# verdict, after which its lez-rln module wedged on the stale wallet.
 # Usage: wallet_sync <node>
 wallet_sync() {
-    local node="$1" head cur tgt next
+    local node="$1" head cur tgt next now last_progress last_issue=0
+    local stall_s="${E2E_SYNC_STALL_S:-600}" reissue_s="${E2E_SYNC_REISSUE_S:-30}"
     head=$(chain_head) || die "wallet_sync: cannot probe chain head"
     cur=$(node_call "$node" "$E2E_WALLET_MOD" get_last_synced_block | jres | jval)
     case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    tgt="$cur"
+    last_progress=$(date +%s)
     while [ "$cur" -lt "$head" ]; do
-        tgt=$((cur + SYNC_STEP))
-        [ "$tgt" -gt "$head" ] && tgt="$head"
-        node_call "$node" "$E2E_WALLET_MOD" sync_to_block "$tgt" >/dev/null 2>&1
+        now=$(date +%s)
+        if [ "$cur" -ge "$tgt" ]; then
+            tgt=$((cur + SYNC_STEP))
+            [ "$tgt" -gt "$head" ] && tgt="$head"
+            node_call "$node" "$E2E_WALLET_MOD" sync_to_block "$tgt" >/dev/null 2>&1
+            last_issue=$now
+        fi
         next=$(node_call "$node" "$E2E_WALLET_MOD" get_last_synced_block | jres | jval)
-        case "$next" in ''|*[!0-9]*) break ;; esac
-        [ "$next" = "$cur" ] && break
-        cur="$next"
+        case "$next" in ''|*[!0-9]*) next="" ;; esac
+        now=$(date +%s)
+        if [ -n "$next" ] && [ "$next" -gt "$cur" ]; then
+            cur="$next"
+            last_progress=$now
+        elif [ $(( now - last_progress )) -ge "$stall_s" ]; then
+            printf '%s' "$cur"
+            return 1
+        elif [ -z "$next" ]; then
+            sleep 5   # BUSY: the wallet serves no reads mid-chunk
+        else
+            # IDLE without progress: re-issue the chunk, at most every reissue_s.
+            if [ $(( now - last_issue )) -ge "$reissue_s" ]; then
+                node_call "$node" "$E2E_WALLET_MOD" sync_to_block "$tgt" >/dev/null 2>&1
+                last_issue=$now
+            fi
+            sleep 2
+        fi
     done
     printf '%s' "$cur"
 }
