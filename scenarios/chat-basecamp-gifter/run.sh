@@ -55,7 +55,6 @@ SEND_ATTEMPTS="${E2E_SEND_ATTEMPTS:-3}"
 RECV_WAIT_S="${E2E_RECV_WAIT_S:-15}"
 REG_WAIT_S="${E2E_REG_WAIT_S:-240}"
 CLUSTER_ID="198"
-NODES_ALL="n1 n2"
 
 for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
           E2E_CONFIG_ACCOUNT E2E_TREE_ID E2E_FUNDING E2E_CONFIRM_TIMEOUT_S \
@@ -247,11 +246,25 @@ basecamp_load_modules lez_core liblogos_lez_rln_module libp2p_module rln_gifter_
 
 section "basecamp wallet (open + sync, read-only use)"
 basecamp_wallet_open_sync "$BHOME"
-ACCTS0=$(bc_call lez_core list_accounts) || ACCTS0=""
-case "$ACCTS0" in
-    "[]"|"") say "basecamp wallet holds NO accounts (fundless by construction)" ;;
-    *) die "basecamp wallet unexpectedly holds accounts before registering: $ACCTS0" ;;
-esac
+# The seed derives a few accounts of its own, so "fundless" is an invariant,
+# not an empty list: basecamp's accounts and their RLNTOK balances must be
+# IDENTICAL before and after the registration (read through n2's registry
+# module — a missing token account counts as 0).
+bc_accounts_snapshot() {
+    local accts ids id bal
+    accts=$(bc_call lez_core list_accounts) || accts=""
+    ids=$(printf '%s' "$accts" | jq -r '.[]?.account_id' 2>/dev/null)
+    for id in $ids; do
+        bal=$(node_call n2 liblogos_lez_rln_module get_token_balance "$(argfile "snap_$RANDOM" "$id")" | jres) || bal=""
+        case "$bal" in
+            *'"exists":false'*) bal=0 ;;
+            *) bal=$(printf '%s' "$bal" | jfield balance) ;;
+        esac
+        printf '%s %s\n' "$id" "${bal:-0}"
+    done | sort
+}
+SNAP0=$(bc_accounts_snapshot)
+say "basecamp wallet: $(printf '%s\n' "$SNAP0" | grep -c .) seed-derived accounts, RLNTOK balances: $(printf '%s\n' "$SNAP0" | awk '{print $2}' | tr '\n' ' ')"
 
 # The gifter CLIENT dials out through basecamp's own libp2p node.
 LP=$(bc_call libp2p_module createNode "$(jq -cn --arg c '{"addrs":["/ip4/127.0.0.1/tcp/0"]}' '[$c]')") || LP=""
@@ -335,11 +348,10 @@ if [ "$PAID" = "$EXPECTED" ]; then
 else
     say "gifter paid $PAID RLNTOK (expected $EXPECTED = rate × price; noted, non-fatal)"
 fi
-ACCTS1=$(bc_call lez_core list_accounts) || ACCTS1=""
-case "$ACCTS1" in
-    "[]"|"") say "basecamp wallet still holds NO accounts — it never touched funds" ;;
-    *) die "basecamp wallet grew accounts during a delegated registration: $ACCTS1" ;;
-esac
+SNAP1=$(bc_accounts_snapshot)
+[ "$SNAP0" = "$SNAP1" ] \
+    || die "basecamp's wallet changed across a delegated registration (it should have paid nothing) — before: [$(printf '%s' "$SNAP0" | tr '\n' ';')] after: [$(printf '%s' "$SNAP1" | tr '\n' ';')]"
+say "basecamp wallet unchanged (same accounts, same balances) — it paid nothing"
 
 # ---------- message leg -------------------------------------------------------
 section "message leg (proof-gated chat, basecamp -> n1)"
@@ -414,5 +426,5 @@ echo "e2e:   service   n2 = logoscore + libp2p_module + rln_gifter_module (open 
 echo "e2e:   product   chat_module -> delivery_module -> RLN module -> gifter client -> libp2p -> the service, all INSIDE Basecamp"
 echo "e2e:   config    rln-relay-registry-options = {delegated:true, gifter_peer_id, gifter_multiaddr} via CHAT_DELIVERY_CONF_OVERRIDE"
 echo "e2e:   register  delegated, through chat's own boot: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: n1)"
-echo "e2e:   payer     the gifter paid $PAID RLNTOK; basecamp's wallet holds zero accounts before and after"
+echo "e2e:   payer     the gifter paid $PAID RLNTOK; basecamp's wallet (accounts + balances) unchanged"
 echo "e2e:   message   basecamp send_message -> proof attached -> gossipsub -> n1 validate -> chat message_received (attempt $ATTEMPT/$SEND_ATTEMPTS)"
