@@ -423,19 +423,18 @@ say "basecamp wallet open (synced to $BSYNC, head $CHAIN_HEAD)"
 # sync from 0 — budget ~10-15 min on the hosted testnet.
 SYNC_STEP="${E2E_BASECAMP_SYNC_STEP:-250}"
 REISSUE_S="${E2E_SYNC_REISSUE_S:-30}"
-STALL_S="${E2E_SYNC_STALL_S:-180}"
+STALL_S="${E2E_SYNC_STALL_S:-600}"
 CUR="$BSYNC"
 TGT="$CUR"
 LAST_PROGRESS=$(date +%s)
 LAST_ISSUE=0
 LAST_SAID=0
+BUSY_N=0
 while [ "$CUR" -lt "$CHAIN_HEAD" ]; do
     NOW=$(date +%s)
-    if [ "$CUR" -ge "$TGT" ] || [ $(( NOW - LAST_ISSUE )) -ge "$REISSUE_S" ]; then
-        if [ "$CUR" -ge "$TGT" ]; then
-            TGT=$(( CUR + SYNC_STEP ))
-            [ "$TGT" -gt "$CHAIN_HEAD" ] && TGT="$CHAIN_HEAD"
-        fi
+    if [ "$CUR" -ge "$TGT" ]; then
+        TGT=$(( CUR + SYNC_STEP ))
+        [ "$TGT" -gt "$CHAIN_HEAD" ] && TGT="$CHAIN_HEAD"
         bc_call lez_core sync_to_block "[$TGT]" >/dev/null 2>&1 || true
         LAST_ISSUE=$NOW
     fi
@@ -443,13 +442,28 @@ while [ "$CUR" -lt "$CHAIN_HEAD" ]; do
     if [ -n "$NEXT" ] && [ "$NEXT" -gt "$CUR" ]; then
         CUR="$NEXT"
         LAST_PROGRESS=$NOW
+        BUSY_N=0
         if [ $(( CUR - LAST_SAID )) -ge 2000 ] || [ "$CUR" -ge "$CHAIN_HEAD" ]; then
             say "  basecamp wallet sync: $CUR / $CHAIN_HEAD"
             LAST_SAID=$CUR
         fi
     elif [ $(( NOW - LAST_PROGRESS )) -ge "$STALL_S" ]; then
         die "basecamp wallet sync stalled at $CUR for ${STALL_S}s (head $CHAIN_HEAD, chunk target $TGT)"
+    elif [ -z "$NEXT" ]; then
+        # BUSY: the wallet answers no reads mid-chunk (the probe timed out
+        # app-side) — the heavy account-materialization stretch around block
+        # ~4500 keeps one 250-block chunk going for minutes. Never re-issue
+        # into a busy wallet; just wait.
+        BUSY_N=$(( BUSY_N + 1 ))
+        [ $(( BUSY_N % 6 )) = 0 ] && say "  basecamp wallet busy at $CUR (chunk -> $TGT, $(( NOW - LAST_PROGRESS ))s since progress)"
+        sleep 5
     else
+        # IDLE without progress: the chunk ended early (sequencer hiccup) —
+        # re-issue it, at most every REISSUE_S.
+        if [ $(( NOW - LAST_ISSUE )) -ge "$REISSUE_S" ]; then
+            bc_call lez_core sync_to_block "[$TGT]" >/dev/null 2>&1 || true
+            LAST_ISSUE=$NOW
+        fi
         sleep 2
     fi
 done
