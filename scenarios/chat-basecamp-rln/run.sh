@@ -323,7 +323,10 @@ for _ in range(200):
     if isinstance(r, bool):
         r = "true" if r else "false"
     elif isinstance(r, (dict, list)):
-        r = json.dumps(r)
+        # Qt parses a JSON-shaped module reply into an object; re-emit it
+        # COMPACT so the shell's substring asserts ("started":true) match
+        # the module's own wire spelling.
+        r = json.dumps(r, separators=(",", ":"))
     print(r if r is not None else "")
     sys.exit(0)
 sys.stderr.write("insp: no reply for: %s\n" % expr[:200])
@@ -514,6 +517,26 @@ say "on-chain: registered:true at leaf $E2E_ACTUAL_LEAF"
 
 # ---------- message leg -------------------------------------------------------
 section "message leg (proof-gated chat, basecamp -> n1)"
+# generate_proof selects only a USABLE membership (active/grace_period), so
+# the message leg needs the pending -> active transition the chain applies
+# after its confirmation window — the same wait delivery-rln makes before
+# its send leg. (The registration assertion above is already satisfied.)
+say "waiting for basecamp's membership to become active (budget ${E2E_CONFIRM_TIMEOUT_S}s)…"
+for _t in $(seq 1 "$(polls "$E2E_CONFIRM_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
+    GMS=$(bc_call liblogos_rln_module get_membership_state \
+        "$(jq -cn --arg r "$REGISTRY_ID" --arg i "$RLN_ID" '[$r,$i]')") || GMS=""
+    STATE=$(printf '%s' "$GMS" | grep -oE '"state":"[a-z_]+"' | head -1 | cut -d'"' -f4)
+    say "  state poll $_t: ${STATE:-<none>}"
+    case "$STATE" in
+        active|grace_period) break ;;
+        failed) die "basecamp membership FAILED after registration: $GMS" ;;
+    esac
+    sleep "$E2E_POLL_INTERVAL_S"
+done
+case "$STATE" in
+    active|grace_period) say "basecamp membership $STATE" ;;
+    *) die "basecamp membership never became active (last: ${STATE:-<none>})" ;;
+esac
 say "mesh stabilization: ${MESH_WAIT_S}s"
 sleep "$MESH_WAIT_S"
 
