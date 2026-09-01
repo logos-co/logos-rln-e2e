@@ -409,31 +409,45 @@ for _t in $(seq 1 9); do
 done
 [ -n "$BSYNC" ] || die "basecamp wallet never became usable after open"
 say "basecamp wallet open (synced to $BSYNC, head $CHAIN_HEAD)"
-# The wallet serves NO reads while sync_to_block runs and the app-side call
-# times out long before a chunk lands (the membership-ui patience lesson):
-# drive modest chunks, never re-issue a chunk still in flight, treat an
-# unanswered probe as "busy", and fail only after E2E_SYNC_STALL_S of zero
-# progress. With the saved storage above this is normally a few blocks.
-SYNC_STEP="${E2E_BASECAMP_SYNC_STEP:-500}"
+# The wallet serves NO reads while sync_to_block runs, the app-side call
+# times out at 20s regardless of how far the chunk got, and a chunk can end
+# early (sequencer hiccup) with nobody to restart it — the membership-ui
+# patience lesson. So: 250-block chunks (they fit the app-side timeout),
+# re-issue the current chunk whenever progress pauses for E2E_SYNC_REISSUE_S,
+# treat an unanswered probe as "busy", and fail only after E2E_SYNC_STALL_S
+# of zero progress. This wallet build keeps no sync cursor across sessions
+# (the saved storage carries accounts, not the height), so this is a full
+# sync from 0 — budget ~10-15 min on the hosted testnet.
+SYNC_STEP="${E2E_BASECAMP_SYNC_STEP:-250}"
+REISSUE_S="${E2E_SYNC_REISSUE_S:-30}"
 STALL_S="${E2E_SYNC_STALL_S:-180}"
 CUR="$BSYNC"
 TGT="$CUR"
 LAST_PROGRESS=$(date +%s)
+LAST_ISSUE=0
+LAST_SAID=0
 while [ "$CUR" -lt "$CHAIN_HEAD" ]; do
-    if [ "$CUR" -ge "$TGT" ]; then
-        TGT=$(( CUR + SYNC_STEP ))
-        [ "$TGT" -gt "$CHAIN_HEAD" ] && TGT="$CHAIN_HEAD"
+    NOW=$(date +%s)
+    if [ "$CUR" -ge "$TGT" ] || [ $(( NOW - LAST_ISSUE )) -ge "$REISSUE_S" ]; then
+        if [ "$CUR" -ge "$TGT" ]; then
+            TGT=$(( CUR + SYNC_STEP ))
+            [ "$TGT" -gt "$CHAIN_HEAD" ] && TGT="$CHAIN_HEAD"
+        fi
         bc_call lez_core sync_to_block "[$TGT]" >/dev/null 2>&1 || true
+        LAST_ISSUE=$NOW
     fi
     NEXT=$(bc_synced) || NEXT=""
     if [ -n "$NEXT" ] && [ "$NEXT" -gt "$CUR" ]; then
         CUR="$NEXT"
-        LAST_PROGRESS=$(date +%s)
-        say "  basecamp wallet sync: $CUR / $CHAIN_HEAD"
-    elif [ $(( $(date +%s) - LAST_PROGRESS )) -ge "$STALL_S" ]; then
+        LAST_PROGRESS=$NOW
+        if [ $(( CUR - LAST_SAID )) -ge 2000 ] || [ "$CUR" -ge "$CHAIN_HEAD" ]; then
+            say "  basecamp wallet sync: $CUR / $CHAIN_HEAD"
+            LAST_SAID=$CUR
+        fi
+    elif [ $(( NOW - LAST_PROGRESS )) -ge "$STALL_S" ]; then
         die "basecamp wallet sync stalled at $CUR for ${STALL_S}s (head $CHAIN_HEAD, chunk target $TGT)"
     else
-        sleep 3
+        sleep 2
     fi
 done
 say "basecamp wallet synced to head"
