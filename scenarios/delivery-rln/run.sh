@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # scenarios/delivery-rln — end-to-end acceptance for logos-delivery's RLN
 # integration (branch impl-plugable-rln-api-module REBASED onto
-# feat/rln-api-structure a0560b5d — the rln/integration-fixes stacks on
+# feat/rln-api-structure e5f8f327 — the rln/integration-fixes stacks on
 # BOTH logos-delivery and logos-delivery-module) against the REAL RLN
 # module stack.
 #
@@ -40,7 +40,7 @@
 #   5. the message path, end to end: n1 send -> rlnGenerateProofRequest ->
 #      module generate_proof (its proof_canonical bytes become
 #      message.proof) -> gossipsub -> n2's validator ->
-#      rlnVerifyProofRequest -> module validate_proof -> the lowercase
+#      rlnValidateProofRequest -> module validate_proof -> the lowercase
 #      "valid" verdict crosses verbatim -> messageReceived on n2. A
 #      fresh-root "invalid" on an early attempt is tolerated: the module
 #      nudges its root window and a later send passes — the send leg
@@ -55,9 +55,11 @@
 #                             (rebased: start-config event + verbatim-reply
 #                             docs; fork adklempner/logos-delivery-module)
 #   LOGOS_DELIVERY_CHECKOUT   logos-delivery @ rln/integration-fixes
-#                             (impl branch rebased onto the api structure +
-#                             errors->Ignore + prover leg + RegistryOptions
-#                             register; fork adklempner/logos-delivery);
+#                             (impl branch rebased onto the api structure;
+#                             upstream absorbed errors->Ignore, the prover
+#                             leg and the RegistryOptions register — only
+#                             the legacy-provider retype is still ours;
+#                             fork adklempner/logos-delivery);
 #                             submodules checked out
 #   RLN_MODULES_CHECKOUT      logos-rln-modules with the 0.6.1 stack
 #                             (proof_canonical on generate_proof replies)
@@ -270,10 +272,10 @@ answer_event() {
             *) note="generate ERR: $out" ;;
         esac
         rln_respond "$node" "$req" "$out" "$note" ;;
-    rlnVerifyProofRequest)
+    rlnValidateProofRequest)
         # (reqId, registryId, rlnIdentifier, signalHex, epochTimestamp,
-        #  proofJson) — still Verify-named on the event surface; the module
-        # method is validate_proof (THE mapping). Envelope forwarded verbatim.
+        #  proofJson) — event and module method share the validate name since
+        # delivery-module bcdc8348. Envelope forwarded verbatim.
         local out verdict note sig
         sig=$(b64d "$a3")
         if [ -f "$E2E_RUN_DIR/tamper-$node" ]; then
