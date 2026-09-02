@@ -102,8 +102,9 @@ probes D/G):
 
 - **`validate_proof` is the name** — the LIP and the module agree, and
   your 95e7e3c7 carries the rename natively now (the stack's rename
-  commit retired). The delivery-module shim follows; its *event* names
-  stay `rlnVerifyProofRequest`.
+  commit retired). The delivery-module shim follows — since its
+  `bcdc8348` the *event* is `rlnValidateProofRequest` too, one name
+  end to end.
 - **Verdict spelling is the module wire, lowercase snake_case** —
   `valid` / `invalid` / `duplicate` / `rate_limit_violation`, crossing
   verbatim (your 95e7e3c7 parses the module's native replies; the

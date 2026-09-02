@@ -26,8 +26,8 @@ one-callback-per-function surface, now carrying the `verify_proof` →
 `validate_proof` rename). Same op set, same typed
 signatures, same req_id / response contract, same threading discipline.
 The surface also matches delivery's client-facing `RlnInterface` concept
-(branch `feat/rln-api-structure` @ `a0560b5d`, force-pushed 2026-08-28:
-`waku/rln/rln.nim` + `waku/rln/types.nim`) — same 7 ops with the verb
+(branch `feat/rln-api-structure` @ `e5f8f327`, force-pushed again 2026-09-01:
+`waku/rln/rln_api.nim` + `waku/rln/types.nim`) — same 7 ops with the verb
 names (`getMembershipState`, `getEpochQuota`, `validateProof`), scope on
 every call with no module-held defaults, uint64-seconds timestamps, the
 4 verdicts, the 4 error kinds, and the 9 membership statuses (which the
@@ -102,9 +102,9 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
 2. **The op was named `verify_proof` in the seam but `validate_proof` on
    the module.** RESOLVED: the `rln/integration-fixes` stack renames the
    seam's callback typedef, struct field and nim wrapper to
-   `validate_proof` (delivery-module's shim follows; its *event* names stay
-   `rlnVerifyProofRequest`), and this module's mirror follows — one name
-   end to end.
+   `validate_proof` (delivery-module's shim follows; since its `bcdc8348`
+   the *event* is `rlnValidateProofRequest` too), and this module's mirror
+   follows — one name end to end.
 3. **nim-ffi's generated `<lib>_ctx_*` scalar wrappers free their callback
    box on the FIRST callback — including the non-terminal `RET_STALE_WARN`
    progress tick** — a use-after-free for any no-arg method slower than
@@ -198,20 +198,22 @@ fire-then-event precedent (`start`/`stop` → `nodeStarted`/`nodeStopped`).
     imports `waku/rln/api/types`, and the `rln/integration-fixes` stack's
     base cherry-pick carries the OLD api/ layout — both need a rebase onto
     the reworked structure before the branches can merge. DONE on the
-    forks (2026-08-28): `adklempner/logos-delivery` and
+    forks (2026-08-28; re-done 2026-09-01 after a second force-push,
+    `a0560b5d` → `e5f8f327`): `adklempner/logos-delivery` and
     `adklempner/logos-delivery-module` `rln/integration-fixes` now carry
-    the impl branch (through `95e7e3c7`) rebased onto `a0560b5d` plus the
-    surviving fixes (errors→Ignore, prover leg, register→RegistryOptions
-    array); the `delivery-rln` scenario runs against them. The consumer
-    mirror is caught up to the reworked seam (start config, verbatim
-    dialects, per-op budgets) as of the same date. The naming split
-    is the tell for where integration lands: `rln_evm_backend/` (the
-    renamed group_manager) sits beside a seeded `rln_lez_backend/` — THE
-    slot where the `RlnInterface` implementation backed by
-    liblogos_rln_module goes, i.e. the seam this mirror exists to
-    exercise. Today it holds only a byte-identical copy of `types.nim`
-    (it should probably import the shared types instead — worth asking,
-    since a fork of the client types would let the two drift).
+    the impl branch (all 13 commits through `fb41368c` — which absorbed
+    errors→Ignore, the prover leg and the RegistryOptions register)
+    rebased onto `e5f8f327`, plus the two still-ours fixes (legacy
+    provider retype, RequestBroker `##` demotion); the `delivery-rln`
+    scenario runs against them. The consumer mirror is caught up to the
+    reworked seam (start config, verbatim dialects, per-op budgets).
+    The interface home moved again in the review round: the concept now
+    lives at `waku/rln/rln_api.nim` beside `waku/rln/types.nim`, the
+    backend folder is `rln_evm/`, and the seeded `rln_lez_backend/` was
+    deleted as duplicate types — the LEZ-backed `RlnInterface`
+    implementation (the seam this mirror exists to exercise) has no
+    committed slot right now; reviewers name LEZ as one of the 3
+    intended backends.
 
 ## Method surface (what scenarios call)
 
