@@ -17,7 +17,7 @@
 # What it proves:
 #   1. co-residency: the RLN stack + the RLN-enabled delivery_module load in
 #      one daemon, on both nodes — and BOTH responder topologies work: n1
-#      runs delivery_module's in-process bridge (rlnBridgeAttach — the
+#      runs delivery_module's in-process bridge (rln-in-process conf — the
 #      production default, no responder loop), n2 the external
 #      event-out/respond-in responder.
 #   2. bring-up via the REAL config surface: rln-relay-lez /
@@ -425,8 +425,12 @@ done
 # ---------- responders up, then the delivery nodes ---------------------------
 section "delivery nodes (bring-up via the real config surface)"
 # MIXED TOPOLOGY, both production-relevant shapes in one run:
-#   n1: delivery_module's IN-PROCESS bridge (rlnBridgeAttach) answers its own
-#       seam — no responder, the production default.
+#   n1: delivery_module's IN-PROCESS bridge answers its own seam — no
+#       responder, the production default. Enabled via the createNode conf
+#       key "rln-in-process" (the config-driven path; the rlnBridgeAttach
+#       wire method is the same bridge and stays covered by the
+#       chat-basecamp scenarios). If the key were dropped, n1's seam
+#       would go unanswered and nodeStarted below times out — loud.
 #   n2: the external event-out/respond-in responder — the topology that also
 #       hosts the negative control's tamper hook (an in-process answer leaves
 #       no seam to corrupt at).
@@ -434,11 +438,6 @@ for n in $NODES_ALL; do
     node_watch_start "$n" delivery_module
     : >"$E2E_RUN_DIR/responder-$n.log"
 done
-ATTACH=$(node_call n1 delivery_module rlnBridgeAttach "liblogos_rln_module" | jres)
-case "$ATTACH" in
-    *'"success":true'*) say "n1: in-process rln bridge attached (no responder)" ;;
-    *) die "n1: rlnBridgeAttach failed: ${ATTACH:-<empty>}" ;;
-esac
 responder_loop n2 &
 RESPONDER_PIDS="$RESPONDER_PIDS $!"
 say "n2: external responder up (event-out/respond-in topology)"
@@ -469,7 +468,10 @@ delivery_up() {
 }
 
 FUNDING_OPTS=$(printf ',"rln-relay-registry-options":"{\\"funding_holding_account_id\\":\\"%s\\"}"' "$HOLDING")
-delivery_up n1 "" "$FUNDING_OPTS"
+delivery_up n1 "" "$FUNDING_OPTS,\"rln-in-process\":true"
+grep -q "rln served in-process" "$(node_log_path n1)" \
+    || die "n1: createNode consumed no rln-in-process key (no 'rln served in-process' in the daemon log)"
+say "n1: in-process rln bridge enabled via createNode conf (no responder)"
 delivery_up n2 "$(gv MADDR n1)"
 
 # ---------- bring-up assertions ----------------------------------------------
@@ -681,6 +683,6 @@ echo "e2e:   seam      start carries the module config; module replies forwarded
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
 echo "e2e:   bring-up  n1 start+register ok (ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH); n2 register refused -> degraded gracefully"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
-echo "e2e:   topology  n1 IN-PROCESS bridge (rlnBridgeAttach, no responder); n2 external responder"
+echo "e2e:   topology  n1 IN-PROCESS bridge (rln-in-process conf, no responder); n2 external responder"
 echo "e2e:   gate      tampered signal -> \"invalid\" -> NOT delivered (negative control); $ATTEMPT attempts = $GEN_COUNT generate requests"
 echo "e2e:   verdicts  n2 saw: $N2_VERDICTS (lowercase module wire, crossing verbatim)"
