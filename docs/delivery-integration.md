@@ -210,11 +210,12 @@ Your branch surfaced these; our stopgaps are marked:
 
 ## 7. Answering the seam: in-process bridge, or an external responder
 
-The simplest production shape needs no responder at all: delivery-module
-0.3.0's `rlnBridgeAttach` serves the seam in-process — every op invokes
-the co-resident RLN module over lp and the reply crosses back verbatim
-(two internal lanes keep a ~70s register from blocking validate on the
-relay hot path). The acceptance runs n1 this way.
+The simplest production shape needs no responder at all: delivery-module's
+`rlnBridgeAttach` (or the `rln-in-process` config key — same bridge) serves
+the seam in-process — every op invokes the co-resident RLN module over lp
+and the reply crosses back verbatim (two internal lanes keep a ~70s
+register from blocking validate on the relay hot path). The acceptance
+runs n1 this way.
 
 For an external responder (n2's topology): forward the module's reply
 VERBATIM — a responder is a router, not a translator.
