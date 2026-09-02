@@ -31,9 +31,8 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 ```
 
 **Working on logos-delivery's RLN integration?** Start at
-[docs/delivery-integration.md] — it has the copy-paste quickstart (clone
-commands, branch names, the local and testnet one-liners) for the
-`delivery-rln` acceptance scenario.
+[docs/delivery-integration.md] — the consumer contract plus the copy-paste
+local and testnet one-liners for the `delivery-rln` acceptance scenario.
 
 A scenario is `scenarios/<id>/{scenario.env,run.sh}` driven through the
 harness contract (`docs/contract.md`); a target
