@@ -206,10 +206,10 @@ case "$PREWARM" in
 esac
 node_watch_start n1 delivery_module
 node_watch_start n1 chat_module
-ATTACH=$(node_call n1 delivery_module rlnBridgeAttach "liblogos_rln_module" | jres)
+ATTACH=$(node_call n1 delivery_module rlnBridgeEnable | jres)
 case "$ATTACH" in
-    *'"success":true'*) say "n1: in-process rln bridge attached" ;;
-    *) die "n1: rlnBridgeAttach failed: ${ATTACH:-<empty>}" ;;
+    *'"success":true'*) say "n1: in-process rln bridge enabled" ;;
+    *) die "n1: rlnBridgeEnable failed: ${ATTACH:-<empty>}" ;;
 esac
 INIT=$(node_call n1 chat_module init "str:" | jres) || INIT=""
 case "$INIT" in
@@ -286,10 +286,10 @@ case "$RSTART" in
     *'"started":true'*) say "basecamp: rln module started" ;;
     *) die "basecamp: rln module start failed: ${RSTART:-<empty>}" ;;
 esac
-BATTACH=$(bc_call delivery_module rlnBridgeAttach '["liblogos_rln_module"]') || BATTACH=""
+BATTACH=$(bc_call delivery_module rlnBridgeEnable '[]') || BATTACH=""
 case "$BATTACH" in
-    *'"success":true'*) say "basecamp: in-process rln bridge attached" ;;
-    *) die "basecamp: rlnBridgeAttach failed: ${BATTACH:-<empty>}" ;;
+    *'"success":true'*) say "basecamp: in-process rln bridge enabled" ;;
+    *) die "basecamp: rlnBridgeEnable failed: ${BATTACH:-<empty>}" ;;
 esac
 BINIT=$(bc_call chat_module init '[""]') || BINIT=""
 case "$BINIT" in
