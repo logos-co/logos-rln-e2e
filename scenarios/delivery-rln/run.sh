@@ -5,21 +5,25 @@
 # BOTH logos-delivery and logos-delivery-module) against the REAL RLN
 # module stack.
 #
-# The seam under test is event-out/respond-in: liblogosdelivery's rlnInvoke
-# fires a C callback into delivery_module, which re-emits it as an
-# rln*Request logos event; whoever handles it answers via
-# delivery_module.rlnRespond(reqId, resultJson). THIS SCRIPT runs a
-# background responder per node, bridging every request to
-# liblogos_rln_module and feeding the MODULE'S REPLY BACK VERBATIM — since
-# the seam rework (delivery's 95e7e3c7) the library parses the module's own
-# wire dialects and the ok/err envelope is gone.
+# The seam under test: liblogosdelivery's rlnInvoke fires a C callback into
+# delivery_module, whose IN-PROCESS BRIDGE answers it by calling the
+# co-loaded liblogos_rln_module and feeding the MODULE'S REPLY BACK VERBATIM
+# (the library parses the module's own wire dialects; ok/err envelope gone).
+# Since delivery-module ccbb3cd the bridge auto-enables whenever the node
+# conf carries rln-relay-lez — there is no external-responder topology for
+# lez any more. Each request is STILL re-emitted as an rln*Request event for
+# observability, and delivery_module.rlnRespond(reqId, resultJson) still
+# exists, but on a bridged node the bridge answers first and any external
+# answer is rejected as a duplicate. THIS SCRIPT runs a WITNESS responder on
+# n2 that routes every event to the module anyway and asserts exactly that
+# contract (events emit; the guard accepts exactly one answer per reqId,
+# always the bridge's on the hot path; the module's dedup verdict proves
+# the bridge validated first).
 #
 # What it proves:
 #   1. co-residency: the RLN stack + the RLN-enabled delivery_module load in
-#      one daemon, on both nodes — and BOTH responder topologies work: n1
-#      runs delivery_module's in-process bridge (rln-in-process conf — the
-#      production default, no responder loop), n2 the external
-#      event-out/respond-in responder.
+#      one daemon, on both nodes — and the in-process bridge auto-enables on
+#      BOTH from the rln-relay-lez conf (no responder answers anything).
 #   2. bring-up via the REAL config surface: rln-relay-lez /
 #      rln-relay-registry-id / rln-relay-identifier /
 #      rln-relay-user-message-limit / rln-relay-registry-options ride
@@ -33,10 +37,10 @@
 #      contract: docs/delivery-integration.md §1).
 #   4. registration is REAL on n1 (pending -> active on the target chain),
 #      answered inside the library's per-op budgets (95 s for registry-read
-#      ops, 10 s local). n2's register is answered with a module-shaped
-#      error ON PURPOSE: a failed best-effort registration must degrade
-#      (the node still starts, relays and validates) instead of failing
-#      bring-up.
+#      ops, 10 s local). n2's register REALLY fails module-side (its conf
+#      carries no funding_holding_account_id, an InvalidArgument before any
+#      chain submit): a failed best-effort registration must degrade (the
+#      node still starts, relays and validates) instead of failing bring-up.
 #   5. the message path, end to end: n1 send -> rlnGenerateProofRequest ->
 #      module generate_proof (its proof_canonical bytes become
 #      message.proof) -> gossipsub -> n2's validator ->
@@ -46,14 +50,19 @@
 #      nudges its root window and a later send passes — the send leg
 #      retries with fresh messages; slot accounting is asserted (one
 #      distinct message_id per attempt).
-#   6. the NEGATIVE control: n2's responder corrupts the signal for one
-#      probe message, the module answers "invalid", and the scenario
-#      asserts n2 does NOT deliver it — the verdict actually gates.
+#   6. the NEGATIVE control: with the tamper hook armed, n2's witness
+#      answers one probe with a corrupted-signal "invalid" — and the probe
+#      is DELIVERED anyway, its answer rejected: an external responder
+#      cannot hijack a bridged node's verdicts. (The old verdict-gates
+#      control — a corrupted answer suppressing delivery — needed an
+#      authoritative external responder; that topology no longer exists
+#      for lez, so the Reject path now lives only in delivery's own tests.)
 #
 # Required checkouts (the integration branches have no flake pins):
 #   DELIVERY_MODULE_CHECKOUT  logos-delivery-module @ rln/integration-fixes
-#                             (rebased: start-config event + verbatim-reply
-#                             docs; fork adklempner/logos-delivery-module)
+#                             (upstream ccbb3cd auto-enable bridge + our
+#                             init-order fix; fork
+#                             adklempner/logos-delivery-module)
 #   LOGOS_DELIVERY_CHECKOUT   logos-delivery @ rln/integration-fixes
 #                             (impl branch rebased onto the api structure;
 #                             upstream absorbed errors->Ignore, the prover
@@ -97,7 +106,7 @@ for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
     eval "[ -n \"\${$_v:-}\" ]" || die "contract env missing: $_v (see docs/contract.md)"
 done
 [ "$E2E_FUNDING" = "faucet" ] \
-    || die "target '$E2E_TARGET' provides funding=$E2E_FUNDING — the responder pays the registration from a faucet claim; pick a faucet deployment"
+    || die "target '$E2E_TARGET' provides funding=$E2E_FUNDING — n1's registration is paid from a faucet claim; pick a faucet deployment"
 # Without the right overrides this runs against stale pins — fail with the
 # pointer instead of a confusing hang or a minutes-later assertion.
 # A prebuilt DELIVERY_LGX carries both halves; otherwise BOTH checkouts are
@@ -179,14 +188,18 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 RLN_ID=$(openssl rand -hex 32)
 say "registry: $REGISTRY_ID (bring-up scope, rate $RATE_LIMIT)"
 
-# ---------- the responder (one background loop per node) ---------------------
-# Bridges every rln*Request the delivery module emits to liblogos_rln_module
-# and answers with THE MODULE'S REPLY VERBATIM (delivery-module docs/rln.md):
-# the library parses the module's two wire dialects itself — the LogosResult
-# envelope for start/stop/get_epoch_quota/generate_proof/validate_proof, the
-# compact tstr reply (in-band {"error":{...}}) for register_membership /
-# get_membership_state. No re-wrapping, no kind mapping: a responder is a
-# router, not a translator.
+# ---------- the witness responder --------------------------------------------
+# Routes every rln*Request n2's delivery module emits to liblogos_rln_module
+# and answers with THE MODULE'S REPLY VERBATIM — exactly what an external
+# responder used to do. The duplicate guard is FIRST-WINS: on the hot path
+# the bridge always answers first, so a witness validate answer must always
+# come back rejected ("unknown or already-completed reqId") — but on the
+# registry-read ops the module's in-flight short-circuit can answer the
+# witness while the bridge's identical call is still in flight, and then
+# the bridge's own answer is the rejected one. The post-run guard check
+# encodes exactly that split. The witness's second module reads also double
+# as an oracle: a validate of a message the bridge already validated comes
+# back "duplicate" (same nullifier + signal in the module's log).
 # reqId values >= 2^63 print negative — echoed back unchanged.
 
 b64d() { printf '%s' "$1" | base64 -d; }
@@ -195,15 +208,16 @@ b64d() { printf '%s' "$1" | base64 -d; }
 # all) — result dialect / tstr dialect respectively.
 RESULT_FAIL='{"success":false,"error":"{\"class\":\"transient\",\"kind\":\"e2e_no_reply\",\"message\":\"module call failed\"}"}'
 TSTR_FAIL='{"error":{"class":"transient","kind":"e2e_no_reply","message":"module call failed"}}'
-TSTR_FAIL_REFUSED='{"error":{"class":"transient","kind":"e2e_refused","message":"validator node registers nothing (deliberate)"}}'
 
 rln_respond() {
     local node="$1" req="$2" payload="$3" note="$4" res
     res=$(node_call "$node" delivery_module rlnRespond "$req" \
         "$(argfile "rsp_${node}_${RANDOM}" "$payload")" | jres) || res=""
     case "$res" in
-        *'"success":true'*) echo "responder[$node]: reqId=$req $note" ;;
-        *) echo "responder[$node]: reqId=$req rlnRespond FAILED ($note): ${res:-<empty>}" ;;
+        # The bridge answered first — the expected fate of every witness answer.
+        *'"success":false'*) echo "responder[$node]: reqId=$req answer rejected as expected ($note)" ;;
+        *'"success":true'*) echo "responder[$node]: reqId=$req answer ACCEPTED — bridge did not answer ($note)" ;;
+        *) echo "responder[$node]: reqId=$req rlnRespond broke ($note): ${res:-<empty>}" ;;
     esac
 }
 
@@ -231,31 +245,23 @@ answer_event() {
         esac
         rln_respond "$node" "$req" "$res" "$note" ;;
     rlnRegisterRequest)
-        if [ "$node" = "n1" ]; then
-            # (reqId, registryId, rlnIdentifier, optionsJson) — the options
-            # array arrives COMPLETE from the node's conf (rate_limit + the
-            # funding pair via rln-relay-registry-options); it IS the
-            # module's register_membership wire, so it passes through untouched
-            # and the module's tstr reply goes back verbatim.
-            local reg note
-            reg=$(node_call "$node" liblogos_rln_module register_membership \
-                "$(b64d "$a1")" "$(argfile "rr_${node}_${RANDOM}" "$(b64d "$a2")")" \
-                "$(b64d "$a3")" | jres) || reg=""
-            [ -n "$reg" ] || reg="$TSTR_FAIL"
-            case "$reg" in
-                *'"state":"pending"'*)
-                    note="register ok (pending $(printf '%s' "$reg" | jfield membership_hash))" ;;
-                *) note="register ERR: $reg" ;;
-            esac
-            rln_respond "$node" "$req" "$reg" "$note"
-        else
-            # Deliberate: the validator node keeps no membership. A failed
-            # best-effort registration must degrade, not break bring-up —
-            # asserted later via n2's own notice log + working validate.
-            # The refusal is a module-shaped tstr error.
-            rln_respond "$node" "$req" "$TSTR_FAIL_REFUSED" \
-                "register deliberately refused (degradation probe)"
-        fi ;;
+        # (reqId, registryId, rlnIdentifier, optionsJson) — the options array
+        # arrives COMPLETE from the node's conf; it IS the module's
+        # register_membership wire, so it passes through untouched. Register
+        # is idempotent per scope, so this second call after the bridge's is
+        # a re-register short-circuit (or the same fast error on a node with
+        # no funding option), never a double mint.
+        local reg note
+        reg=$(node_call "$node" liblogos_rln_module register_membership \
+            "$(b64d "$a1")" "$(argfile "rr_${node}_${RANDOM}" "$(b64d "$a2")")" \
+            "$(b64d "$a3")" | jres) || reg=""
+        [ -n "$reg" ] || reg="$TSTR_FAIL"
+        case "$reg" in
+            *'"state":"pending"'*)
+                note="register ok (pending $(printf '%s' "$reg" | jfield membership_hash))" ;;
+            *) note="register ERR: $reg" ;;
+        esac
+        rln_respond "$node" "$req" "$reg" "$note" ;;
     rlnGenerateProofRequest)
         # (reqId, registryId, rlnIdentifier, signalHex, epochTimestamp) —
         # the module's result envelope goes back verbatim; the library digs
@@ -279,10 +285,12 @@ answer_event() {
         local out verdict note sig
         sig=$(b64d "$a3")
         if [ -f "$E2E_RUN_DIR/tamper-$node" ]; then
-            # Negative-control hook: corrupt the SIGNAL (not the proof — a
-            # mangled proof can fail deserialization and come back a module
-            # ERROR, which delivery maps to Ignore; a bad signal is a clean
-            # deterministic "invalid" verdict).
+            # Negative-control hook: corrupt the SIGNAL, producing a clean
+            # "invalid" verdict (proof no longer binds the signal; no
+            # nullifier is recorded for an invalid proof). The witness then
+            # answers something MATERIALLY different from the bridge's
+            # "valid" — and the rejection of that answer is the proof that
+            # an external responder cannot flip a bridged node's verdict.
             sig=$(printf '%s' "$sig" | python3 -c '
 import sys
 s = sys.stdin.read().strip()
@@ -422,25 +430,21 @@ for n in $NODES_ALL; do
     esac
 done
 
-# ---------- responders up, then the delivery nodes ---------------------------
+# ---------- witness up, then the delivery nodes ------------------------------
 section "delivery nodes (bring-up via the real config surface)"
-# MIXED TOPOLOGY, both production-relevant shapes in one run:
-#   n1: delivery_module's IN-PROCESS bridge answers its own seam — no
-#       responder, the production default. Enabled via the createNode conf
-#       key "rln-in-process" (the config-driven path; the rlnBridgeAttach
-#       wire method is the same bridge and stays covered by the
-#       chat-basecamp scenarios). If the key were dropped, n1's seam
-#       would go unanswered and nodeStarted below times out — loud.
-#   n2: the external event-out/respond-in responder — the topology that also
-#       hosts the negative control's tamper hook (an in-process answer leaves
-#       no seam to corrupt at).
+# ONE topology since delivery-module ccbb3cd: the conf's rln-relay-lez auto-
+# enables the in-process bridge in createNode on BOTH nodes (there is no
+# external-responder topology for lez any more, and no opt-out key). n1 runs
+# pure production shape; n2 additionally runs the WITNESS responder, which
+# answers everything the way an external responder would and asserts every
+# answer is rejected — plus hosts the tamper hook for the hijack control.
 for n in $NODES_ALL; do
     node_watch_start "$n" delivery_module
     : >"$E2E_RUN_DIR/responder-$n.log"
 done
 responder_loop n2 &
 RESPONDER_PIDS="$RESPONDER_PIDS $!"
-say "n2: external responder up (event-out/respond-in topology)"
+say "n2: witness responder up (routes events; hot-path answers must all be rejected)"
 
 # The RLN scope rides createNode's flat conf. n1 additionally carries the
 # funding pair via rln-relay-registry-options — the conf-fed path that
@@ -468,11 +472,16 @@ delivery_up() {
 }
 
 FUNDING_OPTS=$(printf ',"rln-relay-registry-options":"{\\"funding_holding_account_id\\":\\"%s\\"}"' "$HOLDING")
-delivery_up n1 "" "$FUNDING_OPTS,\"rln-in-process\":true"
-grep -q "rln served in-process" "$(node_log_path n1)" \
-    || die "n1: createNode consumed no rln-in-process key (no 'rln served in-process' in the daemon log)"
-say "n1: in-process rln bridge enabled via createNode conf (no responder)"
+delivery_up n1 "" "$FUNDING_OPTS"
 delivery_up n2 "$(gv MADDR n1)"
+# rln-relay-lez in the conf is the bridge's own enable signal now — no
+# separate key. createNode fails hard if the bridge can't come up, so this
+# grep is about the LOG CONTRACT, not survival.
+for n in $NODES_ALL; do
+    grep -q "rln served in-process" "$(node_log_path "$n")" \
+        || die "$n: conf carries rln-relay-lez but createNode never logged 'rln served in-process' (bridge auto-enable broken?)"
+done
+say "both nodes: in-process rln bridge auto-enabled by the rln-relay-lez conf"
 
 # ---------- bring-up assertions ----------------------------------------------
 section "bring-up assertions"
@@ -537,11 +546,22 @@ done
     || die "n1's library never logged 'RLN membership registered' — responses may have raced the library's budget"
 say "n1: library log confirms start + register landed inside the per-op budgets"
 
-# n2: the deliberately-refused registration degraded instead of breaking
-# bring-up (nodeStarted already proved the node came up).
-node_logs n2 | grep -q "RLN membership registration failed" \
+# n2: its best-effort registration REALLY failed module-side (no
+# funding_holding_account_id in its conf — an InvalidArgument answered by
+# the bridge) and degraded instead of breaking bring-up (nodeStarted
+# already proved the node came up). The module error can trail nodeStarted,
+# so poll up to the library's registry-op budget.
+N2_DEGRADED=0
+for _t in $(seq 1 100); do
+    if node_logs n2 | grep -q "RLN membership registration failed"; then
+        N2_DEGRADED=1
+        break
+    fi
+    sleep 1
+done
+[ "$N2_DEGRADED" = 1 ] \
     || die "n2 never logged the expected 'RLN membership registration failed' notice"
-say "n2: refused registration degraded gracefully (node up, notice logged)"
+say "n2: fundless registration failed module-side and degraded gracefully (node up, notice logged)"
 
 # ---------- the registration is real: pending -> active on chain -------------
 section "confirmation (real chain)"
@@ -611,7 +631,7 @@ while [ "$ATTEMPT" -lt "$SEND_ATTEMPTS" ]; do
     [ -n "$REQID" ] || die "send returned no requestId"
     PROP=$(node_wait_event n1 delivery_module messagePropagated "$EVT_TIMEOUT" "$REQID") || {
         node_wait_event n1 delivery_module messageError 1 "$REQID" >/dev/null \
-            && die "messageError for requestId $REQID (see n1 responder log for the generate/verify trail)"
+            && die "messageError for requestId $REQID (generate leg failed — see n1's daemon log)"
         die "no messagePropagated for requestId $REQID within ${EVT_TIMEOUT}s"
     }
     MSGHASH=$(printf '%s' "$PROP" | python3 -c \
@@ -641,11 +661,14 @@ GEN_COUNT=$(grep -c '"event":"rlnGenerateProofRequest"' "$(gv NODEEVT n1_deliver
     || die "slot accounting: $GEN_COUNT generate requests for $ATTEMPT send attempts"
 say "slot accounting: $GEN_COUNT attempts drove $GEN_COUNT generate requests"
 
-# ---------- negative control: the verdict actually GATES ----------------------
-# n2's responder now corrupts the SIGNAL before validating, forcing a real
-# "invalid" verdict from the module. Delivery must Reject: the message
-# propagates from n1 but must NOT surface as messageReceived on n2.
-section "negative control (tampered validation must NOT deliver)"
+# ---------- negative control: external answers cannot hijack the bridge ------
+# n2's witness corrupts the SIGNAL before validating one probe, producing a
+# real "invalid" from the module — a verdict that CONTRADICTS the bridge's
+# "valid". If external answers had any authority the probe would be dropped;
+# instead it must be DELIVERED, and the witness's contradicting answer must
+# be rejected. (The old drop-on-invalid control needed an authoritative
+# external responder — a topology lez no longer has.)
+section "negative control (external verdicts are rejected, message delivers)"
 : >"$E2E_RUN_DIR/tamper-n2"
 PAYLOAD="rln-gated ping TAMPER from n1"
 REQID=$(must_call n1 send "send (tamper probe)" "$TOPIC" "$(argfile pay_tamper "$PAYLOAD")")
@@ -653,36 +676,55 @@ PROP=$(node_wait_event n1 delivery_module messagePropagated "$EVT_TIMEOUT" "$REQ
     || die "tamper probe never propagated from n1"
 MSGHASH_T=$(printf '%s' "$PROP" | python3 -c \
     'import json,sys; print(json.load(sys.stdin)["data"].get("arg1",""))')
-if node_wait_event n2 delivery_module messageReceived "$RECV_WAIT_S" "$MSGHASH_T" >/dev/null; then
-    die "NEGATIVE CONTROL FAILED: n2 delivered a message its module called invalid — delivery is not gating on the verdict"
-fi
+node_wait_event n2 delivery_module messageReceived "$RECV_WAIT_S" "$MSGHASH_T" >/dev/null \
+    || die "NEGATIVE CONTROL FAILED: the probe never delivered — an external 'invalid' overrode the bridge's own verdict?"
 grep -q "TAMPER active" "$E2E_RUN_DIR/responder-n2.log" \
-    || die "tamper hook never fired on n2 (probe did not reach validation?)"
+    || die "tamper hook never fired on n2 (probe did not reach the witness?)"
 grep -q "verify verdict=invalid" "$E2E_RUN_DIR/responder-n2.log" \
-    || die "n2's module never answered 'invalid' for the tampered signal — responder tail: $(tail -3 "$E2E_RUN_DIR/responder-n2.log")"
+    || die "n2's module never answered 'invalid' for the corrupted signal — witness tail: $(tail -3 "$E2E_RUN_DIR/responder-n2.log")"
 rm -f "$E2E_RUN_DIR/tamper-n2"
-say "tampered message: verdict=invalid crossed, n2 did NOT deliver — the gate is real"
+say "tamper probe: witness answered a contradicting 'invalid', was rejected, and the message delivered — external responders cannot hijack a bridged node"
 
 # No seam op may go unanswered: an UNHANDLED line means delivery grew a leg
-# the responder (and this scenario) must learn.
+# the witness (and this scenario) must learn.
 if grep -q "UNHANDLED op" "$E2E_RUN_DIR"/responder-n1.log "$E2E_RUN_DIR"/responder-n2.log 2>/dev/null; then
-    die "responder hit unhandled seam ops: $(grep -h 'UNHANDLED op' "$E2E_RUN_DIR"/responder-*.log | sort -u | tr '\n' ' ')"
+    die "witness hit unhandled seam ops: $(grep -h 'UNHANDLED op' "$E2E_RUN_DIR"/responder-*.log | sort -u | tr '\n' ' ')"
 fi
 
-# The verdict that let the message through crossed the seam verbatim:
-# lowercase module wire, parsed by the library, Accepted by the validator.
-grep -q "verify verdict=valid" "$E2E_RUN_DIR/responder-n2.log" \
-    || die "n2's responder never answered a validate_proof with verdict=valid"
+# The duplicate guard: at most ONE answer lands per reqId, and it's
+# first-wins, not bridge-wins. On the hot path (validate) the bridge always
+# answers first — the witness pays a poll lag plus a full verify — so an
+# accepted witness validate answer means the bridge went silent: fail. On
+# the registry-read ops the module's own in-flight short-circuit can hand
+# the WITNESS a fast reply while the bridge's identical call is still
+# walking the registry (seen on testnet for n2's register), so first-wins
+# legitimately goes either way there: log it, don't fail — the guard still
+# rejected the loser.
+grep -q "answer rejected as expected" "$E2E_RUN_DIR/responder-n2.log" \
+    || die "n2's witness never got an answer rejected — did the events stop emitting?"
+if grep "answer ACCEPTED" "$E2E_RUN_DIR/responder-n2.log" | grep -v "(register" | grep -q .; then
+    die "duplicate guard failed on the hot path: a witness answer beat the bridge — $(grep 'answer ACCEPTED' "$E2E_RUN_DIR/responder-n2.log" | grep -v '(register' | head -2 | tr '\n' ' ')"
+fi
+if grep -q "answer ACCEPTED" "$E2E_RUN_DIR/responder-n2.log"; then
+    say "n2 witness won a register race (module's in-flight short-circuit answered it first) — first answer wins, the bridge's own was the rejected one"
+fi
+
+# The two-reader oracle: the witness re-validated the delivered message
+# AFTER the bridge did, so the module's nullifier log answers "duplicate" —
+# proof in one verdict that the events emit, the bridge answered first, and
+# the module's double-signal dedup works.
+grep -q "verify verdict=duplicate" "$E2E_RUN_DIR/responder-n2.log" \
+    || die "n2's witness never saw a 'duplicate' re-validate of the delivered message — bridge answered first? witness tail: $(tail -3 "$E2E_RUN_DIR/responder-n2.log")"
 N2_VERDICTS=$(grep -o "verify verdict=[a-z_]*" "$E2E_RUN_DIR/responder-n2.log" | sed 's/verify verdict=//' | tr '\n' ',' | sed 's/,$//')
-say "n2 verdict trail: $N2_VERDICTS"
+say "n2 witness verdict trail: $N2_VERDICTS"
 
 echo
 echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
 echo "e2e:   config    rln-relay-lez/-registry-id/-identifier/-user-message-limit/-registry-options (funding via conf, no responder injection)"
 echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
-echo "e2e:   bring-up  n1 start+register ok (ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH); n2 register refused -> degraded gracefully"
+echo "e2e:   bring-up  n1 start+register ok (ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH); n2 fundless register failed -> degraded gracefully"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
-echo "e2e:   topology  n1 IN-PROCESS bridge (rln-in-process conf, no responder); n2 external responder"
-echo "e2e:   gate      tampered signal -> \"invalid\" -> NOT delivered (negative control); $ATTEMPT attempts = $GEN_COUNT generate requests"
-echo "e2e:   verdicts  n2 saw: $N2_VERDICTS (lowercase module wire, crossing verbatim)"
+echo "e2e:   topology  IN-PROCESS bridge auto-enabled by rln-relay-lez on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
+echo "e2e:   gate      witness's contradicting \"invalid\" rejected, probe DELIVERED (hijack control); $ATTEMPT attempts = $GEN_COUNT generate requests"
+echo "e2e:   verdicts  n2 witness saw: $N2_VERDICTS (duplicate = bridge validated first; module wire crossing verbatim)"

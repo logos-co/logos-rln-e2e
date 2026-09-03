@@ -95,8 +95,9 @@ wrap it. This mirrors delivery-module's own fire-then-event precedent
   runs), blocking work on `concurrency:"multi"` dispatch workers,
   `lp_invoke_async` + semaphore from any other thread. Binding on any host
   that bridges to the module in-process over lp, as this one deliberately
-  does; a host that instead re-emits the callbacks as events and answers from
-  an external responder (delivery-module's shape) never blocks on lp.
+  does — and as delivery-module's own bridge now does too (its slow lane
+  rides lp under the same discipline); only a host that answers from a
+  fully external responder never blocks on lp.
 - **Nim `{.exportc.}` alone gives hidden visibility on macOS.** Hand-written
   C ABI additions (the seam's two functions) need
   `{.exportc, cdecl, dynlib.}` or the host can't resolve them.

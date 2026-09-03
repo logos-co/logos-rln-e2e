@@ -37,9 +37,9 @@ E2E_DEPLOYMENT=testnet-shrink-verify ./run.sh delivery-rln --target testnet
 
 Each assertion prints as it passes, so the transcript is the assertion list —
 custody, config surface, registration to `active`, the `valid` verdict
-reaching `messageReceived` on the second node, and the tampered-message
+reaching `messageReceived` on the second node, and the responder-hijack
 control, in the order the scenario header enumerates them. `$E2E_RUN_DIR`
-keeps the logs, `responder-n2.log` the verdict trail.
+keeps the logs, `responder-n2.log` the witness's verdict trail.
 
 ## 1. The keystore needs nothing from the consumer
 
@@ -153,25 +153,31 @@ module's start config as `configJson` (`{"epoch_size_sec","registries"}`)
 built from that same conf, so a responder needs no out-of-band knowledge of
 the scope and injects nothing.
 
-## 7. The seam: in-process bridge, or an external responder
+## 7. The seam: the in-process bridge (not optional for lez)
 
-The production shape needs no responder: delivery-module's in-process bridge
-invokes the co-resident RLN module and feeds each reply back verbatim. The
-node config's `rln-in-process` key and the `rlnBridgeAttach` wire method both
-enable the same bridge, and two internal lanes keep a slow registry operation
-off the validate hot path. The acceptance runs n1 this way.
+`createNode` auto-enables delivery-module's in-process bridge whenever the
+node conf carries `rln-relay-lez`: the bridge invokes the co-resident RLN
+module and feeds each reply back verbatim, two internal lanes keep a slow
+registry operation off the validate hot path, and a bridge that cannot come
+up fails `createNode`. The `rlnBridgeEnable` wire method enables the same
+bridge directly — a test hook, since without the conf key the library never
+issues RLN requests. There is no opt-out and no external-responder topology
+for lez.
 
-An external responder is a router, not a translator: forward the module's
-reply **verbatim**, and never also answer a node that is already bridged.
-Verbatim is what makes the seam testable — the consumer already parses the
-module's own dialects (§3), so any re-encoding in the middle invents a third
-wire that neither side's tests cover.
-`scenarios/delivery-rln/run.sh` is the reference — it routes each
-`rln*Request` to `liblogos_rln_module` and hands the raw reply to
-`rlnRespond`. The acceptance runs n2 this way, so both topologies stay proven.
+The `rln*Request` events keep emitting for observability, and `rlnRespond`
+still exists on the module surface — but only ONE answer lands per reqId,
+and the guard is **first-wins, not bridge-wins**: on the validate hot path
+the bridge always answers first, while on the registry-read ops an eager
+external answer can beat the bridge's own slow call (the module's in-flight
+short-circuit answers the second caller instantly). So treat the events as
+strictly read-only — anything that answers them can end up authoritative
+for a slow op on a bridged node. `scenarios/delivery-rln/run.sh` pins this:
+its witness responder answers every event the old external-responder way,
+asserts every hot-path answer is rejected while the messages keep flowing,
+and logs the register race when it wins one.
 
-The per-op budgets belong to the delivery library, not the responder: 95 s for
-the ops that may perform a registry read (`register_membership`,
-`get_membership_state`, `generate_proof`), 10 s for the local rest. Nothing on
-this side has a deadline to manage, a late `rlnRespond` fails with an
+The per-op budgets belong to the delivery library: 95 s for the ops that may
+perform a registry read (`register_membership`, `get_membership_state`,
+`generate_proof`), 10 s for the local rest. Nothing on this side has a
+deadline to manage, a late `rlnRespond` fails with an
 unknown-or-already-completed reqId, and the module never sends "timeout".
