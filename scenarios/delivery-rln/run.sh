@@ -24,23 +24,27 @@
 #   1. co-residency: the RLN stack + the RLN-enabled delivery_module load in
 #      one daemon, on both nodes — and the in-process bridge auto-enables on
 #      BOTH from the rln-relay-lez conf (no responder answers anything).
-#   2. bring-up via the REAL config surface: rln-relay-lez /
-#      rln-relay-registry-id / rln-relay-identifier /
-#      rln-relay-user-message-limit / rln-relay-registry-options ride
-#      createNode's flat conf, the rlnStartRequest carries the module's
-#      start config (epoch + registries — no more out-of-band responder
-#      knowledge), and the rlnRegisterRequest options array is asserted to
-#      carry the configured scope, rate AND the conf-fed funding pair (the
-#      responder injects nothing).
+#   2. bring-up via the REAL config surface: rln-lez / rln-registry-id /
+#      rln-identifier / rln-relay-user-message-limit / rln-registry-options
+#      ride createNode's flat conf (spellings of logos-delivery
+#      impl-plugable-rln-api-module 85c2d6f8), the rlnStartRequest carries
+#      the module's start config (epoch + registries — no more out-of-band
+#      responder knowledge), and the rlnGetMembershipStateRequest that
+#      follows carries the configured scope (the responder injects nothing).
 #   3. keystore custody default: NO unlock call anywhere — the module
 #      self-provisions its own secret (the headless deployment shape;
 #      contract: docs/delivery-integration.md §1).
-#   4. registration is REAL on n1 (pending -> active on the target chain),
-#      answered inside the library's per-op budgets (95 s for registry-read
-#      ops, 10 s local). n2's register REALLY fails module-side (its conf
-#      carries no funding_holding_account_id, an InvalidArgument before any
-#      chain submit): a failed best-effort registration must degrade (the
-#      node still starts, relays and validates) instead of failing bring-up.
+#   4. registration is REAL, and it is the APP's job, not bring-up's: since
+#      logos-delivery 131fc9b1 the library no longer registers at startup —
+#      it reads the scope's membership state after start and REFUSES to
+#      start the node without an active/grace_period membership ("the node
+#      does not have a usable RLN membership"). So this script registers
+#      BOTH nodes through liblogos_rln_module first (pending -> active on
+#      the target chain, each node paying from its own faucet-funded
+#      holding), then brings delivery up and asserts the library's "RLN membership
+#      verified" gate on both. (The old fundless-n2 "degrade gracefully"
+#      leg is gone with that design: a node without a membership does not
+#      come up at all now.)
 #   5. the message path, end to end: n1 send -> rlnGenerateProofRequest ->
 #      module generate_proof (its proof_canonical bytes become
 #      message.proof) -> gossipsub -> n2's validator ->
@@ -310,10 +314,25 @@ print(s[:-1] + ("0" if s[-1] != "0" else "1"))')
             *) note="verify ERR: $out" ;;
         esac
         rln_respond "$node" "$req" "$out" "$note" ;;
+    rlnGetMembershipStateRequest)
+        # (reqId, registryId, rlnIdentifier, timestamp) — the bring-up gate
+        # since logos-delivery 131fc9b1: after start the library reads the
+        # scope's membership state and refuses to start the node unless it
+        # is active/grace_period. A tstr method: the module's object goes
+        # back verbatim (the library parses the native dialect).
+        local st note
+        st=$(node_call "$node" liblogos_rln_module get_membership_state \
+            "$(b64d "$a1")" "$(argfile "ms_${node}_${RANDOM}" "$(b64d "$a2")")" | jres) || st=""
+        [ -n "$st" ] || st="$TSTR_FAIL"
+        case "$st" in
+            *'"state":"'*) note="membership state=$(printf '%s' "$st" | jfield state)" ;;
+            *) note="membership state ERR: $st" ;;
+        esac
+        rln_respond "$node" "$req" "$st" "$note" ;;
     *)
         # Answer instead of starving the library's await; the post-run check
         # turns any occurrence into a failure, so a future seam leg (stop /
-        # get_membership_state / get_epoch_quota) fails loudly, not by timeout.
+        # get_epoch_quota) fails loudly, not by timeout.
         echo "responder[$node]: UNHANDLED op $ev (reqId $req)"
         rln_respond "$node" "$req" "$RESULT_FAIL" "UNHANDLED $ev" ;;
     esac
@@ -383,11 +402,15 @@ done
 NODES_UP=1
 say "co-residency: all 4 modules loaded on both nodes (keystore: module-owned custody, no unlock call)"
 
-# ---------- wallets (n1 pays; n2 only reads) ---------------------------------
+# ---------- wallets (both nodes pay for their own membership) ----------------
 # BOTH nodes need an open wallet: the RLN module's registry reads (root
 # window refresh, membership state) go through liblogos_lez_rln_module,
 # whose account fetches need lez_core's wallet open — a validator-only node
-# without one has a permanently cold root window. Only n1 funds anything.
+# without one has a permanently cold root window. And since the library's
+# bring-up gate needs a membership on every rln-enabled node, each node
+# derives and funds ITS OWN holding: wallet-n2 is copied before n1 derives
+# its account, so n1's holding key is not in n2's wallet (the sequencer
+# rejects a spend from it with "'user_holding' must be a signer").
 section "wallets"
 CHAIN_HEAD=$(chain_head) || die "cannot probe chain head at $E2E_SEQUENCER"
 say "syncing wallets to chain head $CHAIN_HEAD"
@@ -417,6 +440,18 @@ CLAIM_RES=$(node_call n1 liblogos_lez_rln_module claim_tokens \
     "$(argfile cfg2 "$E2E_CONFIG_ACCOUNT")" "$(argfile hold "$HOLDING")" "$CLAIM" | jres) || CLAIM_RES=""
 [ -n "$CLAIM_RES" ] || die "claim_tokens failed"
 wait_balance n1 "$HOLDING" "$CLAIM" >/dev/null || die "faucet credit never landed (want $CLAIM)"
+sv HOLD n1 "$HOLDING"
+# n2: derived AFTER n1's claim landed, so the same-seed derivation skips
+# n1's (now existing) account and lands on a genuinely fresh one.
+HOLDING2=$(wallet_fresh_holding n2) || HOLDING2=""
+[ -n "$HOLDING2" ] || die "n2: no unused holding account"
+[ "$HOLDING2" != "$HOLDING" ] || die "n2 derived n1's holding ($HOLDING) — same-seed derivation not skipping existing accounts?"
+say "n2: claiming $CLAIM RLNTOK from the faucet into its own holding"
+CLAIM_RES2=$(node_call n2 liblogos_lez_rln_module claim_tokens \
+    "$(argfile cfg3 "$E2E_CONFIG_ACCOUNT")" "$(argfile hold2 "$HOLDING2")" "$CLAIM" | jres) || CLAIM_RES2=""
+[ -n "$CLAIM_RES2" ] || die "n2: claim_tokens failed"
+wait_balance n2 "$HOLDING2" "$CLAIM" >/dev/null || die "n2: faucet credit never landed (want $CLAIM)"
+sv HOLD n2 "$HOLDING2"
 
 # Pre-warm both modules' root windows: start sits in the library's 10s
 # LOCAL budget, and a cold start's registry read can eat most of that on a
@@ -430,9 +465,51 @@ for n in $NODES_ALL; do
     esac
 done
 
+# ---------- registration (the app's job, before bring-up) -------------------
+# The library's bring-up gate (logos-delivery 131fc9b1) requires an
+# active/grace_period membership for the configured scope on EVERY
+# rln-enabled node, so both register here through the module — the way an
+# app (the membership UI) does — and wait for the chain to confirm. Each
+# node pays from its own holding (derived and funded above); sequential so
+# the two chain confirmations read cleanly.
+section "registration (via liblogos_rln_module, pending -> active on chain)"
+register_and_confirm() {
+    local node="$1" reg state_json state options
+    options="[{\"key\":\"rate_limit\",\"value\":\"$RATE_LIMIT\"},{\"key\":\"funding_holding_account_id\",\"value\":\"$(gv HOLD "$node")\"}]"
+    reg=$(node_call "$node" liblogos_rln_module register_membership \
+        "$REGISTRY_ID" "$(argfile "reg_$node" "$RLN_ID")" "$options" | jres) || reg=""
+    case "$reg" in
+        *'"state":"pending"'*) say "$node: register_membership accepted (pending $(printf '%s' "$reg" | jfield membership_hash))" ;;
+        *) die "$node: register_membership failed: ${reg:-<empty>}" ;;
+    esac
+    say "$node: polling get_membership_state to active (budget ${E2E_CONFIRM_TIMEOUT_S}s)…"
+    state=""
+    state_json=""
+    for _t in $(seq 1 "$(polls "$E2E_CONFIRM_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
+        state_json=$(node_call "$node" liblogos_rln_module get_membership_state \
+            "$REGISTRY_ID" "$(argfile "st_$node" "$RLN_ID")" | jres) || state_json=""
+        state=$(printf '%s' "$state_json" | jfield state)
+        say "  $node state poll $_t: ${state:-<none>}"
+        case "$state" in
+            active|grace_period) break ;;
+            failed) die "$node: registration FAILED on chain: $state_json" ;;
+        esac
+        sleep "$E2E_POLL_INTERVAL_S"
+    done
+    [ "$state" = "active" ] || [ "$state" = "grace_period" ] \
+        || die "$node: membership never became active (last state: ${state:-<none>})"
+    sv LEAF "$node" "$(printf '%s' "$state_json" | jfield leaf_index)"
+    sv MHASH "$node" "$(printf '%s' "$state_json" | jfield membership_hash)"
+    say "$node: membership active at leaf $(gv LEAF "$node")"
+}
+register_and_confirm n1
+register_and_confirm n2
+LEAF=$(gv LEAF n1)
+MEMBERSHIP_HASH=$(gv MHASH n1)
+
 # ---------- witness up, then the delivery nodes ------------------------------
 section "delivery nodes (bring-up via the real config surface)"
-# ONE topology since delivery-module ccbb3cd: the conf's rln-relay-lez auto-
+# ONE topology since delivery-module ccbb3cd: the conf's rln-lez auto-
 # enables the in-process bridge in createNode on BOTH nodes (there is no
 # external-responder topology for lez any more, and no opt-out key). n1 runs
 # pure production shape; n2 additionally runs the WITNESS responder, which
@@ -447,12 +524,16 @@ RESPONDER_PIDS="$RESPONDER_PIDS $!"
 say "n2: witness responder up (routes events; hot-path answers must all be rejected)"
 
 # The RLN scope rides createNode's flat conf. n1 additionally carries the
-# funding pair via rln-relay-registry-options — the conf-fed path that
+# funding pair via rln-registry-options — the conf-fed path that
 # retires the responder's payer injection (the seam finally has a field
-# for who funds a registration).
+# for who funds a registration). Key names follow logos-delivery
+# impl-plugable-rln-api-module 85c2d6f8, which renamed the LEZ keys from
+# rln-relay-{lez,registry-id,identifier,registry-options} to
+# rln-{lez,registry-id,identifier,registry-options}; the parser rejects the
+# old spellings outright ("Unrecognized configuration option(s)").
 delivery_cfg() {
     local port="$1" peers="$2" extra="$3"
-    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"rln-relay":true,"rln-relay-lez":true,"rln-relay-registry-id":"%s","rln-relay-identifier":"%s","rln-relay-user-message-limit":%s,"rln-relay-epoch-sec":%s%s%s}' \
+    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"rln-relay":true,"rln-lez":true,"rln-registry-id":"%s","rln-identifier":"%s","rln-relay-user-message-limit":%s,"rln-relay-epoch-sec":%s%s%s}' \
         "$port" "$CLUSTER_ID" "$REGISTRY_ID" "$RLN_ID" "$RATE_LIMIT" \
         "$E2E_EPOCH_SIZE_SEC" "$extra" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
@@ -471,17 +552,17 @@ delivery_up() {
     sv MADDR "$node" "/ip4/127.0.0.1/tcp/$port/p2p/$peerid"
 }
 
-FUNDING_OPTS=$(printf ',"rln-relay-registry-options":"{\\"funding_holding_account_id\\":\\"%s\\"}"' "$HOLDING")
+FUNDING_OPTS=$(printf ',"rln-registry-options":"{\\"funding_holding_account_id\\":\\"%s\\"}"' "$HOLDING")
 delivery_up n1 "" "$FUNDING_OPTS"
 delivery_up n2 "$(gv MADDR n1)"
-# rln-relay-lez in the conf is the bridge's own enable signal now — no
+# rln-lez in the conf is the bridge's own enable signal now — no
 # separate key. createNode fails hard if the bridge can't come up, so this
 # grep is about the LOG CONTRACT, not survival.
 for n in $NODES_ALL; do
     grep -q "rln served in-process" "$(node_log_path "$n")" \
-        || die "$n: conf carries rln-relay-lez but createNode never logged 'rln served in-process' (bridge auto-enable broken?)"
+        || die "$n: conf carries rln-lez but createNode never logged 'rln served in-process' (bridge auto-enable broken?)"
 done
-say "both nodes: in-process rln bridge auto-enabled by the rln-relay-lez conf"
+say "both nodes: in-process rln bridge auto-enabled by the rln-lez conf"
 
 # ---------- bring-up assertions ----------------------------------------------
 section "bring-up assertions"
@@ -503,87 +584,38 @@ assert sys.argv[2] in cfg.get("registries", []), \
     || die "rlnStartRequest config mismatch: '$EV_CFG' (want epoch $E2E_EPOCH_SIZE_SEC + registry $REGISTRY_ID)"
 say "n1: start request carries the node conf's exact epoch + registry"
 
-# The register event n1's library emitted must carry the CONFIGURED scope —
-# this is what the real config surface exists to prove.
-EVT2=$(node_wait_event n1 delivery_module rlnRegisterRequest 5) \
-    || die "n1 emitted no rlnRegisterRequest (config surface not wired?)"
+# The membership-state gate the library runs right after start must ask
+# for the CONFIGURED scope — this is what the real config surface exists to
+# prove now that registration is no longer part of bring-up.
+EVT2=$(node_wait_event n1 delivery_module rlnGetMembershipStateRequest 5) \
+    || die "n1 emitted no rlnGetMembershipStateRequest (config surface not wired?)"
 EV_REGISTRY=$(evt_arg "$EVT2" 1)
 EV_RLNID=$(evt_arg "$EVT2" 2)
-EV_OPTS=$(evt_arg "$EVT2" 3)
 [ "$EV_REGISTRY" = "$REGISTRY_ID" ] \
-    || die "rlnRegisterRequest registry mismatch: event '$EV_REGISTRY' != configured '$REGISTRY_ID' — $EVT2"
+    || die "rlnGetMembershipStateRequest registry mismatch: event '$EV_REGISTRY' != configured '$REGISTRY_ID' — $EVT2"
 [ "$EV_RLNID" = "$RLN_ID" ] \
-    || die "rlnRegisterRequest rln_identifier mismatch: event '$EV_RLNID' != configured '$RLN_ID' — $EVT2"
-EV_RATE=$(printf '%s' "$EV_OPTS" | python3 -c '
-import json, sys
-kv = {o.get("key"): o.get("value") for o in json.load(sys.stdin) if isinstance(o, dict)}
-print(kv.get("rate_limit", ""))' 2>/dev/null) || EV_RATE=""
-[ "$EV_RATE" = "$RATE_LIMIT" ] \
-    || die "rlnRegisterRequest rate_limit mismatch: options carried '$EV_RATE', want '$RATE_LIMIT' — options: $EV_OPTS"
-EV_FUNDING=$(printf '%s' "$EV_OPTS" | python3 -c '
-import json, sys
-kv = {o.get("key"): o.get("value") for o in json.load(sys.stdin) if isinstance(o, dict)}
-print(kv.get("funding_holding_account_id", ""))' 2>/dev/null) || EV_FUNDING=""
-[ "$EV_FUNDING" = "$HOLDING" ] \
-    || die "rlnRegisterRequest funding mismatch: options carried '$EV_FUNDING', want '$HOLDING' — options: $EV_OPTS"
-say "n1: register options carry the configured scope, rate AND the conf-fed funding pair"
+    || die "rlnGetMembershipStateRequest rln_identifier mismatch: event '$EV_RLNID' != configured '$RLN_ID' — $EVT2"
+say "n1: the membership-state gate asks for the configured scope"
 
-# Timeouts also resolve the library's awaits (best-effort bring-up), so
-# nodeStarted alone doesn't prove the responses LANDED — the library's own
-# log lines do.
-REG_LOGGED=0
-for _t in $(seq 1 15); do
-    if node_logs n1 | grep -q "RLN module start failed"; then
-        die "n1's library saw the start leg fail: $(node_logs n1 | grep -m1 'RLN module start failed')"
-    fi
-    if node_logs n1 | grep -q "RLN membership registered"; then
-        REG_LOGGED=1
-        break
-    fi
-    sleep 1
+# Timeouts also resolve the library's awaits, so nodeStarted alone doesn't
+# prove the responses LANDED — the library's own log lines do: "RLN
+# membership verified" is the gate passing on the bridge's answer.
+for n in $NODES_ALL; do
+    GATE_LOGGED=0
+    for _t in $(seq 1 15); do
+        if node_logs "$n" | grep -q "RLN module start failed\|does not have a usable RLN membership"; then
+            die "$n's library failed bring-up: $(node_logs "$n" | grep -m1 'RLN module start failed\|usable RLN membership')"
+        fi
+        if node_logs "$n" | grep -q "RLN membership verified"; then
+            GATE_LOGGED=1
+            break
+        fi
+        sleep 1
+    done
+    [ "$GATE_LOGGED" = 1 ] \
+        || die "$n's library never logged 'RLN membership verified' — the gate's answer may have raced its budget"
 done
-[ "$REG_LOGGED" = 1 ] \
-    || die "n1's library never logged 'RLN membership registered' — responses may have raced the library's budget"
-say "n1: library log confirms start + register landed inside the per-op budgets"
-
-# n2: its best-effort registration REALLY failed module-side (no
-# funding_holding_account_id in its conf — an InvalidArgument answered by
-# the bridge) and degraded instead of breaking bring-up (nodeStarted
-# already proved the node came up). The module error can trail nodeStarted,
-# so poll up to the library's registry-op budget.
-N2_DEGRADED=0
-for _t in $(seq 1 100); do
-    if node_logs n2 | grep -q "RLN membership registration failed"; then
-        N2_DEGRADED=1
-        break
-    fi
-    sleep 1
-done
-[ "$N2_DEGRADED" = 1 ] \
-    || die "n2 never logged the expected 'RLN membership registration failed' notice"
-say "n2: fundless registration failed module-side and degraded gracefully (node up, notice logged)"
-
-# ---------- the registration is real: pending -> active on chain -------------
-section "confirmation (real chain)"
-say "polling n1 get_membership_state to active (budget ${E2E_CONFIRM_TIMEOUT_S}s)…"
-STATE=""
-STATE_JSON=""
-for _t in $(seq 1 "$(polls "$E2E_CONFIRM_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
-    STATE_JSON=$(node_call n1 liblogos_rln_module get_membership_state \
-        "$REGISTRY_ID" "$(argfile rlnid2 "$RLN_ID")" | jres) || STATE_JSON=""
-    STATE=$(printf '%s' "$STATE_JSON" | jfield state)
-    say "  state poll $_t: ${STATE:-<none>}"
-    case "$STATE" in
-        active|grace_period) break ;;
-        failed) die "registration FAILED on chain: $STATE_JSON" ;;
-    esac
-    sleep "$E2E_POLL_INTERVAL_S"
-done
-[ "$STATE" = "active" ] || [ "$STATE" = "grace_period" ] \
-    || die "membership never became active (last state: ${STATE:-<none>})"
-LEAF=$(printf '%s' "$STATE_JSON" | jfield leaf_index)
-MEMBERSHIP_HASH=$(printf '%s' "$STATE_JSON" | jfield membership_hash)
-say "n1 membership active at leaf $LEAF"
+say "both nodes: library log confirms start + the membership-state gate landed inside the per-op budgets"
 
 # ---------- mesh -------------------------------------------------------------
 section "mesh (static peers, relay)"
@@ -595,8 +627,8 @@ done
 say "both nodes subscribed to $TOPIC"
 sleep 1
 
-# n2 never registered, so its valid-root window warms only through its own
-# registry reads — which go lez-rln -> lez_core (the wallet). On testnet the
+# n2's valid-root window warms through its own registry reads — which go
+# lez-rln -> lez_core (the wallet). On testnet the
 # wallet can still be churning through a long sync here (thousands of
 # "Stored persistent accounts" writes), and while its event loop is
 # saturated the remote object is unacquirable: every validate_proof then
@@ -720,11 +752,11 @@ say "n2 witness verdict trail: $N2_VERDICTS"
 
 echo
 echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
-echo "e2e:   config    rln-relay-lez/-registry-id/-identifier/-user-message-limit/-registry-options (funding via conf, no responder injection)"
+echo "e2e:   config    rln-lez/rln-registry-id/rln-identifier/rln-relay-user-message-limit/rln-registry-options (85c2d6f8 spellings, no responder injection)"
 echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
-echo "e2e:   bring-up  n1 start+register ok (ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH); n2 fundless register failed -> degraded gracefully"
+echo "e2e:   bring-up  app-side register via the module on BOTH nodes (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership-state gate verified on both"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
-echo "e2e:   topology  IN-PROCESS bridge auto-enabled by rln-relay-lez on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
+echo "e2e:   topology  IN-PROCESS bridge auto-enabled by rln-lez on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
 echo "e2e:   gate      witness's contradicting \"invalid\" rejected, probe DELIVERED (hijack control); $ATTEMPT attempts = $GEN_COUNT generate requests"
 echo "e2e:   verdicts  n2 witness saw: $N2_VERDICTS (duplicate = bridge validated first; module wire crossing verbatim)"
