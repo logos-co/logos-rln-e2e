@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # scenarios/delivery-rln — end-to-end acceptance for logos-delivery's RLN
-# integration (branch impl-plugable-rln-api-module REBASED onto
-# feat/rln-api-structure e5f8f327 — the rln/integration-fixes stacks on
-# BOTH logos-delivery and logos-delivery-module) against the REAL RLN
-# module stack.
+# integration (branch impl-plugable-rln-api-module on BOTH logos-delivery
+# — 66850a13, rebased upstream onto main — and logos-delivery-module —
+# 8210137 — plus our rln/toolchain-0.9 stack on the module) against the
+# REAL RLN module stack.
 #
 # The seam under test: liblogosdelivery's rlnInvoke fires a C callback into
 # delivery_module, whose IN-PROCESS BRIDGE answers it by calling the
@@ -29,22 +29,26 @@
 #      ride createNode's flat conf (spellings of logos-delivery
 #      impl-plugable-rln-api-module 85c2d6f8), the rlnStartRequest carries
 #      the module's start config (epoch + registries — no more out-of-band
-#      responder knowledge), and the rlnGetMembershipStateRequest that
-#      follows carries the configured scope (the responder injects nothing).
+#      responder knowledge), and the rlnGetMembershipStateRequest the
+#      library fires before its FIRST proof carries the configured scope
+#      (the responder injects nothing).
 #   3. keystore custody default: NO unlock call anywhere — the module
 #      self-provisions its own secret (the headless deployment shape;
 #      contract: docs/delivery-integration.md §1).
 #   4. registration is REAL, and it is the APP's job, not bring-up's: since
-#      logos-delivery 131fc9b1 the library no longer registers at startup —
-#      it reads the scope's membership state after start and REFUSES to
-#      start the node without an active/grace_period membership ("the node
-#      does not have a usable RLN membership"). So this script registers
-#      BOTH nodes through liblogos_rln_module first (pending -> active on
-#      the target chain, each node paying from its own faucet-funded
-#      holding), then brings delivery up and asserts the library's "RLN membership
-#      verified" gate on both. (The old fundless-n2 "degrade gracefully"
-#      leg is gone with that design: a node without a membership does not
-#      come up at all now.)
+#      logos-delivery 131fc9b1 the library no longer registers at startup,
+#      and since 4091770a it does not read the membership at start either —
+#      the SEND path verifies the node's own membership before its first
+#      proof (a pass is cached, a failure is retried on the next send) and
+#      refuses the send without an active/grace_period membership ("The
+#      node does not have a usable RLN membership"). So this script
+#      registers BOTH nodes through liblogos_rln_module first (pending ->
+#      active on the target chain, each node paying from its own
+#      faucet-funded holding), brings delivery up (start lands on both, no
+#      membership read at start), and asserts the gate where it lives now:
+#      n1's first send reads the configured scope exactly once, before its
+#      first generate_proof, and never again. (A node without a membership
+#      starts, but cannot send.)
 #   5. the message path, end to end: n1 send -> rlnGenerateProofRequest ->
 #      module generate_proof (its proof_canonical bytes become
 #      message.proof) -> gossipsub -> n2's validator ->
@@ -315,11 +319,12 @@ print(s[:-1] + ("0" if s[-1] != "0" else "1"))')
         esac
         rln_respond "$node" "$req" "$out" "$note" ;;
     rlnGetMembershipStateRequest)
-        # (reqId, registryId, rlnIdentifier, timestamp) — the bring-up gate
-        # since logos-delivery 131fc9b1: after start the library reads the
-        # scope's membership state and refuses to start the node unless it
-        # is active/grace_period. A tstr method: the module's object goes
-        # back verbatim (the library parses the native dialect).
+        # (reqId, registryId, rlnIdentifier, timestamp) — the send-path gate
+        # since logos-delivery 4091770a: before its first proof the library
+        # reads the scope's membership state and refuses the send unless it
+        # is active/grace_period (a pass is cached). A tstr method: the
+        # module's object goes back verbatim (the library parses the native
+        # dialect).
         local st note
         st=$(node_call "$node" liblogos_rln_module get_membership_state \
             "$(b64d "$a1")" "$(argfile "ms_${node}_${RANDOM}" "$(b64d "$a2")")" | jres) || st=""
@@ -584,38 +589,33 @@ assert sys.argv[2] in cfg.get("registries", []), \
     || die "rlnStartRequest config mismatch: '$EV_CFG' (want epoch $E2E_EPOCH_SIZE_SEC + registry $REGISTRY_ID)"
 say "n1: start request carries the node conf's exact epoch + registry"
 
-# The membership-state gate the library runs right after start must ask
-# for the CONFIGURED scope — this is what the real config surface exists to
-# prove now that registration is no longer part of bring-up.
-EVT2=$(node_wait_event n1 delivery_module rlnGetMembershipStateRequest 5) \
-    || die "n1 emitted no rlnGetMembershipStateRequest (config surface not wired?)"
-EV_REGISTRY=$(evt_arg "$EVT2" 1)
-EV_RLNID=$(evt_arg "$EVT2" 2)
-[ "$EV_REGISTRY" = "$REGISTRY_ID" ] \
-    || die "rlnGetMembershipStateRequest registry mismatch: event '$EV_REGISTRY' != configured '$REGISTRY_ID' — $EVT2"
-[ "$EV_RLNID" = "$RLN_ID" ] \
-    || die "rlnGetMembershipStateRequest rln_identifier mismatch: event '$EV_RLNID' != configured '$RLN_ID' — $EVT2"
-say "n1: the membership-state gate asks for the configured scope"
-
 # Timeouts also resolve the library's awaits, so nodeStarted alone doesn't
-# prove the responses LANDED — the library's own log lines do: "RLN
-# membership verified" is the gate passing on the bridge's answer.
+# prove the start answer LANDED — the library's own "RLN module started"
+# line is the bridge's answer arriving inside the start budget.
 for n in $NODES_ALL; do
-    GATE_LOGGED=0
+    START_LOGGED=0
     for _t in $(seq 1 15); do
-        if node_logs "$n" | grep -q "RLN module start failed\|does not have a usable RLN membership"; then
-            die "$n's library failed bring-up: $(node_logs "$n" | grep -m1 'RLN module start failed\|usable RLN membership')"
+        if node_logs "$n" | grep -q "RLN module start failed\|RLN module bring-up failed"; then
+            die "$n's library failed bring-up: $(node_logs "$n" | grep -m1 'RLN module start failed\|RLN module bring-up failed')"
         fi
-        if node_logs "$n" | grep -q "RLN membership verified"; then
-            GATE_LOGGED=1
+        if node_logs "$n" | grep -q "RLN module started"; then
+            START_LOGGED=1
             break
         fi
         sleep 1
     done
-    [ "$GATE_LOGGED" = 1 ] \
-        || die "$n's library never logged 'RLN membership verified' — the gate's answer may have raced its budget"
+    [ "$START_LOGGED" = 1 ] \
+        || die "$n's library never logged 'RLN module started' — the start answer may have raced its budget"
 done
-say "both nodes: library log confirms start + the membership-state gate landed inside the per-op budgets"
+say "both nodes: library log confirms the start answer landed inside its budget"
+
+# Since logos-delivery 4091770a start does NOT read the membership: the
+# gate moved to the send path, where the send leg asserts it. A read here
+# means the library under test and this scenario drifted apart again.
+if node_wait_event n1 delivery_module rlnGetMembershipStateRequest 1 >/dev/null; then
+    die "n1 read its membership state at START — logos-delivery 4091770a moved that read to the first send; the library under test predates it or moved it back"
+fi
+say "n1: no membership read at start (the gate lives on the send path now)"
 
 # ---------- mesh -------------------------------------------------------------
 section "mesh (static peers, relay)"
@@ -663,13 +663,33 @@ while [ "$ATTEMPT" -lt "$SEND_ATTEMPTS" ]; do
     [ -n "$REQID" ] || die "send returned no requestId"
     PROP=$(node_wait_event n1 delivery_module messagePropagated "$EVT_TIMEOUT" "$REQID") || {
         node_wait_event n1 delivery_module messageError 1 "$REQID" >/dev/null \
-            && die "messageError for requestId $REQID (generate leg failed — see n1's daemon log)"
+            && die "messageError for requestId $REQID (gate or generate leg failed — library: $(node_logs n1 | grep -m1 'usable RLN membership\|Failed to verify RLN membership\|Failed to attach RLN proof' || echo 'see n1 daemon log'))"
         die "no messagePropagated for requestId $REQID within ${EVT_TIMEOUT}s"
     }
     MSGHASH=$(printf '%s' "$PROP" | python3 -c \
         'import json,sys; print(json.load(sys.stdin)["data"].get("arg1",""))')
     [ -n "$MSGHASH" ] || die "messagePropagated carried no messageHash: $PROP"
     say "attempt $ATTEMPT: propagated (requestId $REQID, hash ${MSGHASH:0:18}…)"
+    if [ "$ATTEMPT" = 1 ]; then
+        # The first send runs the library's membership-state gate BEFORE its
+        # first proof: the read must ask for the CONFIGURED scope — this is
+        # what the real config surface exists to prove now that registration
+        # is the app's job — and precede the generate request in n1's event
+        # stream.
+        EVT2=$(node_wait_event n1 delivery_module rlnGetMembershipStateRequest 5) \
+            || die "n1's first send fired no rlnGetMembershipStateRequest (gate not wired?)"
+        EV_REGISTRY=$(evt_arg "$EVT2" 1)
+        EV_RLNID=$(evt_arg "$EVT2" 2)
+        [ "$EV_REGISTRY" = "$REGISTRY_ID" ] \
+            || die "rlnGetMembershipStateRequest registry mismatch: event '$EV_REGISTRY' != configured '$REGISTRY_ID' — $EVT2"
+        [ "$EV_RLNID" = "$RLN_ID" ] \
+            || die "rlnGetMembershipStateRequest rln_identifier mismatch: event '$EV_RLNID' != configured '$RLN_ID' — $EVT2"
+        GATE_LINE=$(grep -n -m1 '"event":"rlnGetMembershipStateRequest"' "$(gv NODEEVT n1_delivery_module)" | cut -d: -f1)
+        GEN_LINE=$(grep -n -m1 '"event":"rlnGenerateProofRequest"' "$(gv NODEEVT n1_delivery_module)" | cut -d: -f1)
+        { [ -n "$GATE_LINE" ] && [ -n "$GEN_LINE" ] && [ "$GATE_LINE" -lt "$GEN_LINE" ]; } \
+            || die "gate order: the membership read (event line ${GATE_LINE:-none}) must precede the first generate (event line ${GEN_LINE:-none})"
+        say "attempt 1: the membership-state gate read the configured scope, then the proof was generated"
+    fi
     if node_wait_event n2 delivery_module messageReceived "$RECV_WAIT_S" "$MSGHASH" >/dev/null; then
         RECEIVED=1
         say "attempt $ATTEMPT: n2 received the proof-gated message"
@@ -692,6 +712,12 @@ GEN_COUNT=$(grep -c '"event":"rlnGenerateProofRequest"' "$(gv NODEEVT n1_deliver
 [ "$GEN_COUNT" = "$ATTEMPT" ] \
     || die "slot accounting: $GEN_COUNT generate requests for $ATTEMPT send attempts"
 say "slot accounting: $GEN_COUNT attempts drove $GEN_COUNT generate requests"
+
+# The gate's pass is cached: every later send skipped the registry read.
+STATE_COUNT=$(grep -c '"event":"rlnGetMembershipStateRequest"' "$(gv NODEEVT n1_delivery_module)" || true)
+[ "$STATE_COUNT" = 1 ] \
+    || die "membership gate cache: $STATE_COUNT membership-state reads for $ATTEMPT send attempts (want exactly 1 — the pass is cached)"
+say "membership gate: one read, cached across $ATTEMPT attempts"
 
 # ---------- negative control: external answers cannot hijack the bridge ------
 # n2's witness corrupts the SIGNAL before validating one probe, producing a
@@ -716,6 +742,14 @@ grep -q "verify verdict=invalid" "$E2E_RUN_DIR/responder-n2.log" \
     || die "n2's module never answered 'invalid' for the corrupted signal — witness tail: $(tail -3 "$E2E_RUN_DIR/responder-n2.log")"
 rm -f "$E2E_RUN_DIR/tamper-n2"
 say "tamper probe: witness answered a contradicting 'invalid', was rejected, and the message delivered — external responders cannot hijack a bridged node"
+
+# The probe was one more send: the cached gate must still have skipped the
+# registry read (the earlier count covered the attempt loop only).
+sleep 1
+STATE_COUNT=$(grep -c '"event":"rlnGetMembershipStateRequest"' "$(gv NODEEVT n1_delivery_module)" || true)
+[ "$STATE_COUNT" = 1 ] \
+    || die "membership gate cache: $STATE_COUNT membership-state reads after the tamper probe (want exactly 1 across all sends)"
+say "membership gate: still one read after $(( ATTEMPT + 1 )) sends"
 
 # No seam op may go unanswered: an UNHANDLED line means delivery grew a leg
 # the witness (and this scenario) must learn.
@@ -755,7 +789,8 @@ echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
 echo "e2e:   config    rln-lez/rln-registry-id/rln-identifier/rln-relay-user-message-limit/rln-registry-options (85c2d6f8 spellings, no responder injection)"
 echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
-echo "e2e:   bring-up  app-side register via the module on BOTH nodes (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership-state gate verified on both"
+echo "e2e:   bring-up  app-side register via the module on BOTH nodes (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start on both (no membership read at start)"
+echo "e2e:   gate      n1's first send read the configured scope's membership once (before its first generate), cached for the rest"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
 echo "e2e:   topology  IN-PROCESS bridge auto-enabled by rln-lez on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
 echo "e2e:   gate      witness's contradicting \"invalid\" rejected, probe DELIVERED (hijack control); $ATTEMPT attempts = $GEN_COUNT generate requests"
