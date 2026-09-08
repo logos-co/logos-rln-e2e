@@ -14,7 +14,8 @@
 #              backend.callCoreModuleMethod(...) — see harness/lib/basecamp.sh.
 #   n1         an ordinary logoscore daemon: same 4 modules, in-process
 #              bridge auto-enabled by its conf, NO membership of its own
-#              (a receiver never needs one since logos-delivery 4091770a);
+#              (the start-time membership check is non-fatal since
+#              logos-delivery abc53a6f — a receiver only logs a notice);
 #              it receives basecamp's message only after its own module
 #              validates the proof.
 #
@@ -27,8 +28,10 @@
 #      zero bytes) and the chain confirms it active — the scope a Basecamp
 #      user's delivery conf has to carry.
 #   3. RUN: createNode on the real rln-* conf (rln-lez auto-enables the
-#      in-process bridge), start lands ("RLN module started").
-#   4. SEND: basecamp send -> the library's first-send membership gate ->
+#      in-process bridge), start lands ("RLN module started" — fatal if
+#      not, since abc53a6f) and the start-time membership check passes
+#      ("RLN membership verified": the membership registered above).
+#   4. SEND: basecamp send (the cached pass skips the registry read) ->
 #      generate_proof -> gossipsub -> n1 validate_proof (in-process bridge)
 #      -> messageReceived on n1.
 #
@@ -304,13 +307,23 @@ for _t in $(seq 1 "$EVT_TIMEOUT"); do
     sleep 1
 done
 [ -n "$BC_PEER" ] || die "basecamp: node never reported a peer id after start"
-if grep -q "RLN module start failed\|RLN module bring-up failed" "$E2E_RUN_DIR/basecamp.log" 2>/dev/null; then
-    die "basecamp's library failed RLN bring-up: $(grep -m1 'RLN module start failed\|RLN module bring-up failed' "$E2E_RUN_DIR/basecamp.log")"
+if grep -q "failed to start RLN module\|RLN module start failed\|RLN module bring-up failed" "$E2E_RUN_DIR/basecamp.log" 2>/dev/null; then
+    die "basecamp's library failed RLN bring-up: $(grep -m1 'failed to start RLN module\|RLN module start failed\|RLN module bring-up failed' "$E2E_RUN_DIR/basecamp.log")"
 fi
 if bc_log_wait "RLN module started" 15; then
     say "basecamp: library log confirms 'RLN module started' (start answered inside its budget)"
 else
     say "basecamp: no 'RLN module started' line in basecamp.log (library log filtered?) — node is up (peer $BC_PEER), continuing"
+fi
+# The start-time membership check (non-fatal in the library) must PASS here:
+# basecamp registered and went active above, so a miss is a real failure.
+if grep -q "no usable RLN membership\|could not verify RLN membership" "$E2E_RUN_DIR/basecamp.log" 2>/dev/null; then
+    die "basecamp's start-time membership check missed although the membership is active: $(grep -m1 'no usable RLN membership\|could not verify RLN membership' "$E2E_RUN_DIR/basecamp.log")"
+fi
+if bc_log_wait "RLN membership verified" 15; then
+    say "basecamp: library log confirms 'RLN membership verified' (the cached pass covers every send)"
+else
+    say "basecamp: no 'RLN membership verified' line in basecamp.log (library log filtered?) — continuing; the send leg proves the gate"
 fi
 say "basecamp: delivery up on 127.0.0.1:$(( BASE_PORT + 2 )) (peer $BC_PEER), static peer n1"
 
