@@ -11,7 +11,8 @@
 #     -> delivery_module.configureRln(registry-id, rln-identifier)
 #     -> createNode -> start
 #   then: B dials A (A's multiaddr as an entry node) -> both subscribe
-#     -> quota snapshot on A -> A.send -> B sees messageReceived
+#     -> warm both RLN root windows -> quota snapshot on A -> A.send
+#     -> B sees messageReceived
 #     -> quota snapshot on A again: remaining decremented by one
 #
 # What it proves that the producer repos' own suites cannot: the delivery
@@ -216,6 +217,37 @@ for part in re.split(r"[,\n]", raw):
 '
 }
 
+# Poll a node's RLN valid-root window warm: verify_proof serves from the local
+# window only and answers not_ready until the registry read lands. A cold
+# window on the receiver looks exactly like a lost message — it would Ignore
+# the sender's proof — so gate the send on both nodes being warm. The probe
+# proof spends one of the probed node's own message_id slots, which is why the
+# sender's quota is snapshotted after this and not before.
+warm_root_window() {
+    local node="$1" rlnid sig proof verify _t
+    rlnid=$(gv RLNID "$node")
+    sig=$(printf 'root window probe' | to_hex)
+    proof=$(node_call "$node" liblogos_rln_module generate_proof \
+        "$REGISTRY_ID" "$(argfile "warmid-$node" "$rlnid")" "$(argfile "warmsig-$node" "$sig")" \
+        "str:$(date +%s)" | jres | jval) || proof=""
+    case "$proof" in
+        *'"nullifier"'*) ;;
+        *) die_node "$node" "generate_proof failed while warming the root window: ${proof:-<empty>}" ;;
+    esac
+    for _t in $(seq 1 "$(polls "$E2E_ROOT_WINDOW_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
+        verify=$(node_call "$node" liblogos_rln_module verify_proof \
+            "$REGISTRY_ID" "$(argfile "warmid2-$node" "$rlnid")" "$(argfile "warmsig2-$node" "$sig")" \
+            "$(argfile "warmproof-$node" "$proof")" | jres | jval) || verify=""
+        case "$verify" in
+            *'"verdict":"valid"'*) say "$node: root window warm"; return 0 ;;
+            *'"verdict":"invalid"'*) die_node "$node" "verify_proof rejected the node's own fresh proof: $verify" ;;
+            *not_ready*) say "  $node: root window still cold ($_t)"; sleep "$E2E_POLL_INTERVAL_S" ;;
+            *) die_node "$node" "verify_proof failed: ${verify:-<empty>}" ;;
+        esac
+    done
+    die_node "$node" "root window never warmed within ${E2E_ROOT_WINDOW_TIMEOUT_S}s"
+}
+
 # The node's budget in the current epoch, into EPOCH_<label> / REMAINING_<label>.
 # Assigns rather than prints: a failure inside $(…) would only kill the subshell.
 read_quota() {
@@ -249,6 +281,11 @@ for _n in "$SENDER" "$RECEIVER"; do
 done
 say "both nodes subscribed to $CONTENT_TOPIC; letting the mesh settle"
 sleep 12
+
+# Warm both: the sender proves, the receiver validates, and neither can do it
+# from a cold window.
+warm_root_window "$SENDER"
+warm_root_window "$RECEIVER"
 
 read_quota "$SENDER" before
 EPOCH_BEFORE=$(gv EPOCH before)
