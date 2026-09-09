@@ -44,6 +44,7 @@
 #   E2E_CLUSTER_ID=198       test cluster (isolated from any real network)
 #   E2E_TCP_PORT_BASE=61100  node n's TCP port is base+n
 #   E2E_RECEIVE_TIMEOUT_S=60 budget for the receiver's messageReceived
+#   E2E_CONFIGURE_RLN_TIMEOUT_S=180  budget for configureRln to report
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -57,6 +58,7 @@ RATE_LIMIT="${E2E_RATE_LIMIT:-100}"
 CLUSTER_ID="${E2E_CLUSTER_ID:-198}"
 TCP_PORT_BASE="${E2E_TCP_PORT_BASE:-61100}"
 RECEIVE_TIMEOUT_S="${E2E_RECEIVE_TIMEOUT_S:-60}"
+CONFIGURE_RLN_TIMEOUT_S="${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}"
 CONTENT_TOPIC="/test/1/logos-rln-e2e-delivery/proto"
 PAYLOAD="logos rln delivery e2e"
 SENDER=n1
@@ -112,7 +114,7 @@ register_node() {
 
     section "$node: membership"
     daemon_start "$node" || die "daemon_start $node failed"
-    daemon_load_modules "$node" logos_execution_zone liblogos_lez_rln_module \
+    daemon_load_modules "$node" lez_core liblogos_lez_rln_module \
         liblogos_rln_module delivery_module || die "$node: load-module failed"
 
     wallet_open "$node" || die_node "$node" "wallet open failed"
@@ -143,13 +145,15 @@ register_node() {
 
     rlnid=$(openssl rand -hex 32)
     sv RLNID "$node" "$rlnid"
-    say "$node: register(rate $RATE_LIMIT)"
-    reg=$(node_call "$node" liblogos_rln_module register \
-        "$REGISTRY_ID" "$(argfile "rlnid-$node" "$rlnid")" "$RATE_LIMIT" \
-        "{\"funding_holding_account_id\":\"$holding\"}" | jres) || reg=""
+    # RegistryOptions on the wire is an ARRAY of {"key","value"} string pairs
+    # (char* pairs in the C type), not an object — rate_limit included.
+    say "$node: register_membership(rate $RATE_LIMIT)"
+    reg=$(node_call "$node" liblogos_rln_module register_membership \
+        "$REGISTRY_ID" "$(argfile "rlnid-$node" "$rlnid")" \
+        "$(argfile "regopts-$node" "[{\"key\":\"rate_limit\",\"value\":\"$RATE_LIMIT\"},{\"key\":\"funding_holding_account_id\",\"value\":\"$holding\"}]")" | jres) || reg=""
     case "$reg" in
         *'"state":"pending"'*) ;;
-        *) die_node "$node" "register failed: ${reg:-<empty>}" ;;
+        *) die_node "$node" "register_membership failed: ${reg:-<empty>}" ;;
     esac
 
     say "$node: polling get_membership_state to active (budget ${E2E_CONFIRM_TIMEOUT_S}s)…"
@@ -182,9 +186,26 @@ start_delivery_node() {
     rlnid=$(gv RLNID "$node")
     [ -n "$rlnid" ] || die "start_delivery_node: $node has no membership"
 
-    dm_call "$node" configureRln \
+    # logosctl's transport deadline is a fixed 20 s with no CLI override, and
+    # configureRln outlives it: it warms the registry root window over the
+    # chain. The client's RPC_FAILED therefore says nothing about the module,
+    # so fire and forget, then wait for the module's own verdict in the log.
+    node_call "$node" delivery_module configureRln \
         "{\"registry-id\":\"$REGISTRY_ID\",\"rln-identifier\":\"$rlnid\",\"epoch-size-sec\":$E2E_EPOCH_SIZE_SEC}" \
-        >/dev/null
+        >/dev/null 2>&1 || true
+    local _t verdict=""
+    for _t in $(seq 1 "$(polls "$CONFIGURE_RLN_TIMEOUT_S" 5)"); do
+        if node_logs "$node" | grep -q "rln served in-process"; then verdict=ok; break; fi
+        if node_logs "$node" | grep -q "rln bridge unavailable"; then verdict=nobridge; break; fi
+        if node_logs "$node" | grep -q "rln module start failed"; then verdict=nostart; break; fi
+        sleep 5
+    done
+    case "$verdict" in
+        ok) ;;
+        nobridge) die_node "$node" "configureRln installed the plugin but the RLN bridge did not come up — nothing would answer the library's RLN requests" ;;
+        nostart) die_node "$node" "configureRln could not start the RLN backend" ;;
+        *) die_node "$node" "configureRln never reported within ${CONFIGURE_RLN_TIMEOUT_S}s" ;;
+    esac
     say "$node: RLN configured on $REGISTRY_ID"
 
     entry=""
@@ -217,32 +238,35 @@ for part in re.split(r"[,\n]", raw):
 '
 }
 
-# Poll a node's RLN valid-root window warm: verify_proof serves from the local
+# Poll a node's RLN valid-root window warm: validate_proof serves from the local
 # window only and answers not_ready until the registry read lands. A cold
 # window on the receiver looks exactly like a lost message — it would Ignore
 # the sender's proof — so gate the send on both nodes being warm. The probe
 # proof spends one of the probed node's own message_id slots, which is why the
 # sender's quota is snapshotted after this and not before.
 warm_root_window() {
-    local node="$1" rlnid sig proof verify _t
+    local node="$1" rlnid sig ts proof verify _t
     rlnid=$(gv RLNID "$node")
     sig=$(printf 'root window probe' | to_hex)
+    # One timestamp for both calls: each derives the proof's epoch from the
+    # caller's clock, and validate_proof rejects a proof from another epoch.
+    ts=$(date +%s)
     proof=$(node_call "$node" liblogos_rln_module generate_proof \
         "$REGISTRY_ID" "$(argfile "warmid-$node" "$rlnid")" "$(argfile "warmsig-$node" "$sig")" \
-        "str:$(date +%s)" | jres | jval) || proof=""
+        "str:$ts" | jres | jval) || proof=""
     case "$proof" in
         *'"nullifier"'*) ;;
         *) die_node "$node" "generate_proof failed while warming the root window: ${proof:-<empty>}" ;;
     esac
     for _t in $(seq 1 "$(polls "$E2E_ROOT_WINDOW_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
-        verify=$(node_call "$node" liblogos_rln_module verify_proof \
+        verify=$(node_call "$node" liblogos_rln_module validate_proof \
             "$REGISTRY_ID" "$(argfile "warmid2-$node" "$rlnid")" "$(argfile "warmsig2-$node" "$sig")" \
-            "$(argfile "warmproof-$node" "$proof")" | jres | jval) || verify=""
+            "str:$ts" "$(argfile "warmproof-$node" "$proof")" | jres | jval) || verify=""
         case "$verify" in
             *'"verdict":"valid"'*) say "$node: root window warm"; return 0 ;;
-            *'"verdict":"invalid"'*) die_node "$node" "verify_proof rejected the node's own fresh proof: $verify" ;;
+            *'"verdict":"invalid"'*) die_node "$node" "validate_proof rejected the node's own fresh proof: $verify" ;;
             *not_ready*) say "  $node: root window still cold ($_t)"; sleep "$E2E_POLL_INTERVAL_S" ;;
-            *) die_node "$node" "verify_proof failed: ${verify:-<empty>}" ;;
+            *) die_node "$node" "validate_proof failed: ${verify:-<empty>}" ;;
         esac
     done
     die_node "$node" "root window never warmed within ${E2E_ROOT_WINDOW_TIMEOUT_S}s"
@@ -253,7 +277,8 @@ warm_root_window() {
 read_quota() {
     local node="$1" label="$2" q epoch remaining
     q=$(node_call "$node" liblogos_rln_module get_epoch_quota \
-        "$REGISTRY_ID" "$(argfile "quota-$node-$label" "$(gv RLNID "$node")")" | jres | jval) || q=""
+        "$REGISTRY_ID" "$(argfile "quota-$node-$label" "$(gv RLNID "$node")")" \
+        "str:$(date +%s)" | jres | jval) || q=""
     epoch=$(printf '%s' "$q" | jfield epoch_index)
     remaining=$(printf '%s' "$q" | jfield remaining)
     case "$epoch$remaining" in
@@ -297,8 +322,11 @@ REQ=$(dm_call "$SENDER" send "$CONTENT_TOPIC" "$(argfile payload "$PAYLOAD")")
 [ -n "$REQ" ] || die_node "$SENDER" "send returned an empty requestId"
 say "sent (requestId $REQ), awaiting messageReceived on $RECEIVER (budget ${RECEIVE_TIMEOUT_S}s)…"
 
-EVENT=$(node_await received "$RECEIVE_TIMEOUT_S" "$CONTENT_TOPIC") \
-    || die_node "$RECEIVER" "no messageReceived for $CONTENT_TOPIC within ${RECEIVE_TIMEOUT_S}s"
+if ! EVENT=$(node_await received "$RECEIVE_TIMEOUT_S" "$CONTENT_TOPIC"); then
+    say "watched event stream on $RECEIVER:"
+    cat "$(gv WATCHOUT received)" >&2 || true
+    die_node "$RECEIVER" "no messageReceived for $CONTENT_TOPIC within ${RECEIVE_TIMEOUT_S}s"
+fi
 node_watch_stop received
 say "received: $EVENT"
 

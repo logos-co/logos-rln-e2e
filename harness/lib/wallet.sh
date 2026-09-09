@@ -3,7 +3,7 @@
 # seam (host daemon now, container later).
 #
 # Env beyond docs/contract.md:
-#   E2E_WALLET_MOD    wallet module id (default logos_execution_zone)
+#   E2E_WALLET_MOD    wallet module id (default lez_core)
 #   E2E_REGISTRY_MOD  registry-provider module id (default
 #                     liblogos_lez_rln_module)
 #   SYNC_STEP         blocks per sync_to_block call (default 3000)
@@ -11,7 +11,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/daemon.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/chain.sh"
 
-E2E_WALLET_MOD="${E2E_WALLET_MOD:-logos_execution_zone}"
+E2E_WALLET_MOD="${E2E_WALLET_MOD:-lez_core}"
 E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 SYNC_STEP="${SYNC_STEP:-3000}"
 
@@ -20,7 +20,8 @@ SYNC_STEP="${SYNC_STEP:-3000}"
 # storage.json.seed so a re-run starts from the deployment's own accounts. Each
 # node opens its own seeded copy under the node's dir: create_account_public
 # derives deterministically, so two nodes on one storage.json would pick the
-# same "fresh" holding account.
+# same "fresh" holding account. lez_core 0.4.0 takes a third path, for the
+# statistics file, which the module creates.
 wallet_open() {
     local node="$1" home="${2:-${E2E_WALLET_HOME:-}}" storage
     [ -n "$home" ] || die "wallet_open: no wallet home (the target sets E2E_WALLET_HOME)"
@@ -32,8 +33,13 @@ wallet_open() {
             || cp "$home/storage.json" "$storage" \
             || die "wallet_open: cannot seed $storage"
     fi
-    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$storage" >/dev/null \
-        || die_node "$node" "wallet open failed"
+    local reply stats
+    stats="$(node_dir "$node")/wallet-statistics.json"
+    reply=$(node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$storage" "$stats") || reply=""
+    case "$(printf '%s' "$reply" | jstatus)" in
+        ok) ;;
+        *) die_node "$node" "wallet open failed (config $home/wallet_config.json, storage $storage): ${reply:-<no reply>}" ;;
+    esac
 }
 
 # Sync to the chain head in SYNC_STEP chunks (a single jump over a long chain
