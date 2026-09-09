@@ -330,6 +330,23 @@ fi
 node_watch_stop received
 say "received: $EVENT"
 
+# The payload rides as base64 under arg2._bytes; a decoder that disagrees with
+# the library's wire format yields empty bytes rather than an error, so assert
+# the bytes made the trip rather than just the topic.
+GOT=$(printf '%s' "$EVENT" | python3 -c '
+import base64, json, sys
+d = json.load(sys.stdin).get("data", {})
+b = d.get("arg2")
+if isinstance(b, dict):
+    b = b.get("_bytes", "")
+try:
+    print(base64.b64decode(b + "=" * (-len(b) % 4)).decode("utf-8", "replace"))
+except Exception:
+    print("")
+')
+[ "$GOT" = "$PAYLOAD" ] || die_node "$RECEIVER" "payload mismatch: got '${GOT}', sent '$PAYLOAD'"
+say "payload verified: $GOT"
+
 # ---------- the quota the send spent ----------------------------------------
 section "rln quota"
 read_quota "$SENDER" after

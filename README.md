@@ -18,7 +18,7 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 |---|---|---|
 | `register` | in progress | full single-node membership lifecycle: faucet claim → register → merkle proof + registry cross-check → generate/verify proof (valid + tampered) |
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
-| `delivery` | in progress | two RLN-gated delivery nodes over the Messaging API: both register a membership, peer statically, send a message end to end, and the sender's epoch quota is consumed |
+| `delivery` | blocked | two RLN-gated delivery nodes over the Messaging API: both register a membership, peer statically, send a message end to end, and the sender's epoch quota is consumed. Everything up to and past the send is verified against the hosted testnet; `delivery_module.configureRln` deadlocks, so the RLN-on path cannot complete — see `scenarios/delivery/STATUS.md` |
 | `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
