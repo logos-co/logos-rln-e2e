@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scenarios/register — the single-node membership lifecycle over the real
-# module stack (logos_execution_zone -> liblogos_lez_rln_module ->
+# module stack (lez_core -> liblogos_lez_rln_module ->
 # liblogos_rln_module). Drives a PAID registration through the membership
 # module's spec surface — the faucet-funded Register instruction, NOT the
 # gifter's RegisterFree path:
@@ -10,7 +10,7 @@
 #      in-module) -> poll get_membership_state to "active" -> select_membership
 #   -> get_merkle_proof -> cross-check via liblogos_lez_rln_module.get_membership
 #   -> start (warm root window) -> generate_proof -> get_epoch_quota
-#   -> verify_proof (verdict valid) -> verify_proof with a tampered signal
+#   -> validate_proof (verdict valid) -> validate_proof with a tampered signal
 #      (verdict invalid)
 #
 # Besides the registration itself this is the acceptance for two open
@@ -96,9 +96,12 @@ say "registry: $REGISTRY_ID (tree ${E2E_TREE_ID:0:8}…, sequencer $E2E_SEQUENCE
 
 # ---------- node ------------------------------------------------------------
 section "node"
+# The module default is full-lazy self-owned keystore custody; this
+# scenario exercises MANUAL passwords — opt its daemons out.
+export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start "$NODE" || die "daemon_start $NODE failed"
 NODE_UP=1
-daemon_load_modules "$NODE" logos_execution_zone liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module failed"
 
 # ---------- wallet: open + sync ---------------------------------------------
@@ -144,10 +147,12 @@ case "$UNLOCK" in
     *) die "unlock_keystore failed: ${UNLOCK:-<empty>}" ;;
 esac
 
-OPTIONS_JSON="{\"funding_holding_account_id\":\"$HOLDING\"}"
+# The spec RegistryOptions array (module wire 0.6.0): rate_limit is the
+# common option key, funding the logos-namespace one.
+OPTIONS_JSON="[{\"key\":\"rate_limit\",\"value\":\"$RATE_LIMIT\"},{\"key\":\"funding_holding_account_id\",\"value\":\"$HOLDING\"}]"
 say "register($REGISTRY_ID, rate $RATE_LIMIT) via membership module"
-REG=$(node_call "$NODE" liblogos_rln_module register \
-    "$REGISTRY_ID" "$(argfile rlnid "$RLN_ID")" "$RATE_LIMIT" "$OPTIONS_JSON" | jres) || REG=""
+REG=$(node_call "$NODE" liblogos_rln_module register_membership \
+    "$REGISTRY_ID" "$(argfile rlnid "$RLN_ID")" "$OPTIONS_JSON" | jres) || REG=""
 case "$REG" in
     *'"state":"pending"'*) ;;
     *'provider_failure'*)
@@ -206,11 +211,11 @@ esac
 # ---------- rate-limit proofs (the spec's rate-limiting portion) --------------
 # start() warms the registry's valid-root window; generate_proof spends a
 # message_id slot and proves in-module (the secret never crosses the wire);
-# verify_proof serves from the local window only — it is expected to answer
+# validate_proof serves from the local window only — it is expected to answer
 # not_ready until the warm-up read lands, so poll that away first.
 section "rate-limit proofs"
 say "start(registries=[$REGISTRY_ID]) to warm the root window"
-# epoch_size: verify_proof binds proofs to the current epoch (±1), and the
+# epoch_size: validate_proof binds proofs to the current epoch (±1), and the
 # window warm-up polling below can span tens of seconds — a 1s default epoch
 # would expire the proof before verification. The target sizes it to its own
 # confirmation speed.
@@ -228,20 +233,24 @@ say "generate_proof over the registered membership"
 # the start()'d window.
 # str: forces a literal string — a bare or @file numeric arg is coerced to a
 # JSON number by the CLI, which the tstr dispatch then reads as "".
-PROOF_JSON=$(node_call "$NODE" liblogos_rln_module generate_proof \
-    "$REGISTRY_ID" "$(argfile rlnid2 "$RLN_ID")" "$(argfile sig "$SIGNAL_HEX")" "str:$(date +%s)" | jres | jval) || PROOF_JSON=""
+PROOF_RAW=$(node_call "$NODE" liblogos_rln_module generate_proof \
+    "$REGISTRY_ID" "$(argfile rlnid2 "$RLN_ID")" "$(argfile sig "$SIGNAL_HEX")" "str:$(date +%s)") || PROOF_RAW=""
+PROOF_JSON=$(printf '%s' "$PROOF_RAW" | jres | jval)
 case "$PROOF_JSON" in
     *'"proof"'*'"nullifier"'*|*'"nullifier"'*'"proof"'*) ;;
-    *) die "generate_proof failed: ${PROOF_JSON:-<empty>}" ;;
+    # jres yields "" on an envelope-level (lp/CLI) failure, hiding the reason
+    # — print the raw envelope, which is all the evidence there is.
+    *) die "generate_proof failed: ${PROOF_JSON:-<empty>} (envelope: ${PROOF_RAW:-<none>})" ;;
 esac
 MESSAGE_ID=$(printf '%s' "$PROOF_JSON" | jfield message_id)
-say "proof issued (message_id ${MESSAGE_ID:-?}, epoch $(printf '%s' "$PROOF_JSON" | jfield epoch))"
+say "proof issued (message_id ${MESSAGE_ID:-?}, epoch $(printf '%s' "$PROOF_JSON" | jfield epoch_index))"
 
 # The quota snapshot (logos-delivery's QuotaProvider shape): numeric
 # epoch_index + rate_limit + remaining, decremented by the proof above —
-# asserted strictly only when the epoch didn't roll in between.
+# asserted strictly only when the epoch didn't roll in between. The epoch is
+# derived from the caller timestamp (0.5.0 wire), same as generate_proof.
 QUOTA=$(node_call "$NODE" liblogos_rln_module get_epoch_quota \
-    "$REGISTRY_ID" "$(argfile rlnid5 "$RLN_ID")" | jres | jval) || QUOTA=""
+    "$REGISTRY_ID" "$(argfile rlnid5 "$RLN_ID")" "str:$(date +%s)" | jres | jval) || QUOTA=""
 case "$QUOTA" in
     *'"epoch_index"'*'"remaining"'*) ;;
     *) die "get_epoch_quota failed: ${QUOTA:-<empty>}" ;;
@@ -257,27 +266,29 @@ else
     say "epoch rolled between proof and quota (proof $PROOF_EPOCH, quota $Q_EPOCH) — remaining $REMAINING"
 fi
 
-say "verify_proof from the local root window (polling not_ready away)…"
+say "validate_proof from the local root window (polling not_ready away)…"
 VALID=""
 for _t in $(seq 1 "$(polls "$E2E_ROOT_WINDOW_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
-    VERIFY=$(node_call "$NODE" liblogos_rln_module verify_proof \
+    VERIFY_RAW=$(node_call "$NODE" liblogos_rln_module validate_proof \
         "$REGISTRY_ID" "$(argfile rlnid3 "$RLN_ID")" "$(argfile sig2 "$SIGNAL_HEX")" \
-        "$(argfile proof "$PROOF_JSON")" | jres | jval) || VERIFY=""
+        "str:$(date +%s)" "$(argfile proof "$PROOF_JSON")") || VERIFY_RAW=""
+    VERIFY=$(printf '%s' "$VERIFY_RAW" | jres | jval)
     case "$VERIFY" in
         *'"verdict":"valid"'*)   VALID=yes; break ;;
-        *'"verdict":"invalid"'*) die "verify_proof rejected our own fresh proof: $VERIFY" ;;
+        *'"verdict":"invalid"'*) die "validate_proof rejected our own fresh proof: $VERIFY" ;;
         *'not_ready'*)     say "  root window still cold ($_t)"; sleep "$E2E_POLL_INTERVAL_S" ;;
-        *) die "verify_proof failed: ${VERIFY:-<empty>}" ;;
+        # See generate_proof: "" means an envelope-level failure.
+        *) die "validate_proof failed: ${VERIFY:-<empty>} (envelope: ${VERIFY_RAW:-<none>})" ;;
     esac
 done
-[ "$VALID" = "yes" ] || die "verify_proof never left not_ready (root window warm-up)"
-say "verify_proof: valid"
+[ "$VALID" = "yes" ] || die "validate_proof never left not_ready (root window warm-up)"
+say "validate_proof: valid"
 
 # A different signal against the same proof MUST be invalid — not an error.
 TAMPER_HEX=$(printf 'tampered signal' | to_hex)
-TVERIFY=$(node_call "$NODE" liblogos_rln_module verify_proof \
+TVERIFY=$(node_call "$NODE" liblogos_rln_module validate_proof \
     "$REGISTRY_ID" "$(argfile rlnid4 "$RLN_ID")" "$(argfile sig3 "$TAMPER_HEX")" \
-    "$(argfile proof2 "$PROOF_JSON")" | jres | jval) || TVERIFY=""
+    "str:$(date +%s)" "$(argfile proof2 "$PROOF_JSON")" | jres | jval) || TVERIFY=""
 case "$TVERIFY" in
     *'"verdict":"invalid"'*) say "tampered signal correctly invalid" ;;
     *) die "tampered signal was not rejected: ${TVERIFY:-<empty>}" ;;
