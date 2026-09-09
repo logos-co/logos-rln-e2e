@@ -3,7 +3,8 @@
 # seam (host daemon now, container later).
 #
 # Env beyond docs/contract.md:
-#   E2E_WALLET_MOD    wallet module id (default logos_execution_zone)
+#   E2E_WALLET_MOD    wallet module id (default lez_core; was
+#                     logos_execution_zone before its 01c6f40 rename)
 #   E2E_REGISTRY_MOD  registry-provider module id (default
 #                     liblogos_lez_rln_module)
 #   SYNC_STEP         blocks per sync_to_block call (default 3000)
@@ -11,7 +12,7 @@
 . "$(dirname "${BASH_SOURCE[0]}")/daemon.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/chain.sh"
 
-E2E_WALLET_MOD="${E2E_WALLET_MOD:-logos_execution_zone}"
+E2E_WALLET_MOD="${E2E_WALLET_MOD:-lez_core}"
 E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 SYNC_STEP="${SYNC_STEP:-3000}"
 
@@ -26,27 +27,74 @@ wallet_open() {
         cp "$home/storage.json.seed" "$home/storage.json" \
             || die "wallet_open: cannot seed $home/storage.json"
     fi
-    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$home/storage.json" >/dev/null \
-        || die_node "$node" "wallet open failed"
+    # lez_core's open grew a third statistics_path arg with the v0.2.2 bump;
+    # the file need not pre-exist. open's REPLY is unreliable in both
+    # directions, so the probe below is the real verdict:
+    #  - v0.2.2 open probes every sequencer inside the call
+    #    (MultiSequencerClient::new), and a cold testnet LB (~15s first
+    #    request) blows the QtRO reply timeout while the method keeps
+    #    running daemon-side — RPC_FAILED here, wallet open moments later;
+    #  - a bad storage.json fails only in the daemon log while the reply
+    #    envelope stays "ok", and every later call hits "Null wallet handle".
+    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$home/storage.json" \
+        "$home/statistics.json" >/dev/null || true
+    local probe _t
+    for _t in 1 2 3 4 5 6 7 8 9; do
+        probe=$(node_call "$node" "$E2E_WALLET_MOD" get_last_synced_block | jres | jval)
+        case "$probe" in
+            ''|*[!0-9]*) sleep 10 ;;
+            *) return 0 ;;
+        esac
+    done
+    die_node "$node" "wallet never became usable after open (get_last_synced_block: '${probe:-<empty>}') — storage.json schema vs wallet module version, or the sequencer probe in open is stuck"
 }
 
 # Sync to the chain head in SYNC_STEP chunks (a single jump over a long chain
-# times the sequencer poll out). Prints the block actually reached; stops early
-# when a chunk makes no progress.
+# times the sequencer poll out). Prints the block actually reached; returns 1
+# when the head is NOT reached within E2E_SYNC_STALL_S of zero progress.
+#
+# The wallet answers no reads mid-chunk and the CLI call can time out while
+# the chunk keeps running daemon-side, so "height unchanged after a chunk" is
+# NOT "done": an unanswered probe means BUSY (wait), an answered-but-unchanged
+# height means IDLE (the chunk ended early — re-issue it). The old
+# stop-on-no-progress shape left n1 parked at block 3000 with a "synced"
+# verdict, after which its lez-rln module wedged on the stale wallet.
 # Usage: wallet_sync <node>
 wallet_sync() {
-    local node="$1" head cur tgt next
+    local node="$1" head cur tgt next now last_progress last_issue=0
+    local stall_s="${E2E_SYNC_STALL_S:-600}" reissue_s="${E2E_SYNC_REISSUE_S:-30}"
     head=$(chain_head) || die "wallet_sync: cannot probe chain head"
     cur=$(node_call "$node" "$E2E_WALLET_MOD" get_last_synced_block | jres | jval)
     case "$cur" in ''|*[!0-9]*) cur=0 ;; esac
+    tgt="$cur"
+    last_progress=$(date +%s)
     while [ "$cur" -lt "$head" ]; do
-        tgt=$((cur + SYNC_STEP))
-        [ "$tgt" -gt "$head" ] && tgt="$head"
-        node_call "$node" "$E2E_WALLET_MOD" sync_to_block "$tgt" >/dev/null 2>&1
+        now=$(date +%s)
+        if [ "$cur" -ge "$tgt" ]; then
+            tgt=$((cur + SYNC_STEP))
+            [ "$tgt" -gt "$head" ] && tgt="$head"
+            node_call "$node" "$E2E_WALLET_MOD" sync_to_block "$tgt" >/dev/null 2>&1
+            last_issue=$now
+        fi
         next=$(node_call "$node" "$E2E_WALLET_MOD" get_last_synced_block | jres | jval)
-        case "$next" in ''|*[!0-9]*) break ;; esac
-        [ "$next" = "$cur" ] && break
-        cur="$next"
+        case "$next" in ''|*[!0-9]*) next="" ;; esac
+        now=$(date +%s)
+        if [ -n "$next" ] && [ "$next" -gt "$cur" ]; then
+            cur="$next"
+            last_progress=$now
+        elif [ $(( now - last_progress )) -ge "$stall_s" ]; then
+            printf '%s' "$cur"
+            return 1
+        elif [ -z "$next" ]; then
+            sleep 5   # BUSY: the wallet serves no reads mid-chunk
+        else
+            # IDLE without progress: re-issue the chunk, at most every reissue_s.
+            if [ $(( now - last_issue )) -ge "$reissue_s" ]; then
+                node_call "$node" "$E2E_WALLET_MOD" sync_to_block "$tgt" >/dev/null 2>&1
+                last_issue=$now
+            fi
+            sleep 2
+        fi
     done
     printf '%s' "$cur"
 }

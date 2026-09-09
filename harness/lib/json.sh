@@ -90,7 +90,7 @@ except Exception:
 to_hex() { python3 -c 'import sys; print(sys.stdin.buffer.read().hex())'; }
 
 # Unwrap a LogosResult envelope {success,value,error} (the -> result methods:
-# start/stop/generate_proof/verify_proof/get_epoch_quota/
+# start/stop/generate_proof/validate_proof/get_epoch_quota/
 # get_registry_parameters) to its value on success or its error string on
 # failure; passes anything else through unchanged (tolerates a double-encoded
 # envelope, like the lp clients do).

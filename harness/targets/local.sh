@@ -18,6 +18,21 @@
 #   E2E_DEPLOYMENT_DIR=<dir>   external mode only: reuse this deployment
 #                              instead of provisioning a fresh one.
 #   E2E_DEVNET_TIMEOUT_S=900   readiness budget for the sequencer.
+#   E2E_LOCAL_PROFILE=<name>   provision-input profile under profiles/
+#                              (default local-default): tree.txt pins the
+#                              tree id, wallet.storage.json is adopted so
+#                              account ids repeat. `fresh` = random tree +
+#                              fresh wallet (the pre-profile behavior).
+#                              Deterministic given a fixed lez-rln pin: the
+#                              config account is a PDA of tree id + guest
+#                              blobs (verify.sh guards guest drift).
+#   E2E_PROVISION_FUNDING      provision policy → provision.sh flags
+#   E2E_CLAIM_CAP                (faucet|wallet-key, per-claim cap,
+#   E2E_REGISTRAR                free-registration registrar account,
+#   E2E_FREE_QUOTA               its RegisterFree quota). Policy is
+#                              immutable per tree — changing it under a
+#                              pinned tree redeploys the same tree with the
+#                              new policy on the fresh chain.
 #   The contract's poll budgets honour a pre-set env; the defaults below are
 #   the contract's local values.
 #
@@ -112,12 +127,34 @@ _local_require_build() {
 
 _local_provision() {
     local lez="$1" outroot="$2" log="$E2E_RUN_DIR/provision.log"
+    local profile pdir tree="" treedesc="<fresh>"
+    # Seeded non-empty: bash 3.2 + set -u errors on expanding an empty array,
+    # even in an append.
+    local -a flags=(--funding "${E2E_PROVISION_FUNDING:-faucet}")
     _local_require_build "$lez"
     mkdir -p "$outroot"
-    say "provisioning a fresh faucet deployment on $E2E_SEQUENCER (run_setup — several minutes; log: $log)"
+
+    profile="${E2E_LOCAL_PROFILE:-local-default}"
+    if [ "$profile" != "fresh" ]; then
+        pdir="$_LOCAL_HERE/profiles/$profile"
+        [ -d "$pdir" ] || die "no profile at profiles/$profile (E2E_LOCAL_PROFILE=fresh for a random tree)"
+        if [ -f "$pdir/tree.txt" ]; then
+            tree=$(tr -d ' \n\r' < "$pdir/tree.txt")
+            treedesc="${tree:0:8}…"
+            flags=("${flags[@]}" --tree "$tree")
+        fi
+        [ -f "$pdir/wallet.storage.json" ] \
+            && flags=("${flags[@]}" --adopt-wallet "$pdir/wallet.storage.json")
+        say "provision profile: $profile (tree $treedesc)"
+    fi
+    [ -n "${E2E_CLAIM_CAP:-}" ]  && flags=("${flags[@]}" --claim-cap "$E2E_CLAIM_CAP")
+    [ -n "${E2E_REGISTRAR:-}" ]  && flags=("${flags[@]}" --registrar "$E2E_REGISTRAR")
+    [ -n "${E2E_FREE_QUOTA:-}" ] && flags=("${flags[@]}" --quota "$E2E_FREE_QUOTA")
+
+    say "provisioning on $E2E_SEQUENCER (run_setup — several minutes; log: $log)"
     (cd "$lez" && bash tools/deployments/provision.sh \
         --name local-e2e --sequencer "$E2E_SEQUENCER" --outdir "$outroot" \
-        --funding faucet) >>"$log" 2>&1 || {
+        "${flags[@]}") >>"$log" 2>&1 || {
         [ -f "$log" ] && tail -40 "$log" >&2
         die "provision.sh failed — see $log"
     }

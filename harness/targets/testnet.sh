@@ -26,7 +26,9 @@ _TESTNET_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 _testnet_chain_head() {
     local head
-    head=$(curl -sS -m 15 -X POST -H 'Content-Type: application/json' \
+    # -m 60: the hosted testnet's first request after idle can take ~15s alone
+    # (cold LB); a 15s budget flaked target_up on an otherwise healthy chain.
+    head=$(curl -sS -m 60 -X POST -H 'Content-Type: application/json' \
         --data '{"jsonrpc":"2.0","method":"getLastBlockId","params":[],"id":1}' \
         "$1" 2>/dev/null | jq -re '.result // empty' 2>/dev/null) || return 1
     case "$head" in
@@ -100,6 +102,20 @@ target_up() {
     # stage.sh emits the wallet as a seed; the run mutates its own copy.
     cp "$E2E_WALLET_HOME/storage.json.seed" "$E2E_WALLET_HOME/storage.json" \
         || die "no storage.json.seed in $E2E_WALLET_HOME"
+
+    # An old stage.sh emits a wallet_config without the calibration cap;
+    # v0.2.2's open then runs 100 sequential sequencer probes and wedges the
+    # module's dispatch queue on a slow LB — the classic "Statistics not
+    # found, then silence" wallet-open failure. Patch the cap in so the
+    # pinned stage.sh works without a LEZ_RLN_CHECKOUT.
+    if ! jq -e '.multi_sequencer_client_config.calibration_limit' \
+        "$E2E_WALLET_HOME/wallet_config.json" >/dev/null 2>&1; then
+        jq '. + {multi_sequencer_client_config:{distribution_limit:1, calibration_limit:3}}' \
+            "$E2E_WALLET_HOME/wallet_config.json" > "$E2E_WALLET_HOME/wallet_config.json.tmp" \
+            && mv "$E2E_WALLET_HOME/wallet_config.json.tmp" "$E2E_WALLET_HOME/wallet_config.json" \
+            || die "cannot patch calibration cap into staged wallet_config.json"
+        say "staged wallet_config: calibration cap patched in (stage.sh predates it)"
+    fi
 
     E2E_TREE_ID=$(grep -oE 'LEZ_RLN_TREE_ID_HEX=[0-9a-f]{64}' "$E2E_WALLET_HOME/env.sh" | cut -d= -f2)
     E2E_CONFIG_ACCOUNT=$(tr -d '\n\r' < "$E2E_WALLET_HOME/config_account.txt")

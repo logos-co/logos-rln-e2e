@@ -80,7 +80,7 @@ RPC_URL="https://testnet.lez.logos.co/"
 SYNC_STEP=3000
 REG_RETRY_SLEEP=15
 ALL="relay1 relay2 relay3 dest sender"
-WALLET_MOD="logos_execution_zone"
+WALLET_MOD="lez_core"
 RLN_MOD="liblogos_rln_module"
 GIFTER_CODEC="/logos/rln/membership/1.0.0"
 
