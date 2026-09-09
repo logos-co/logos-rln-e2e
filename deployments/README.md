@@ -26,6 +26,21 @@ does not hold the descriptor's accounts. Copy both files or neither.
 `--target local` never reads this directory — it provisions a fresh tree per
 run into `$E2E_RUN_DIR/deployments/local-e2e`.
 
+## Committed
+
+| name | state |
+|---|---|
+| `testnet-faucet-260908` | **live** — provisioned 2026-09-08 from logos-lez-rln main's guest, faucet-funded; `verify.sh` passes; `register --target testnet` PASS 2026-09-08 (ACTIVE at leaf 0, proof valid, tampered signal invalid) |
+| `testnet-shrink-verify` | dead — the 2026-09 testnet reset (`getLastBlockId` back to ~600 on 2026-09-08) wiped every account it names; kept for history |
+| `shared-faucet` | dead — same reset; kept for history |
+
+A hosted-testnet reset empties every committed account at once, so a
+`stage.sh` that passes against a dead descriptor still ends in a wallet that
+never sees its `payment_account` funded. When `--target testnet` fails that
+way on a descriptor that used to work, check the chain head before the
+module: a head far below the descriptor's provisioning block means
+re-provision (below), not a harness or module bug.
+
 ## Adding one
 
 Provision against the hosted sequencer from a logos-lez-rln checkout, then
