@@ -28,7 +28,7 @@ export RLN_MODULES_CHECKOUT=$PWD/logos-rln-modules \
        DELIVERY_MODULE_CHECKOUT=$PWD/logos-delivery-module
 
 # hosted testnet: nothing to build, registration lands on the real sequencer
-E2E_DEPLOYMENT=testnet-shrink-verify ./run.sh delivery-rln --target testnet
+E2E_DEPLOYMENT=testnet-faucet-260908 ./run.sh delivery-rln --target testnet
 
 # local chain: also needs a logos-lez-rln checkout that can run dev.sh
 ./run.sh delivery-rln --target local
