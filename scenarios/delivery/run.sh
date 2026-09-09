@@ -7,7 +7,7 @@
 # that membership through `configureRln`, then comes up as a real node:
 #
 #   per node: open wallet -> sync -> fresh holding -> claim_tokens (faucet)
-#     -> unlock_keystore -> register -> poll get_membership_state to "active"
+#     -> register -> poll get_membership_state to "active"
 #     -> delivery_module.configureRln(registry-id, rln-identifier)
 #     -> createNode -> start
 #   then: B dials A (A's multiaddr as an entry node) -> both subscribe
@@ -110,7 +110,7 @@ say "registry: $REGISTRY_ID (tree ${E2E_TREE_ID:0:8}…, sequencer $E2E_SEQUENCE
 # ---------- membership: the register scenario's path, once per node ----------
 # Leaves the node's rln identifier in RLNID/<node>.
 register_node() {
-    local node="$1" holding bounds price claim unlock rlnid reg state state_json leaf _t
+    local node="$1" holding bounds price claim rlnid reg state state_json leaf _t
 
     section "$node: membership"
     daemon_start "$node" || die "daemon_start $node failed"
@@ -137,12 +137,9 @@ register_node() {
     wait_balance "$node" "$holding" "$claim" >/dev/null \
         || die_node "$node" "faucet credit never landed (want $claim)"
 
-    unlock=$(node_call "$node" liblogos_rln_module unlock_keystore e2e-test-password | jres) || unlock=""
-    case "$unlock" in
-        *'"unlocked":true'*) ;;
-        *) die_node "$node" "unlock_keystore failed: ${unlock:-<empty>}" ;;
-    esac
-
+    # No unlock_keystore: the module runs its own auto-unlock at init
+    # (full-lazy custody, all platforms) and self-provisions a secret for a
+    # fresh store. Passing a password of our own would only fight that.
     rlnid=$(openssl rand -hex 32)
     sv RLNID "$node" "$rlnid"
     # RegistryOptions on the wire is an ARRAY of {"key","value"} string pairs
