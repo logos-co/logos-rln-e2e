@@ -45,6 +45,8 @@
 #   E2E_TCP_PORT_BASE=61100  node n's TCP port is base+n
 #   E2E_RECEIVE_TIMEOUT_S=60 budget for the receiver's messageReceived
 #   E2E_CONFIGURE_RLN_TIMEOUT_S=180  budget for configureRln to report
+#   E2E_RLN_IDENTIFIER       the app-scope rln identifier both nodes share
+#                            (64 hex; a fresh random one per run by default)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -63,6 +65,12 @@ CONTENT_TOPIC="/test/1/logos-rln-e2e-delivery/proto"
 PAYLOAD="logos rln delivery e2e"
 SENDER=n1
 RECEIVER=n2
+# ONE identifier for both nodes. The rln identifier scopes the application, not
+# the member: it goes into the external nullifier both sides derive, so peers
+# that do not share it can never validate each other's proofs — each node still
+# registers its own membership (own credential, own leaf) under it. Fresh per
+# run so a re-run never reuses a spent epoch budget.
+RLN_IDENTIFIER="${E2E_RLN_IDENTIFIER:-$(openssl rand -hex 32)}"
 
 for _v in LOGOSCORE E2E_MODULES_DIR E2E_SEQUENCER E2E_WALLET_HOME E2E_CONFIG_ACCOUNT \
           E2E_TREE_ID E2E_FUNDING E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
@@ -140,7 +148,7 @@ register_node() {
     # No unlock_keystore: the module runs its own auto-unlock at init
     # (full-lazy custody, all platforms) and self-provisions a secret for a
     # fresh store. Passing a password of our own would only fight that.
-    rlnid=$(openssl rand -hex 32)
+    rlnid="$RLN_IDENTIFIER"
     sv RLNID "$node" "$rlnid"
     # RegistryOptions on the wire is an ARRAY of {"key","value"} string pairs
     # (char* pairs in the C type), not an object — rate_limit included.
@@ -255,6 +263,7 @@ warm_root_window() {
         *'"nullifier"'*) ;;
         *) die_node "$node" "generate_proof failed while warming the root window: ${proof:-<empty>}" ;;
     esac
+    sv PROOFROOT "$node" "$(printf '%s' "$proof" | jfield root)"
     for _t in $(seq 1 "$(polls "$E2E_ROOT_WINDOW_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
         verify=$(node_call "$node" liblogos_rln_module validate_proof \
             "$REGISTRY_ID" "$(argfile "warmid2-$node" "$rlnid")" "$(argfile "warmsig2-$node" "$sig")" \
@@ -308,6 +317,30 @@ sleep 12
 # from a cold window.
 warm_root_window "$SENDER"
 warm_root_window "$RECEIVER"
+
+# A warm window is not an AGREED one. Each node warms against its own
+# membership, but the receiver validates the SENDER's proof, so it has to hold
+# the root that proof commits to. The two registered moments apart and the tree
+# moved between them; for a root a warm window happens to miss the module
+# answers "invalid" rather than not_ready, asks for one out-of-band refresh and
+# expects the caller to retry. Gate the send on the receiver actually holding
+# the sender's root, so that a rejection past this point is a real one.
+await_root_agreement() {
+    local root roots _t
+    root=$(gv PROOFROOT "$SENDER")
+    [ -n "$root" ] || die "sender's probe proof carried no root"
+    for _t in $(seq 1 "$(polls "$E2E_ROOT_WINDOW_TIMEOUT_S" "$E2E_POLL_INTERVAL_S")"); do
+        roots=$(node_call "$RECEIVER" liblogos_rln_module get_valid_roots "$REGISTRY_ID" | jres | jval) || roots=""
+        case "$roots" in
+            *"$root"*) say "receiver holds the sender's root ${root:0:16}…"; return 0 ;;
+        esac
+        say "  receiver's window misses the sender's root ($_t)"
+        sleep "$E2E_POLL_INTERVAL_S"
+    done
+    say "WARNING: receiver never picked up the sender's root ${root:0:16}… — sending anyway"
+    say "  receiver roots: ${roots:-<none>}"
+}
+await_root_agreement
 
 read_quota "$SENDER" before
 EPOCH_BEFORE=$(gv EPOCH before)
