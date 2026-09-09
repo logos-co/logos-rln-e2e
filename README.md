@@ -2,8 +2,9 @@
 
 End-to-end composition testing for RLN-on-LEZ. This repo pins the producer
 repos — [logos-lez-rln] (chain: guest programs, sequencer + deployment
-tooling) and [logos-rln-modules] (the module stack) — and runs cross-repo
-scenarios against a real chain: a **local sequencer by default** (zero
+tooling), [logos-rln-modules] (the module stack) and
+[logos-delivery-module] (the delivery node, which carries liblogosdelivery)
+— and runs cross-repo scenarios against a real chain: a **local sequencer by default** (zero
 external infra), the hosted testnet on request. Unit and hermetic tests stay
 in the producer repos; what lives here is anything that needs two repos plus
 a running chain.
@@ -17,13 +18,14 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 |---|---|---|
 | `register` | in progress | full single-node membership lifecycle: faucet claim → register → merkle proof + registry cross-check → generate/verify proof (valid + tampered) |
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
-| `delivery` | planned | logos-delivery-module propagation; RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
+| `delivery` | in progress | two RLN-gated delivery nodes over the Messaging API: both register a membership, peer statically, send a message end to end, and the sender's epoch quota is consumed |
 | `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
 ./run.sh --list
 ./run.sh register --target local     # boots a local sequencer, provisions a fresh RLN tree
 ./run.sh register --target testnet   # runs against a committed testnet deployment
+E2E_DEPLOYMENT=shared-faucet ./run.sh delivery --target testnet
 ```
 
 A scenario is `scenarios/<id>/{scenario.env,run.sh}` driven through the
@@ -42,15 +44,18 @@ The target is always a flag, never part of a scenario's name.
   `../logos-lez-rln`, override with `LEZ_RLN_CHECKOUT`) with the host
   binaries and risc0 guest blobs built — the target prints the exact build
   recipe when they are missing.
-- **docker** — only for compose-topology scenarios (mix, later delivery).
+- **docker** — only for compose-topology scenarios (mix).
 
 Platforms: darwin-arm64 and linux (x86_64/aarch64).
 
 ## Pinning
 
 `flake.lock` is the compatibility matrix: the exact revisions of
-logos-lez-rln, logos-rln-modules and logoscore this repo's scenarios are
-known to compose. Bumping the lock is the act of declaring a new known-good
+logos-lez-rln, logos-rln-modules, logos-delivery-module and logoscore this
+repo's scenarios are known to compose. Two of those revisions are not free:
+rln-modules must pin the lez-rln rev whose programs are deployed, and the
+delivery module generates its RLN bindings from an rln-modules rev that must
+equal this repo's. `harness/artifacts.sh` asserts both. Bumping the lock is the act of declaring a new known-good
 set. Artifact resolution (env override → nix build → staged-source build) is
 `harness/artifacts.sh`.
 
@@ -78,6 +83,7 @@ tools/                  check-naming.sh
 ```
 
 [logos-lez-rln]: https://github.com/logos-co/logos-lez-rln
+[logos-delivery-module]: https://github.com/logos-co/logos-delivery-module
 [logos-rln-modules]: https://github.com/logos-co/logos-rln-modules
 [LIP-158]: https://lip.logos.co/anoncomms/raw/rln-membership-service.html
 [LIP-144]: https://lip.logos.co/anoncomms/raw/mix-spam-protection-rln.html

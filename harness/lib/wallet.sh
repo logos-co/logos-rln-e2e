@@ -16,10 +16,14 @@ E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 SYNC_STEP="${SYNC_STEP:-3000}"
 
 # Usage: wallet_open <node> [wallet_home]
-# storage.json is the mutable wallet; the staged fixture ships it as
-# storage.json.seed so a re-run starts from the deployment's own accounts.
+# Defaults to the node's own copy of the staged home (daemon.sh), so each node
+# mutates its own storage.json. storage.json is the mutable wallet; the staged
+# fixture ships it as storage.json.seed so a re-run starts from the
+# deployment's own accounts.
 wallet_open() {
-    local node="$1" home="${2:-${E2E_WALLET_HOME:-}}"
+    local node="$1" home="${2:-}"
+    [ -n "$home" ] || home=$(node_wallet_home "$node")
+    [ -n "$home" ] || home="${E2E_WALLET_HOME:-}"
     [ -n "$home" ] || die "wallet_open: no wallet home (the target sets E2E_WALLET_HOME)"
     [ -f "$home/wallet_config.json" ] || die "wallet_open: no wallet_config.json in $home"
     if [ ! -f "$home/storage.json" ]; then
