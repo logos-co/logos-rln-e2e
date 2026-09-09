@@ -4,8 +4,8 @@
 # node_call/node_logs have the same signature whether the node is a host
 # process (now) or a container (compose topology, P3) — scenarios never know
 # the difference. A node id is a name; its state lives in
-# $E2E_RUN_DIR/nodes/<node>/{config,wallet-home,daemon.log}, so NODES>1 is a
-# matter of calling daemon_start twice.
+# $E2E_RUN_DIR/nodes/<node>/{config,daemon.log}, so NODES>1 is a matter of
+# calling daemon_start twice.
 #
 # node_watch/node_await/node_watch_stop are the same seam for the async half of
 # a module's surface: `logoscore watch` streams a module's typed events as JSON
@@ -30,8 +30,7 @@ E2E_NODES="${E2E_NODES:-}"
 
 node_cfg_dir() { gv NODECFG "$1"; }
 node_log_path() { gv NODELOG "$1"; }
-# The node's own copy of the staged wallet home; empty when the target staged none.
-node_wallet_home() { gv NODEWALLET "$1"; }
+node_dir() { local c; c=$(node_cfg_dir "$1"); [ -n "$c" ] && dirname "$c"; }
 
 die() {
     printf '%s\n' "e2e: FAIL: $*" >&2
@@ -58,16 +57,6 @@ daemon_start() {
     sv NODECFG "$node" "$cfg"
     sv NODELOG "$node" "$log"
 
-    # One wallet per daemon: create_account_public derives deterministically, so
-    # two nodes sharing a storage.json pick the same "fresh" holding account.
-    local whome="${E2E_WALLET_HOME:-}"
-    if [ -n "$whome" ]; then
-        if [ ! -d "$dir/wallet-home" ]; then
-            cp -R "$whome" "$dir/wallet-home" || die "cannot copy wallet home for $node"
-        fi
-        whome="$dir/wallet-home"
-        sv NODEWALLET "$node" "$whome"
-    fi
     E2E_NODES="$E2E_NODES $node"
     [ -n "${E2E_DIE_NODE:-}" ] || E2E_DIE_NODE="$node"
 
@@ -77,8 +66,8 @@ daemon_start() {
     local -a envv
     envv=(HOME="$HOME" PATH="$PATH" LOGOSCORE_CONFIG_DIR="$cfg"
           RUST_BACKTRACE=full QT_QPA_PLATFORM=offscreen)
-    if [ -n "$whome" ]; then
-        envv=("${envv[@]}" "NSSA_WALLET_HOME_DIR=$whome" "LEE_WALLET_HOME_DIR=$whome")
+    if [ -n "${E2E_WALLET_HOME:-}" ]; then
+        envv=("${envv[@]}" "NSSA_WALLET_HOME_DIR=$E2E_WALLET_HOME" "LEE_WALLET_HOME_DIR=$E2E_WALLET_HOME")
     fi
     if [ -n "${E2E_TREE_ID:-}" ]; then
         envv=("${envv[@]}" "LEZ_RLN_TREE_ID_HEX=$E2E_TREE_ID")

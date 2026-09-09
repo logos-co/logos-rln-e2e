@@ -16,21 +16,23 @@ E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 SYNC_STEP="${SYNC_STEP:-3000}"
 
 # Usage: wallet_open <node> [wallet_home]
-# Defaults to the node's own copy of the staged home (daemon.sh), so each node
-# mutates its own storage.json. storage.json is the mutable wallet; the staged
-# fixture ships it as storage.json.seed so a re-run starts from the
-# deployment's own accounts.
+# storage.json is the mutable wallet; the staged fixture ships it as
+# storage.json.seed so a re-run starts from the deployment's own accounts. Each
+# node opens its own seeded copy under the node's dir: create_account_public
+# derives deterministically, so two nodes on one storage.json would pick the
+# same "fresh" holding account.
 wallet_open() {
-    local node="$1" home="${2:-}"
-    [ -n "$home" ] || home=$(node_wallet_home "$node")
-    [ -n "$home" ] || home="${E2E_WALLET_HOME:-}"
+    local node="$1" home="${2:-${E2E_WALLET_HOME:-}}" storage
     [ -n "$home" ] || die "wallet_open: no wallet home (the target sets E2E_WALLET_HOME)"
     [ -f "$home/wallet_config.json" ] || die "wallet_open: no wallet_config.json in $home"
-    if [ ! -f "$home/storage.json" ]; then
-        cp "$home/storage.json.seed" "$home/storage.json" \
-            || die "wallet_open: cannot seed $home/storage.json"
+    storage="$(node_dir "$node")/storage.json"
+    [ -n "$storage" ] || die "wallet_open: unknown node '$node'"
+    if [ ! -f "$storage" ]; then
+        cp "$home/storage.json.seed" "$storage" 2>/dev/null \
+            || cp "$home/storage.json" "$storage" \
+            || die "wallet_open: cannot seed $storage"
     fi
-    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$home/storage.json" >/dev/null \
+    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$storage" >/dev/null \
         || die_node "$node" "wallet open failed"
 }
 
