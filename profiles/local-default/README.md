@@ -10,9 +10,19 @@ host-mode local run (unless `E2E_LOCAL_PROFILE` says otherwise):
   (`logos:local:<config-hex>`).
 - `wallet.storage.json` — the wallet seed adopted into provisioning
   (`--adopt-wallet`): same key chain, hence the same account ids and
-  holdings across runs. Pure key material (no synced state, no labels) —
-  captured from a passing register run's `wallet-home/storage.json.seed`.
+  holdings across runs. Captured from a passing run's
+  `wallet-home/storage.json.seed`.
   DEV FIXTURE: these keys are public in this repo; local chains only.
+
+  It also carries the `rln-fee-payer` label. Under LEZ v0.2.5 every public
+  transaction costs a fee and the faucet runs only in the genesis block, so
+  the account that pays for provisioning has to be funded at genesis —
+  before any of this exists. `mint_payer` returns the labelled account
+  rather than minting a second one, so the payer is as stable as the rest
+  of the key chain and `dev.sh` funds the same address every run.
+
+  A wallet written before v0.2.5 cannot be adopted at all: it has no
+  `authorization_secret_key` and the wallet refuses to parse it.
 
 Determinism holds per lez-rln pin: rebuilt guest blobs re-derive a
 different config account for the same tree (`verify.sh` guards that skew).
@@ -24,3 +34,5 @@ Regenerate (new tree or new keys): run any local scenario with
 `E2E_LOCAL_PROFILE=fresh E2E_KEEP=1`, then copy the run's
 `wallet-home/storage.json.seed` here as `wallet.storage.json` and the
 `LEZ_RLN_TREE_ID_HEX` value from `wallet-home/env.sh` into `tree.txt`.
+The seed is what `stage.sh` writes, so it already has the synced state
+zeroed and the payer label kept.
