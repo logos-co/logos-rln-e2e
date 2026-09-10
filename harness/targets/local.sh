@@ -98,7 +98,19 @@ _local_mint_payer() {
         pdir="$_LOCAL_HERE/profiles/$profile"
         [ -f "$pdir/wallet.storage.json" ] && cp "$pdir/wallet.storage.json" "$ws/storage.json"
     fi
-    HOME="$ws" LEE_WALLET_HOME_DIR="$ws" "$lez/lez-rln/target/release/mint_payer"
+    HOME="$ws" LEE_WALLET_HOME_DIR="$ws" "$lez/lez-rln/target/release/mint_payer" 2>"$ws/mint.err" && return 0
+
+    # A wallet written before LEZ v0.2.5 has no authorization_secret_key and the
+    # new wallet refuses it outright, so a pinned profile does not survive the
+    # bump. Say so here rather than letting it surface later as a wallet that
+    # will not open.
+    if grep -q "authorization_secret_key" "$ws/mint.err" 2>/dev/null; then
+        die "profiles/$profile/wallet.storage.json predates LEZ v0.2.5 and cannot be opened.
+  Regenerate it: run a local scenario with E2E_LOCAL_PROFILE=fresh E2E_KEEP=1,
+  then copy the run's wallet-home/storage.json.seed over it."
+    fi
+    cat "$ws/mint.err" >&2
+    return 1
 }
 
 _local_start_devnet() {
