@@ -30,7 +30,7 @@
     # generates its bindings from the .lidl published there, so that input's
     # rev must equal this repo's rln-modules rev — harness/artifacts.sh
     # asserts it.
-    delivery-module.url = "github:logos-co/logos-delivery-module/rln-plugin-agnostic";
+    delivery-module.url = "github:logos-co/logos-delivery-module/master";
   };
 
   outputs =
