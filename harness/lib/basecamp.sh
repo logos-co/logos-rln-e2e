@@ -198,69 +198,37 @@ basecamp_load_modules() {
 }
 
 # basecamp_wallet_open_sync <wallet-home>
-# Opens lez_core on the home (seeding storage.json from storage.json.seed
-# when absent — the fresh-wallet shape) and syncs to the chain head with
-# the busy/idle patience loop. Prints nothing; dies on failure.
+# Waits until the registry module's own wallet is open and caught up on the
+# given home (seeding storage.json from storage.json.seed when absent — the
+# module needs a storage file to adopt). Prints nothing; dies on failure.
 basecamp_wallet_open_sync() {
-    local home="$1" head bsync _t open_args
+    local home="$1" st _t tries iv
     [ -f "$home/wallet_config.json" ] || die "basecamp wallet: no wallet_config.json in $home"
+    # The module opens this home itself and would find nothing to open without
+    # a storage file; seeding stays here because it has to happen before the
+    # app starts, not after.
     if [ ! -f "$home/storage.json" ]; then
         cp "$home/storage.json.seed" "$home/storage.json" \
             || die "basecamp wallet: cannot seed $home/storage.json"
     fi
-    head=$(chain_head) || die "cannot probe chain head at $E2E_SEQUENCER"
-    open_args=$(jq -cn --arg c "$home/wallet_config.json" --arg s "$home/storage.json" \
-        --arg t "$home/statistics.json" '[$c,$s,$t]')
-    bc_call lez_core open "$open_args" >/dev/null   # reply unreliable; probe below
-    bsync=""
-    for _t in $(seq 1 9); do
-        bsync=$(bc_synced) || bsync=""
-        [ -n "$bsync" ] && break
-        sleep 10
-    done
-    [ -n "$bsync" ] || die "basecamp wallet never became usable after open"
-    say "basecamp wallet open (synced to $bsync, head $head)"
 
-    local step="${E2E_BASECAMP_SYNC_STEP:-250}"
-    local reissue_s="${E2E_SYNC_REISSUE_S:-30}"
-    local stall_s="${E2E_SYNC_STALL_S:-600}"
-    local cur="$bsync" tgt="$bsync" now next
-    local last_progress last_issue=0 last_said=0 busy_n=0
-    last_progress=$(date +%s)
-    while [ "$cur" -lt "$head" ]; do
-        now=$(date +%s)
-        if [ "$cur" -ge "$tgt" ]; then
-            tgt=$(( cur + step ))
-            [ "$tgt" -gt "$head" ] && tgt="$head"
-            bc_call lez_core sync_to_block "[$tgt]" >/dev/null 2>&1 || true
-            last_issue=$now
-        fi
-        next=$(bc_synced) || next=""
-        if [ -n "$next" ] && [ "$next" -gt "$cur" ]; then
-            cur="$next"
-            last_progress=$now
-            busy_n=0
-            if [ $(( cur - last_said )) -ge 2000 ] || [ "$cur" -ge "$head" ]; then
-                say "  basecamp wallet sync: $cur / $head"
-                last_said=$cur
-            fi
-        elif [ $(( now - last_progress )) -ge "$stall_s" ]; then
-            die "basecamp wallet sync stalled at $cur for ${stall_s}s (head $head, chunk target $tgt)"
-        elif [ -z "$next" ]; then
-            # BUSY: no reads mid-chunk; never re-issue into a busy wallet.
-            busy_n=$(( busy_n + 1 ))
-            [ $(( busy_n % 6 )) = 0 ] && say "  basecamp wallet busy at $cur (chunk -> $tgt, $(( now - last_progress ))s since progress)"
-            sleep 5
-        else
-            # IDLE without progress: the chunk ended early — re-issue it.
-            if [ $(( now - last_issue )) -ge "$reissue_s" ]; then
-                bc_call lez_core sync_to_block "[$tgt]" >/dev/null 2>&1 || true
-                last_issue=$now
-            fi
-            sleep 2
-        fi
+    # Since liblogos_lez_rln_module 3.0.0 the module owns its wallet: it adopts
+    # the home LEE_WALLET_HOME_DIR names and syncs it on its own thread at
+    # load. Opening lez_core on that same storage.json would make two writers
+    # of one file, so the app is never asked to — it is asked whether the
+    # module is ready.
+    iv="${E2E_POLL_INTERVAL_S:-5}"
+    tries=$(( ${E2E_WALLET_READY_S:-600} / iv ))
+    [ "$tries" -lt 1 ] && tries=1
+    for _t in $(seq 1 "$tries"); do
+        st=$(bc_call liblogos_lez_rln_module wallet_status) || st=""
+        case "$st" in
+            *'"state":"ready"'*) say "basecamp wallet ready"; return 0 ;;
+            ''|*'"state":"pending"'*) sleep "$iv" ;;
+            *) die "basecamp registry wallet failed to come up: $st" ;;
+        esac
     done
-    say "basecamp wallet synced to head"
+    die "basecamp registry wallet never became ready (last: ${st:-<empty>})"
 }
 
 # Diagnostics for a scenario's die(): app stderr, the newest session log
