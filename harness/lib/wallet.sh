@@ -33,10 +33,11 @@ wallet_ready() {
     for _t in $(seq 1 "$tries"); do
         st=$(node_call "$node" "$E2E_REGISTRY_MOD" wallet_status | jres) || st=""
         case "$st" in
-            *'"ready":true'*) return 0 ;;
-            # An empty detail is a slow start; a populated one is the reason
-            # it gave up, and waiting longer will not fix it.
-            ''|*'"detail":""'*) sleep "$iv" ;;
+            *'"state":"ready"'*) return 0 ;;
+            # Branch on state, not on ready: "pending" is worth waiting on,
+            # "failed" never resolves. An empty reply is the module not yet
+            # answering calls at all, which is also worth waiting on.
+            ''|*'"state":"pending"'*) sleep "$iv" ;;
             *) die_node "$node" "registry wallet failed to come up: $st" ;;
         esac
     done
