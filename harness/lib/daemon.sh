@@ -64,6 +64,13 @@ daemon_start() {
     if [ -n "${E2E_TREE_ID:-}" ]; then
         envv=("${envv[@]}" "LEZ_RLN_TREE_ID_HEX=$E2E_TREE_ID")
     fi
+    # A transaction's fee is reserved from a native balance, and the holdings
+    # the module signs with are freshly created and hold only tokens. Without a
+    # funded payer every send is refused before it runs, saying only
+    # "Incorrect fee".
+    if [ -n "${E2E_PAYER:-}" ]; then
+        envv=("${envv[@]}" "LEZ_RLN_PAYER=$E2E_PAYER")
+    fi
     local kv
     for kv in ${E2E_DAEMON_ENV:-}; do envv=("${envv[@]}" "$kv"); done
 
