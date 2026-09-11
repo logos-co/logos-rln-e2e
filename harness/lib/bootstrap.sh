@@ -21,26 +21,24 @@
 # writes nothing until save().
 #
 # Env beyond docs/contract.md:
-#   E2E_BOOTSTRAP_IMAGE   image to run (default logos:demo-pins)
+#   E2E_BOOTSTRAP_IMAGE   image to run (default logos:e2e-dev)
 #   E2E_BOOTSTRAP_PORT    the node's libp2p TCP port inside the container
 #   E2E_BOOTSTRAP_NAME    container name
-#   E2E_BOOTSTRAP_RLN     1 mounts RLN on the relay; 0 (default) relays blind
+#   E2E_BOOTSTRAP_RLN     1 (default) mounts RLN on the relay; 0 relays blind
 #
-# RLN on the relay is written and ready but defaults OFF, because the image
-# cannot reach the chain: its lez_core is 0.4.1, built on execution-zone
-# v0.2.5-rc2, and syncing against the deployed testnet fails with
-# "Parse error: Unexpected variant tag" — the programs on that chain predate the
-# bump. A wallet 0.4.1 creates itself fails the same way, so this is chain
-# decoding, not the old-fixture format. Flip it to 1 once the testnet is
-# redeployed on v0.2.5-rc2, or once the image can be built against lez_core
-# 0.4.0 (its lez_core comes from the RLN catalog, which publishes only 0.4.1).
+# The image must be built entirely from logos-modules-dev — tools/build-e2e-image.sh
+# does it. The release catalog's delivery_module 0.2.1 predates the RLN plugin,
+# and only dev carries lez_core 0.4.0. 0.4.1 is built on execution-zone
+# v0.2.5-rc2 and cannot decode this testnet at all: syncing fails with
+# "Parse error: Unexpected variant tag", including from a wallet it wrote
+# itself, so it is chain decoding rather than the old-fixture format.
 
 . "$(dirname "${BASH_SOURCE[0]}")/json.sh"
 
-E2E_BOOTSTRAP_IMAGE="${E2E_BOOTSTRAP_IMAGE:-logos:demo-pins}"
+E2E_BOOTSTRAP_IMAGE="${E2E_BOOTSTRAP_IMAGE:-logos:e2e-dev}"
 E2E_BOOTSTRAP_PORT="${E2E_BOOTSTRAP_PORT:-61000}"
 E2E_BOOTSTRAP_NAME="${E2E_BOOTSTRAP_NAME:-rln-e2e-bootstrap-$$}"
-E2E_BOOTSTRAP_RLN="${E2E_BOOTSTRAP_RLN:-0}"
+E2E_BOOTSTRAP_RLN="${E2E_BOOTSTRAP_RLN:-1}"
 BOOTSTRAP_CFG_DIR=/var/lib/logos/config
 BOOTSTRAP_WALLET=/home/ubuntu/wallet
 BOOTSTRAP_UP=0

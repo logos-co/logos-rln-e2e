@@ -2222,11 +2222,11 @@
         "nix-bundle-lgx": "nix-bundle-lgx_84"
       },
       "locked": {
-        "lastModified": 1789068887,
-        "narHash": "sha256-Ka1GlVo269k8HIahRF2p8tiMsMUQWMk6RuLuIVyWAoE=",
+        "lastModified": 1789079817,
+        "narHash": "sha256-Ap+ieoeM/eJyKldAKjE/K7836Cn66aKlphgfGfxvRKo=",
         "owner": "logos-co",
         "repo": "logos-delivery-module",
-        "rev": "514fa12655ddfe0bc3e961dc823ceaa32210f26a",
+        "rev": "7431d480c61d41ac11c599e50886b8cc47f30cc2",
         "type": "github"
       },
       "original": {
@@ -2337,17 +2337,17 @@
       },
       "locked": {
         "dir": "logos-lez-rln-module",
-        "lastModified": 1789064341,
-        "narHash": "sha256-5HKlltnnIANrU3sG89WCthdYQLIqAWkojggFJ92e6Eo=",
-        "ref": "fix/module-dep-chain-resolution",
-        "rev": "c56869db0d477212d8c3937c8fd85fcb6f27909b",
-        "revCount": 61,
+        "lastModified": 1789066325,
+        "narHash": "sha256-C0OR7PGdLCByMZpDZkYbehOd6wEuqF5jNau+OTtat+k=",
+        "ref": "feat/lip-alignment",
+        "rev": "c89c7691d06af32c002426f3c6f6dece79dbffaa",
+        "revCount": 63,
         "type": "git",
         "url": "https://github.com/logos-co/logos-rln-modules"
       },
       "original": {
         "dir": "logos-lez-rln-module",
-        "ref": "fix/module-dep-chain-resolution",
+        "ref": "feat/lip-alignment",
         "type": "git",
         "url": "https://github.com/logos-co/logos-rln-modules"
       }
@@ -2360,17 +2360,17 @@
       },
       "locked": {
         "dir": "logos-lez-rln-module",
-        "lastModified": 1789064341,
-        "narHash": "sha256-5HKlltnnIANrU3sG89WCthdYQLIqAWkojggFJ92e6Eo=",
-        "ref": "fix/module-dep-chain-resolution",
-        "rev": "c56869db0d477212d8c3937c8fd85fcb6f27909b",
-        "revCount": 61,
+        "lastModified": 1789066325,
+        "narHash": "sha256-C0OR7PGdLCByMZpDZkYbehOd6wEuqF5jNau+OTtat+k=",
+        "ref": "feat/lip-alignment",
+        "rev": "c89c7691d06af32c002426f3c6f6dece79dbffaa",
+        "revCount": 63,
         "type": "git",
         "url": "https://github.com/logos-co/logos-rln-modules"
       },
       "original": {
         "dir": "logos-lez-rln-module",
-        "ref": "fix/module-dep-chain-resolution",
+        "ref": "feat/lip-alignment",
         "type": "git",
         "url": "https://github.com/logos-co/logos-rln-modules"
       }
@@ -2382,11 +2382,11 @@
       },
       "locked": {
         "dir": "logos-rln-module",
-        "lastModified": 1789066325,
-        "narHash": "sha256-C0OR7PGdLCByMZpDZkYbehOd6wEuqF5jNau+OTtat+k=",
+        "lastModified": 1789077735,
+        "narHash": "sha256-iZVccK2K15I+0DC2LLyP8GPayonprk689/QY/0uUzxY=",
         "ref": "feat/lip-alignment",
-        "rev": "c89c7691d06af32c002426f3c6f6dece79dbffaa",
-        "revCount": 63,
+        "rev": "53d31e3d71595c481e0e1be2ebc8120d8eaf9447",
+        "revCount": 64,
         "type": "git",
         "url": "https://github.com/logos-co/logos-rln-modules"
       },
@@ -393092,11 +393092,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789066325,
-        "narHash": "sha256-C0OR7PGdLCByMZpDZkYbehOd6wEuqF5jNau+OTtat+k=",
+        "lastModified": 1789077735,
+        "narHash": "sha256-iZVccK2K15I+0DC2LLyP8GPayonprk689/QY/0uUzxY=",
         "owner": "logos-co",
         "repo": "logos-rln-modules",
-        "rev": "c89c7691d06af32c002426f3c6f6dece79dbffaa",
+        "rev": "53d31e3d71595c481e0e1be2ebc8120d8eaf9447",
         "type": "github"
       },
       "original": {
