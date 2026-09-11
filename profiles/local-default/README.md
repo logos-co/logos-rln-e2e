@@ -24,6 +24,12 @@ host-mode local run (unless `E2E_LOCAL_PROFILE` says otherwise):
   A wallet written before v0.2.5 cannot be adopted at all: it has no
   `authorization_secret_key` and the wallet refuses to parse it.
 
+The registry is depth 9, so it holds 512 members. That is a cost ceiling,
+not a design preference: LEZ v0.2.5 meters a transaction by its gas limit
+at one gas per cycle and refuses anything over ten million, and an
+on-chain merkle insert costs about 902,000 cycles per level. A depth-10
+tree misses the ceiling by roughly eleven thousand cycles.
+
 Determinism holds per lez-rln pin: rebuilt guest blobs re-derive a
 different config account for the same tree (`verify.sh` guards that skew).
 A provision-policy change (`E2E_PROVISION_FUNDING`, `E2E_CLAIM_CAP`,
