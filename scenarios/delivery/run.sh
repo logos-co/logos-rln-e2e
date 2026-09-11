@@ -21,12 +21,13 @@
 # a second RLN node accepts, and the send is billed against the sender's
 # on-chain rate limit.
 #
-# Topology: no fleet and no bootstrap node. `entry-node` takes plain
-# multiaddrs, which the conf builder turns into static nodes and dials at start
-# (logos-delivery tools/confutils/cli_args.nim), so two host processes peer
-# directly. Relay-only, one shard, discovery off — the two-node relay setup
-# proven by logos-delivery-interop-tests (S06) and the delivery module's own
-# e2e suite.
+# Topology: both peers dial a logos-docker container running a relay-only node
+# and meet there, which is how they find each other on a fleet; the container
+# never mounts RLN, so the proving and the validating are entirely the peers'.
+# `entry-node` takes plain multiaddrs, which the conf builder turns into static
+# nodes and dials at start (logos-delivery tools/confutils/cli_args.nim).
+# E2E_BOOTSTRAP=none peers the two directly instead, the setup proven by
+# logos-delivery-interop-tests (S06) and the delivery module's own e2e suite.
 #
 # Config shape: the layered `{mode, preset, messagingOverrides}` shape, with an
 # empty preset — the Messaging API on an arbitrary network rather than a named
@@ -47,11 +48,14 @@
 #   E2E_CONFIGURE_RLN_TIMEOUT_S=180  budget for configureRln to report
 #   E2E_RLN_IDENTIFIER       the app-scope rln identifier both nodes share
 #                            (64 hex; a fresh random one per run by default)
+#   E2E_BOOTSTRAP=docker     both peers meet at a logos-docker relay; `none`
+#                            peers them directly instead (harness/lib/bootstrap.sh
+#                            carries the container knobs)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx daemon wallet chain; do
+for _lib in compat json lgx daemon wallet chain bootstrap; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -100,7 +104,9 @@ dm_call() {
     esac
 }
 
-cleanup() { daemon_stop_all; }
+BOOTSTRAP_MODE="${E2E_BOOTSTRAP:-docker}"
+
+cleanup() { daemon_stop_all; bootstrap_down; }
 trap cleanup EXIT
 
 CONFIG_HEX=$(python3 - "$E2E_CONFIG_ACCOUNT" <<'EOF'
@@ -297,13 +303,25 @@ read_quota() {
 register_node "$SENDER"
 register_node "$RECEIVER"
 
-start_delivery_node "$SENDER" 1
-PEER=$(node_maddr "$SENDER")
-case "$PEER" in
-    /ip4/*) say "sender multiaddr: $PEER" ;;
-    *) die_node "$SENDER" "no dialable multiaddr from getNodeInfo: ${PEER:-<empty>}" ;;
-esac
-start_delivery_node "$RECEIVER" 2 "$PEER"
+# Topology: both peers meet at a logos-docker bootstrap relay rather than
+# dialing each other, which is how they will actually find each other on a
+# fleet. E2E_BOOTSTRAP=none falls back to direct peering — worth keeping, since
+# it is what isolates a delivery fault from a bootstrap one.
+if [ "$BOOTSTRAP_MODE" = docker ]; then
+    section "bootstrap"
+    bootstrap_up "$CLUSTER_ID" 1
+    PEER=$(bootstrap_multiaddr)
+    start_delivery_node "$SENDER" 1 "$PEER"
+    start_delivery_node "$RECEIVER" 2 "$PEER"
+else
+    start_delivery_node "$SENDER" 1
+    PEER=$(node_maddr "$SENDER")
+    case "$PEER" in
+        /ip4/*) say "sender multiaddr: $PEER" ;;
+        *) die_node "$SENDER" "no dialable multiaddr from getNodeInfo: ${PEER:-<empty>}" ;;
+    esac
+    start_delivery_node "$RECEIVER" 2 "$PEER"
+fi
 
 # ---------- send + receive ---------------------------------------------------
 section "delivery"
