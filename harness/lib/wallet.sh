@@ -4,6 +4,8 @@
 #
 # Env beyond docs/contract.md:
 #   E2E_WALLET_MOD    wallet module id (default lez_core)
+#   E2E_DERIVE_TRIES  how far to walk the key chain for an unused holding
+#                     account (default 250; the floor rises as a deployment ages)
 #   E2E_REGISTRY_MOD  registry-provider module id (default
 #                     liblogos_lez_rln_module)
 #   SYNC_STEP         blocks per sync_to_block call (default 3000)
@@ -70,7 +72,11 @@ wallet_sync() {
 # Usage: wallet_fresh_holding <node>
 wallet_fresh_holding() {
     local node="$1" acc bal_json _d
-    for _d in $(seq 1 "${E2E_DERIVE_TRIES:-30}"); do
+    # The walk restarts from the key chain's start every run, because each run
+    # re-seeds the wallet from the deployment's fixture — so the floor rises
+    # with every registration the deployment has ever funded, and 30 is only
+    # ever enough on a young one.
+    for _d in $(seq 1 "${E2E_DERIVE_TRIES:-250}"); do
         acc=$(node_call "$node" "$E2E_WALLET_MOD" create_account_public | jres) || acc=""
         case "$acc" in ''|ERR|None) sleep 2; continue ;; esac
         bal_json=$(node_call "$node" "$E2E_REGISTRY_MOD" get_token_balance \

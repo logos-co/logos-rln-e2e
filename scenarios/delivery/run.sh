@@ -21,13 +21,16 @@
 # a second RLN node accepts, and the send is billed against the sender's
 # on-chain rate limit.
 #
-# Topology: both peers dial a logos-docker container running a relay-only node
-# and meet there, which is how they find each other on a fleet; the container
-# never mounts RLN, so the proving and the validating are entirely the peers'.
-# `entry-node` takes plain multiaddrs, which the conf builder turns into static
-# nodes and dials at start (logos-delivery tools/confutils/cli_args.nim).
-# E2E_BOOTSTRAP=none peers the two directly instead, the setup proven by
-# logos-delivery-interop-tests (S06) and the delivery module's own e2e suite.
+# Topology: both peers dial a logos-docker container and meet there, which is
+# how they find each other on a fleet. The relay mounts RLN too and validates
+# the proof on every message it forwards, so it registers a membership of its
+# own on the same registry, under the same rln identifier — three memberships,
+# three faucet claims. `entry-node` takes plain multiaddrs, which the conf
+# builder turns into static nodes and dials at start (logos-delivery
+# tools/confutils/cli_args.nim). E2E_BOOTSTRAP=none peers the two directly
+# instead, the setup proven by logos-delivery-interop-tests (S06) and the
+# delivery module's own e2e suite; E2E_BOOTSTRAP_RLN=0 keeps the relay blind,
+# which separates "the relay dropped it" from "the receiver did".
 #
 # Config shape: the layered `{mode, preset, messagingOverrides}` shape, with an
 # empty preset — the Messaging API on an arbitrary network rather than a named
@@ -309,7 +312,7 @@ register_node "$RECEIVER"
 # it is what isolates a delivery fault from a bootstrap one.
 if [ "$BOOTSTRAP_MODE" = docker ]; then
     section "bootstrap"
-    bootstrap_up "$CLUSTER_ID" 1
+    bootstrap_up "$CLUSTER_ID" 1 "$REGISTRY_ID" "$RLN_IDENTIFIER" "$RATE_LIMIT"
     PEER=$(bootstrap_multiaddr)
     start_delivery_node "$SENDER" 1 "$PEER"
     start_delivery_node "$RECEIVER" 2 "$PEER"
