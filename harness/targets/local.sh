@@ -277,9 +277,11 @@ target_up() {
     E2E_POLL_INTERVAL_S="${E2E_POLL_INTERVAL_S:-5}"
     E2E_EPOCH_SIZE_SEC="${E2E_EPOCH_SIZE_SEC:-60}"
     E2E_ROOT_WINDOW_TIMEOUT_S="${E2E_ROOT_WINDOW_TIMEOUT_S:-60}"
+    # E2E_PAYER too: a scenario runs as its own process, and the modules it
+    # loads cannot pay a fee from the freshly created holdings they sign with.
     export E2E_SEQUENCER E2E_DEPLOYMENT_DIR E2E_WALLET_HOME E2E_TREE_ID \
         E2E_CONFIG_ACCOUNT E2E_FUNDING E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
-        E2E_EPOCH_SIZE_SEC E2E_ROOT_WINDOW_TIMEOUT_S
+        E2E_EPOCH_SIZE_SEC E2E_ROOT_WINDOW_TIMEOUT_S E2E_PAYER
     say "deployment: tree ${E2E_TREE_ID:0:8}… config $E2E_CONFIG_ACCOUNT funding $E2E_FUNDING"
 }
 
