@@ -284,6 +284,30 @@ done
 [ "$VALID" = "yes" ] || die "validate_proof never left not_ready (root window warm-up)"
 say "validate_proof: valid"
 
+# The same proof must STILL validate after the background refresher has
+# rewritten the root window at least once.
+#
+# The window has two writers: a Merkle fetch adopts the roots from its own
+# snapshot, and the refresher installs the registry's roots on a timer. They
+# have to agree on shape. While they did not — the fetch lifting a shallow
+# registry's roots to the circuit's depth and the refresher not — validation
+# worked only in the gap between a fetch and the next tick, so this scenario
+# passed while a node a few seconds older rejected proofs it had just made
+# itself. Validating immediately can never catch that; outliving a tick can.
+REFRESH_WAIT="${E2E_ROOT_REFRESH_WAIT_S:-15}"
+say "waiting ${REFRESH_WAIT}s for a refresher tick, then validating the same proof again…"
+sleep "$REFRESH_WAIT"
+REVERIFY=$(node_call "$NODE" liblogos_rln_module validate_proof \
+    "$REGISTRY_ID" "$(argfile rlnid5 "$RLN_ID")" "$(argfile sig4 "$SIGNAL_HEX")" \
+    "str:$(date +%s)" "$(argfile proof3 "$PROOF_JSON")" | jres | jval) || REVERIFY=""
+case "$REVERIFY" in
+    *'"verdict":"valid"'*) say "still valid after a refresher tick" ;;
+    *'"verdict":"invalid"'*)
+        die "the root window stopped matching our own proof after a refresher tick — \
+the refresher and the Merkle-fetch adopt path disagree on root shape: $REVERIFY" ;;
+    *) die "re-validate failed: ${REVERIFY:-<empty>}" ;;
+esac
+
 # A different signal against the same proof MUST be invalid — not an error.
 TAMPER_HEX=$(printf 'tampered signal' | to_hex)
 TVERIFY=$(node_call "$NODE" liblogos_rln_module validate_proof \
