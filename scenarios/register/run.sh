@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scenarios/register — the single-node membership lifecycle over the real
-# module stack (logos_execution_zone -> liblogos_lez_rln_module ->
+# module stack (lez_core -> liblogos_lez_rln_module ->
 # liblogos_rln_module). Drives a PAID registration through the membership
 # module's spec surface — the faucet-funded Register instruction, NOT the
 # gifter's RegisterFree path:
@@ -98,7 +98,7 @@ say "registry: $REGISTRY_ID (tree ${E2E_TREE_ID:0:8}…, sequencer $E2E_SEQUENCE
 section "node"
 daemon_start "$NODE" || die "daemon_start $NODE failed"
 NODE_UP=1
-daemon_load_modules "$NODE" logos_execution_zone liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module failed"
 
 # ---------- wallet: open + sync ---------------------------------------------

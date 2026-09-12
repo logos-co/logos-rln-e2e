@@ -13,3 +13,4 @@ docker/lp2p-out/
 
 # local working doc (kept untracked)
 scenarios/mix/JOURNEY.md
+runs/

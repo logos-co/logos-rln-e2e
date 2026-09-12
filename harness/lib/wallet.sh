@@ -3,7 +3,9 @@
 # seam (host daemon now, container later).
 #
 # Env beyond docs/contract.md:
-#   E2E_WALLET_MOD    wallet module id (default logos_execution_zone)
+#   E2E_WALLET_MOD    wallet module id (default lez_core)
+#   E2E_DERIVE_TRIES  how far to walk the key chain for an unused holding
+#                     account (default 250; the floor rises as a deployment ages)
 #   E2E_REGISTRY_MOD  registry-provider module id (default
 #                     liblogos_lez_rln_module)
 #   SYNC_STEP         blocks per sync_to_block call (default 3000)
@@ -11,23 +13,35 @@
 . "$(dirname "${BASH_SOURCE[0]}")/daemon.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/chain.sh"
 
-E2E_WALLET_MOD="${E2E_WALLET_MOD:-logos_execution_zone}"
+E2E_WALLET_MOD="${E2E_WALLET_MOD:-lez_core}"
 E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 SYNC_STEP="${SYNC_STEP:-3000}"
 
 # Usage: wallet_open <node> [wallet_home]
 # storage.json is the mutable wallet; the staged fixture ships it as
-# storage.json.seed so a re-run starts from the deployment's own accounts.
+# storage.json.seed so a re-run starts from the deployment's own accounts. Each
+# node opens its own seeded copy under the node's dir: create_account_public
+# derives deterministically, so two nodes on one storage.json would pick the
+# same "fresh" holding account. lez_core 0.4.0 takes a third path, for the
+# statistics file, which the module creates.
 wallet_open() {
-    local node="$1" home="${2:-${E2E_WALLET_HOME:-}}"
+    local node="$1" home="${2:-${E2E_WALLET_HOME:-}}" storage
     [ -n "$home" ] || die "wallet_open: no wallet home (the target sets E2E_WALLET_HOME)"
     [ -f "$home/wallet_config.json" ] || die "wallet_open: no wallet_config.json in $home"
-    if [ ! -f "$home/storage.json" ]; then
-        cp "$home/storage.json.seed" "$home/storage.json" \
-            || die "wallet_open: cannot seed $home/storage.json"
+    storage="$(node_dir "$node")/storage.json"
+    [ -n "$storage" ] || die "wallet_open: unknown node '$node'"
+    if [ ! -f "$storage" ]; then
+        cp "$home/storage.json.seed" "$storage" 2>/dev/null \
+            || cp "$home/storage.json" "$storage" \
+            || die "wallet_open: cannot seed $storage"
     fi
-    node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$home/storage.json" >/dev/null \
-        || die_node "$node" "wallet open failed"
+    local reply stats
+    stats="$(node_dir "$node")/wallet-statistics.json"
+    reply=$(node_call "$node" "$E2E_WALLET_MOD" open "$home/wallet_config.json" "$storage" "$stats") || reply=""
+    case "$(printf '%s' "$reply" | jstatus)" in
+        ok) ;;
+        *) die_node "$node" "wallet open failed (config $home/wallet_config.json, storage $storage): ${reply:-<no reply>}" ;;
+    esac
 }
 
 # Sync to the chain head in SYNC_STEP chunks (a single jump over a long chain
@@ -58,7 +72,11 @@ wallet_sync() {
 # Usage: wallet_fresh_holding <node>
 wallet_fresh_holding() {
     local node="$1" acc bal_json _d
-    for _d in $(seq 1 "${E2E_DERIVE_TRIES:-30}"); do
+    # The walk restarts from the key chain's start every run, because each run
+    # re-seeds the wallet from the deployment's fixture — so the floor rises
+    # with every registration the deployment has ever funded, and 30 is only
+    # ever enough on a young one.
+    for _d in $(seq 1 "${E2E_DERIVE_TRIES:-250}"); do
         acc=$(node_call "$node" "$E2E_WALLET_MOD" create_account_public | jres) || acc=""
         case "$acc" in ''|ERR|None) sleep 2; continue ;; esac
         bal_json=$(node_call "$node" "$E2E_REGISTRY_MOD" get_token_balance \

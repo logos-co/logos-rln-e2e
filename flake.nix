@@ -18,12 +18,19 @@
       url = "github:logos-co/logos-lez-rln";
       flake = false;
     };
-    rln-modules.url = "github:logos-co/logos-rln-modules/main";
+    rln-modules.url = "github:logos-co/logos-rln-modules/feat/lip-alignment";
 
     # logoscore is consumed as a flake: its default package is the daemon/CLI
     # every scenario drives. The module-stack e2e used to fetch it unpinned at
     # run time; locking it here makes it part of the matrix.
     logoscore-cli.url = "github:logos-co/logos-logoscore-cli";
+
+    # The delivery module, whose own flake pins liblogosdelivery. It resolves
+    # its `liblogos_rln_module` dependency as a flake input of that name and
+    # generates its bindings from the .lidl published there, so that input's
+    # rev must equal this repo's rln-modules rev — harness/artifacts.sh
+    # asserts it.
+    delivery-module.url = "github:logos-co/logos-delivery-module/master";
   };
 
   outputs =
@@ -33,6 +40,7 @@
       lez-rln,
       rln-modules,
       logoscore-cli,
+      delivery-module,
       ...
     }:
     let
@@ -54,6 +62,7 @@
           pins = pkgs.writeText "e2e-pins.env" ''
             E2E_LEZ_RLN_SRC=${lez-rln}
             E2E_RLN_MODULES_SRC=${rln-modules}
+            E2E_DELIVERY_MODULE_SRC=${delivery-module}
           '';
         }
         # The module bundles every scenario loads, re-exported from the
@@ -66,6 +75,9 @@
         }
         // lib.optionalAttrs (logoscore-cli.packages ? ${system}) {
           logoscore = logoscore-cli.packages.${system}.default;
+        }
+        // lib.optionalAttrs (delivery-module.packages ? ${system}) {
+          delivery-module-lgx = delivery-module.packages.${system}.lgx;
         }
       );
 

@@ -20,7 +20,7 @@ channel.
 | var | meaning |
 |---|---|
 | `LOGOSCORE` | logoscore binary |
-| `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX` | module bundles (each overridable by pre-setting the env) |
+| `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX`, `DELIVERY_LGX` | module bundles (each overridable by pre-setting the env) |
 | `E2E_MODULES_DIR` | flattened module dir daemons load from |
 
 ## Set by the target (harness/targets/<target>.sh)
@@ -47,8 +47,9 @@ channel.
 | `E2E_DEPLOYMENT` | testnet only, required: name of a committed descriptor under `deployments/` |
 | `E2E_DEPLOYMENT_DIR` | local/external only: reuse an existing provisioned deployment (refused under `E2E_DEVNET=host` — dev.sh wipes the chain) |
 
-Scenario-specific knobs (e.g. `register`'s `E2E_RATE_LIMIT`) are documented in
-the scenario's header, never invented in the harness.
+Scenario-specific knobs (e.g. `register`'s `E2E_RATE_LIMIT`, `delivery`'s
+`E2E_TCP_PORT_BASE`) are documented in the scenario's header, never invented
+in the harness.
 
 ### Known local-vs-testnet gaps
 
@@ -66,12 +67,15 @@ testnet stays a first-class target rather than a fallback:
 
 Each `scenarios/<id>/scenario.env` declares: `NODES` (daemon count),
 `NEEDS_MODULES` (runtime lib names, space-separated), `TARGETS` (supported
-targets), `RUNNER` (`bash`; `pytest`/`compose` arrive with the delivery and
-mix phases), optional `STATUS=quarantined`.
+targets), `RUNNER` (`bash`; `compose` arrives with the mix phase), optional
+`STATUS=quarantined`.
 
 ## Harness primitives
 
 Sourced from `harness/lib/`: `node_call <node> <module> <method> [args…]` is
 the topology seam — identical whether the node is a host process or a
-container. `node_logs`, wallet/chain helpers, JSON plumbing: see each lib
-file's header.
+container. `node_watch <node> <name> <module> [event]` / `node_await <name>
+<timeout> [ere]` / `node_watch_stop <name>` are the same seam for a module's
+async surface; a watcher must be started before the call that fires the
+event. `node_logs`, wallet/chain helpers, JSON plumbing: see each lib file's
+header.

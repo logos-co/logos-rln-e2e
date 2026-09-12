@@ -1,0 +1,11 @@
+{
+  "name": "testnet-faucet-260908",
+  "tree_id": "087330e8350f5fe9819a8f4b4e7a5c7abfeae3587aee8199b0f27ef0d262c1fe",
+  "sequencer": "https://testnet.lez.logos.co/",
+  "registration_program_id": "88ba76857ee3a045e9d75c1776a68f2e735a62519540f338b25055622a8e171c",
+  "merkle_program_id": "de151fb42b8e59d24e5895a343eda4cf2285f74a9657713aebc311ed401ef4ee",
+  "config_account": "JCsQzxPGRpggAuv1X2UU6xZVd6Q7cHLCS5HjajSZr28Q",
+  "payment_account": "GYRprVt9kCKsK3tcrkRqMcs1cVRywPoLoRsENSBbj2JE",
+  "supply_holding": "6JBEPcvRQY2pxZkZUSjaMWjyj2LAS4aMbAccxgNYoUgm",
+  "funding": "faucet"
+}
