@@ -71,7 +71,9 @@ install_lgx() {
     rm -rf "${dest:?}/$name"
     mkdir -p "$dest/$name"
     cp "$tmp/manifest.json" "$dest/$name/"
-    cp -L "$tmp/variants/$variant/"* "$dest/$name/"
+    # -R: a ui_qml bundle carries qml/ and icons/ subdirectories, and a module
+    # missing its qml loads as a broken app rather than failing outright.
+    cp -RL "$tmp/variants/$variant/"* "$dest/$name/"
     printf '%s' "$variant" > "$dest/$name/variant"
     rm -rf "$tmp"
 }

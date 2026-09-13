@@ -39,7 +39,10 @@ done
 
 DM_REV=514fa12655ddfe0bc3e961dc823ceaa32210f26a       # logos-delivery-module master
 RLN_REV=c89c7691d06af32c002426f3c6f6dece79dbffaa      # logos-rln-modules feat/lip-alignment
-WALLET_REV=0ea57f8a1c57539d6ee0961a9cd27b064685b9e8   # logos-execution-zone-module, rln-modules' pin
+# lez_core 0.4.0, NOT the 0.4.1 rln-modules pins. 0.4.1 is built on
+# execution-zone v0.2.5-rc2 and cannot decode the deployed testnet — sync dies
+# with "Parse error: Unexpected variant tag". Its own lock pins the v0.2.2 zone.
+WALLET_REV=549cf1159f20fa0c3fe8e88a5ab71de68a5aa34b   # logos-execution-zone-module
 DEMO_REV=49d0a05eb61d5d8eefb269d1d47537e5debe3a91     # logos-delivery-demo main
 GIFTER_REV=c6d854a82cb9eb0cbc6a5c8b1f23030f74e711da   # logos-rln-gifter master
 LIBP2P_REV=ec7b8f583781365389910da8b81688239661805d   # logos-libp2p-module master
