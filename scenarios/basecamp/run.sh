@@ -8,8 +8,13 @@
 # hand: resolve the chain, install the whole module stack plus both UIs into
 # two isolated instances, launch them, and print the exact values to paste in.
 #
-# The instances are deliberately LEFT RUNNING — that is the deliverable. The
-# script prints how to stop them.
+# It also brings up the same logos-docker relay the delivery scenario uses, so
+# both instances meet at one fixed address rather than you copying a multiaddr
+# between two UIs. The chain is the target's: --target local boots a local
+# sequencer and provisions a fresh tree, --target testnet uses the hosted one.
+#
+# The instances and the relay are deliberately LEFT RUNNING — that is the
+# deliverable. The script prints how to stop them.
 #
 # Modules come from a directory of portable .lgx bundles, which
 # tools/build-basecamp-lgx.sh produces. They must be portable, not the -dev
@@ -25,11 +30,13 @@
 #   E2E_BASECAMP_DIR       where the instance user-dirs go (default under the
 #                          run dir; point it somewhere durable to keep them)
 #   E2E_TCP_PORT_BASE      instance n's node listens on base+n (default 61200)
+#   E2E_BOOTSTRAP=docker   bring up the relay; `none` peers the instances
+#                          directly (harness/lib/bootstrap.sh has its knobs)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx; do
+for _lib in compat json lgx chain bootstrap; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -70,6 +77,16 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 # it can never validate each other's proofs.
 RLN_IDENTIFIER="${E2E_RLN_IDENTIFIER:-$(openssl rand -hex 32)}"
 
+# The createNode config for one instance, with the relay as its entry node when
+# there is one.
+bc_node_cfg() {
+    local port="$1" entry=""
+    [ -n "$PEER" ] && entry=",\"entry-node\":[\"$PEER\"]"
+    printf '{"mode":"core","preset":"","messagingOverrides":{"log-level":"DEBUG","listen-address":"127.0.0.1","tcp-port":%s,"cluster-id":%s,"num-shards-in-network":1,"store":false%s}}' \
+        "$port" "$CLUSTER_ID" "$entry"
+}
+
+PEER=""
 PIDS=""
 STARTED=0
 cleanup() {
@@ -110,6 +127,15 @@ section "chain"
 say "registry: $REGISTRY_ID"
 say "tree ${E2E_TREE_ID:0:8}…, sequencer $E2E_SEQUENCER"
 
+# The same relay the delivery scenario uses, so both instances meet at one
+# fixed address instead of you copying a multiaddr between two UIs. Left
+# running with them; E2E_BOOTSTRAP=none skips it and peers them directly.
+if [ "${E2E_BOOTSTRAP:-docker}" = docker ]; then
+    section "bootstrap"
+    bootstrap_up "$CLUSTER_ID" 1 "$REGISTRY_ID" "$RLN_IDENTIFIER" "${E2E_RATE_LIMIT:-100}"
+    PEER=$(bootstrap_multiaddr)
+fi
+
 section "instances"
 instance a 1
 instance b 2
@@ -132,7 +158,8 @@ cat <<TXT
 e2e: PASS — two Basecamp instances are running and left up.
 
   a  pid $(gv BCPID a)  $(gv BCDIR a)
-  b  pid $(gv BCPID b)  $(gv BCDIR b)
+  b  pid $(gv BCPID b)  $(gv BCDIR b)${PEER:+
+  relay  $PEER}
 
 Manual test, in this order:
 
@@ -146,14 +173,16 @@ Manual test, in this order:
    {"registry-id":"$REGISTRY_ID","rln-identifier":"$RLN_IDENTIFIER","epoch-size-sec":${E2E_EPOCH_SIZE_SEC:-600}}
 
 3. In a, createNode with
-   {"mode":"core","preset":"","messagingOverrides":{"log-level":"DEBUG","listen-address":"127.0.0.1","tcp-port":$((TCP_PORT_BASE+1)),"cluster-id":$CLUSTER_ID,"num-shards-in-network":1,"store":false}}
-   then start, then read getNodeInfo("MyMultiaddresses").
+   $(bc_node_cfg $((TCP_PORT_BASE+1)))
+   then start.
 
-4. In b, the same with tcp-port $((TCP_PORT_BASE+2)) and a's multiaddr added:
-   ..."store":false,"entry-node":["<a's multiaddr>"]}}
+4. In b, the same but on tcp-port $((TCP_PORT_BASE+2)):
+   $(bc_node_cfg $((TCP_PORT_BASE+2)))
 
 5. Subscribe on both, send from a in the delivery demo, watch it arrive on b.
    get_epoch_quota on a drops by one per message.
 
-Stop them:  kill $(gv BCPID a) $(gv BCPID b)
+Stop everything:
+  kill $(gv BCPID a) $(gv BCPID b)${PEER:+
+  docker rm -f $E2E_BOOTSTRAP_NAME}
 TXT
