@@ -1,7 +1,6 @@
 #!/usr/bin/env bash
 # scenarios/register — the single-node membership lifecycle over the real
-# module stack (lez_core -> liblogos_lez_rln_module ->
-# liblogos_rln_module). Drives a PAID registration through the membership
+# module stack (liblogos_lez_rln_module -> liblogos_rln_module). Drives a PAID registration through the membership
 # module's spec surface — the faucet-funded Register instruction, NOT the
 # gifter's RegisterFree path:
 #
@@ -101,7 +100,7 @@ section "node"
 export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start "$NODE" || die "daemon_start $NODE failed"
 NODE_UP=1
-daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module failed"
 
 # ---------- wallet: open + sync ---------------------------------------------

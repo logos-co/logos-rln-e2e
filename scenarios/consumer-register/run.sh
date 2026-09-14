@@ -97,7 +97,7 @@ section "node"
 export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start "$NODE" || die "daemon_start $NODE failed"
 NODE_UP=1
-daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" liblogos_lez_rln_module liblogos_rln_module \
     nim_rln_consumer || die "load-module failed"
 
 # ---------- wallet + faucet funding (direct module calls: harness domain) ----

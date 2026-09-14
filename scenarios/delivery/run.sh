@@ -2,7 +2,7 @@
 # scenarios/delivery — the RLN-gated-delivery scaffold. What it proves TODAY:
 #
 #   1. co-residency: three logoscore daemons each load the RLN module stack
-#      (lez_core -> liblogos_lez_rln_module -> liblogos_rln_module)
+#      (liblogos_lez_rln_module -> liblogos_rln_module)
 #      AND delivery_module in one process. This is a real risk, not a
 #      formality: delivery_module bundles its own librln (zerokit v2 via
 #      liblogosdelivery) while liblogos_rln_module statically links zerokit
@@ -125,7 +125,7 @@ relay_round() {
 section "daemons: RLN stack + delivery_module on each"
 for n in $NODES_ALL; do
     daemon_start "$n" || die "daemon_start $n failed"
-    daemon_load_modules "$n" lez_core liblogos_lez_rln_module \
+    daemon_load_modules "$n" liblogos_lez_rln_module \
         liblogos_rln_module delivery_module
 done
 say "co-residency: all 4 modules loaded on 3 daemons"
@@ -154,6 +154,6 @@ relay_round n3 n1 n2
 
 echo
 echo "e2e: PASS — 3-node co-residency + relay mesh"
-echo "e2e:   modules   lez_core liblogos_lez_rln_module liblogos_rln_module delivery_module"
+echo "e2e:   modules   liblogos_lez_rln_module liblogos_rln_module delivery_module"
 echo "e2e:   mesh      n2,n3 -> n1 (static peers), gossipsub"
 echo "e2e:   relay     n1->{n2,n3} and n3->{n1,n2} on $TOPIC"

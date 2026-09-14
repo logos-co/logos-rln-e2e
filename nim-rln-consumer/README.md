@@ -131,9 +131,9 @@ wrap it. This mirrors delivery-module's own fire-then-event precedent
   as retryable before declaring spam/drop (the `delivery-rln` send leg models
   exactly this).
 - **A validator node's module needs a live registry provider.** The root
-  window is fed by registry reads (lez_core with an OPEN wallet in this
-  stack); without one the window stays permanently cold and every
-  `validate_proof` answers `not_ready`.
+  window is fed by registry reads served by `liblogos_lez_rln_module`'s own
+  in-process wallet, which must have reached `ready`; without one the window
+  stays permanently cold and every `validate_proof` answers `not_ready`.
 
 ## Method surface (what scenarios call)
 

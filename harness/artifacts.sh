@@ -156,11 +156,21 @@ resolve_artifacts() {
     [ -x "$LOGOSCORE" ] || die "logoscore not executable: $LOGOSCORE"
     export LOGOSCORE
 
-    [ -n "${WALLET_LGX:-}" ]  || WALLET_LGX=$(_bundle_lgx wallet-lgx)
     [ -n "${LEZ_RLN_LGX:-}" ] || LEZ_RLN_LGX=$(_bundle_lgx lez-rln-module-lgx)
     [ -n "${RLN_LGX:-}" ]     || RLN_LGX=$(_bundle_lgx rln-module-lgx)
-    export WALLET_LGX LEZ_RLN_LGX RLN_LGX
-    say "bundles: $(basename "$WALLET_LGX"), $(basename "$LEZ_RLN_LGX"), $(basename "$RLN_LGX")"
+    export LEZ_RLN_LGX RLN_LGX
+
+    # lez_core, like every other optional module: only when the scenario loads
+    # it. Since liblogos_lez_rln_module 3.0.0 owns its wallet in-process the
+    # RLN path never calls lez_core, and only the Basecamp scenarios still do
+    # — for Basecamp's OWN wallet. The rest must not pay for the build.
+    case " ${NEEDS_MODULES:-} " in
+        *" lez_core "*)
+            [ -n "${WALLET_LGX:-}" ] || WALLET_LGX=$(_bundle_lgx wallet-lgx)
+            export WALLET_LGX
+            ;;
+    esac
+    say "bundles: $(basename "$LEZ_RLN_LGX"), $(basename "$RLN_LGX")${WALLET_LGX:+, $(basename "$WALLET_LGX")}"
 
     # The delivery bundle only when the scenario loads it (scenario.env is
     # sourced before resolve_artifacts, so NEEDS_MODULES is visible here) —
@@ -240,9 +250,9 @@ resolve_artifacts() {
     E2E_MODULES_DIR="$E2E_RUN_DIR/modules"
     export E2E_MODULES_DIR
     mkdir -p "$E2E_MODULES_DIR"
-    install_lgx "$WALLET_LGX"
     install_lgx "$LEZ_RLN_LGX"
     install_lgx "$RLN_LGX"
+    [ -n "${WALLET_LGX:-}" ] && install_lgx "$WALLET_LGX"
     [ -n "${DELIVERY_LGX:-}" ] && install_lgx "$DELIVERY_LGX"
     [ -n "${CHAT_LGX:-}" ] && install_lgx "$CHAT_LGX"
     [ -n "${CONSUMER_LGX:-}" ] && install_lgx "$CONSUMER_LGX"

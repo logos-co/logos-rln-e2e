@@ -90,7 +90,7 @@ section "gifter node (n1)"
 export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start n1 || die "daemon_start n1 failed"
 NODES_UP="n1"
-daemon_load_modules n1 lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules n1 liblogos_lez_rln_module liblogos_rln_module \
     libp2p_module rln_gifter_module || die "n1 load-module failed"
 
 wallet_open n1 || die "n1 wallet open failed"
@@ -143,7 +143,7 @@ cp "$E2E_WALLET_HOME/storage.json.seed" "$N2_HOME/storage.json.seed"
 
 daemon_start n2 || die "daemon_start n2 failed"
 NODES_UP="n1 n2"
-daemon_load_modules n2 lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules n2 liblogos_lez_rln_module liblogos_rln_module \
     libp2p_module rln_gifter_module nim_rln_consumer || die "n2 load-module failed"
 
 wallet_open n2 "$N2_HOME" || die "n2 wallet open failed"

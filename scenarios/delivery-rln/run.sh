@@ -193,6 +193,10 @@ print(n.to_bytes(32, "big").hex())
 EOF
 ) || die "cannot decode config account '$E2E_CONFIG_ACCOUNT'"
 REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
+# ONE identifier for the whole scenario, never one per node: rln_identifier
+# scopes the APPLICATION, not the member. It feeds the external nullifier both
+# sides derive, so a per-node value makes every message reject with
+# validatorRes=Reject — which reads exactly like a product fault.
 RLN_ID=$(openssl rand -hex 32)
 say "registry: $REGISTRY_ID (bring-up scope, rate $RATE_LIMIT)"
 
@@ -401,17 +405,18 @@ EOF
 section "daemons: RLN stack + delivery_module on both nodes"
 for n in $NODES_ALL; do
     daemon_start "$n" || die "daemon_start $n failed"
-    daemon_load_modules "$n" lez_core liblogos_lez_rln_module liblogos_rln_module \
+    daemon_load_modules "$n" liblogos_lez_rln_module liblogos_rln_module \
         delivery_module || die "$n: load-module failed"
 done
 NODES_UP=1
 say "co-residency: all 4 modules loaded on both nodes (keystore: module-owned custody, no unlock call)"
 
 # ---------- wallets (both nodes pay for their own membership) ----------------
-# BOTH nodes need an open wallet: the RLN module's registry reads (root
+# BOTH nodes need a ready wallet: the RLN module's registry reads (root
 # window refresh, membership state) go through liblogos_lez_rln_module,
-# whose account fetches need lez_core's wallet open — a validator-only node
-# without one has a permanently cold root window. And since the library's
+# which since 3.0.0 owns its wallet in-process and cannot fetch an account
+# until that wallet is up — a validator-only node without one has a
+# permanently cold root window. And since the library's
 # bring-up gate needs a membership on every rln-enabled node, each node
 # derives and funds ITS OWN holding: wallet-n2 is copied before n1 derives
 # its account, so n1's holding key is not in n2's wallet (the sequencer
@@ -423,8 +428,8 @@ for n in $NODES_ALL; do
     if [ "$n" = "n1" ]; then
         wallet_open n1 || die "n1: wallet open failed"
     else
-        # Each daemon gets its own storage.json — two lez_core processes
-        # must never share one mutable wallet file.
+        # Each daemon gets its own storage.json — two instances of the
+        # registry module must never share one mutable wallet file.
         cp -R "$E2E_WALLET_HOME" "$E2E_RUN_DIR/wallet-$n" \
             || die "$n: cannot copy wallet home"
         rm -f "$E2E_RUN_DIR/wallet-$n/storage.json"
@@ -635,8 +640,8 @@ done
 say "both nodes subscribed to $TOPIC"
 sleep 1
 
-# n2's valid-root window warms through its own registry reads — which go
-# lez-rln -> lez_core (the wallet). On testnet the
+# n2's valid-root window warms through its own registry reads, served by
+# liblogos_lez_rln_module's in-process wallet. On testnet that
 # wallet can still be churning through a long sync here (thousands of
 # "Stored persistent accounts" writes), and while its event loop is
 # saturated the remote object is unacquirable: every validate_proof then
@@ -644,7 +649,7 @@ sleep 1
 # the message. Wait for n2's read path before sending; validate nudges the
 # window's own refresh once reads work.
 ROOTS_WARM_BUDGET_S="${E2E_ROOTS_WARM_BUDGET_S:-300}"
-say "waiting for n2's registry read path (valid roots via lez_core; budget ${ROOTS_WARM_BUDGET_S}s)…"
+say "waiting for n2's registry read path (valid roots via the registry module; budget ${ROOTS_WARM_BUDGET_S}s)…"
 ROOTS_T0=$(date +%s)
 ROOTS_N2=""
 while :; do

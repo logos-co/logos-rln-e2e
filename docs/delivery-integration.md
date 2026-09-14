@@ -134,7 +134,9 @@ password (probe D).
   retry is the consumer's: treat such a registrant's first `invalid` as
   retryable before scoring spam (`scenarios/register/run.sh` polls this away).
 - **A validator's module needs a live registry provider** to feed its root
-  window (here: lez_core with an OPEN wallet on that node). Without one the
+  window — here `liblogos_lez_rln_module`, whose own in-process wallet must
+  have reached `ready` on that node (it reports this via `wallet_status`;
+  since 3.0.0 nothing else may open it). Without one the
   window stays cold, every `validate_proof` answers `not_ready`, and the
   symptom is "no RLN-gated message ever arrives".
 - **Double-signal detection is the module's job.** `validate_proof` owns the

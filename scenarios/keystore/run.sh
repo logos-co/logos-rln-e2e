@@ -127,7 +127,7 @@ section "setup: node, wallet, funding"
 export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_start "$NODE" || die "daemon_start failed"
 NODE_UP=1
-daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module failed"
 wallet_open "$NODE" || die "wallet open failed"
 chain_head >/dev/null || die "cannot probe chain head at $E2E_SEQUENCER"
@@ -276,7 +276,7 @@ HOLDER_PID=$!
 sleep 1
 daemon_start "$NODE" || die "daemon_start under contention failed"
 NODE_UP=1
-daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module under contention failed"
 CU=$(node_call "$NODE" liblogos_rln_module unlock_keystore "$PASSWORD" | jres) || CU=""
 case "$CU" in
@@ -296,7 +296,7 @@ kill "$HOLDER_PID" 2>/dev/null; wait "$HOLDER_PID" 2>/dev/null; HOLDER_PID=""
 # ---------- G: restart persistence --------------------------------------------
 section "G: restart — verifier, idempotent re-register, slot continuity"
 daemon_restart "$NODE" || die "daemon_restart failed"
-daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module after restart failed"
 # The wallet is per-process state: the registry overlay (get_membership_state)
 # and proof generation both need it re-opened and re-synced after a restart.
@@ -365,7 +365,7 @@ json.dump(d, open(p, "w"))
 EOF
 daemon_start "$NODE" || die "daemon_start for the tamper probe failed"
 NODE_UP=1
-daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules "$NODE" liblogos_lez_rln_module liblogos_rln_module \
     || die "load-module for the tamper probe failed"
 wallet_open "$NODE" || die "wallet re-open for the tamper probe failed"
 wallet_sync "$NODE" >/dev/null || die "wallet re-sync for the tamper probe failed"
