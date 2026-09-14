@@ -3,16 +3,15 @@
 # seam (host daemon now, container later).
 #
 # Env beyond docs/contract.md:
-#   E2E_WALLET_MOD    wallet module id (default lez_core; was
-#                     logos_execution_zone before its 01c6f40 rename)
 #   E2E_REGISTRY_MOD  registry-provider module id (default
 #                     liblogos_lez_rln_module)
+#   E2E_DERIVE_TRIES  how far to walk the key chain for an unused holding
+#                     account (default 250; see wallet_fresh_holding)
 #   SYNC_STEP         blocks per sync_to_block call (default 3000)
 
 . "$(dirname "${BASH_SOURCE[0]}")/daemon.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/chain.sh"
 
-E2E_WALLET_MOD="${E2E_WALLET_MOD:-lez_core}"
 E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 SYNC_STEP="${SYNC_STEP:-3000}"
 
@@ -60,11 +59,14 @@ wallet_sync() { wallet_ready "$1"; }
 # Usage: wallet_fresh_holding <node>
 wallet_fresh_holding() {
     local node="$1" acc bal_json _d
-    for _d in $(seq 1 "${E2E_DERIVE_TRIES:-30}"); do
+    # The walk restarts from the key chain's start every run, so the floor
+    # rises with every registration the deployment has ever funded — 30 is
+    # only ever enough on a young one.
+    for _d in $(seq 1 "${E2E_DERIVE_TRIES:-250}"); do
         acc=$(node_call "$node" "$E2E_REGISTRY_MOD" create_holding_account | jres) || acc=""
         case "$acc" in ''|ERR|None) sleep 2; continue ;; esac
         bal_json=$(node_call "$node" "$E2E_REGISTRY_MOD" get_token_balance \
-            "$(argfile fresh_holding "$acc")" | jres) || bal_json=""
+            "$(argfile "fresh_holding_$node" "$acc")" | jres) || bal_json=""
         case "$bal_json" in
             *'"exists":false'*) printf '%s' "$acc"; return 0 ;;
         esac

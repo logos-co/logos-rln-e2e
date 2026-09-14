@@ -80,7 +80,15 @@ install_lgx() {
     rm -rf "${dest:?}/$name"
     mkdir -p "$dest/$name"
     cp "$tmp/manifest.json" "$dest/$name/"
-    cp -L "$tmp/variants/$variant/"* "$dest/$name/"
+    # -R because a ui_qml bundle carries qml/ and icons/ subdirectories, and a
+    # module missing its qml loads as a broken app rather than failing outright.
+    # -L stays: the tarball's entries deliberately point into /nix/store.
+    # The glob is checked first — unmatched, it goes literal and cp reports a
+    # path that never existed.
+    [ -n "$(find "$tmp/variants/$variant" -mindepth 1 -maxdepth 1 -print -quit)" ] \
+        || die "install_lgx: $lgx has an empty variants/$variant"
+    cp -RL "$tmp/variants/$variant/"* "$dest/$name/" \
+        || die "install_lgx: cannot stage variants/$variant from $lgx"
     printf '%s' "$variant" > "$dest/$name/variant"
     rm -rf "$tmp"
 }
