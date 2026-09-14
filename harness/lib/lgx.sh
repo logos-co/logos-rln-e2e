@@ -28,22 +28,31 @@ lgx_of() {
     printf '%s' "$out"
 }
 
-# Build a module bundle from a WORKING TREE instead of the flake pin: copy the
-# tree (filtered) and override the flake input with it. The copy carries the
-# tree verbatim — uncommitted changes and any gitignored staged sources —
-# minus target/result/.git: a raw `path:` override copies rust-lib/target
-# (~1 GB of local cargo artifacts) into /nix/store on every eval and fills the
-# disk. Nix content-addresses the copy, so unchanged trees rebuild for free.
-# Usage: module_lgx <flake-attr> <src-tree> [input-name]
-module_lgx() {
-    local attr="$1" tree="$2" input="${3:-rln-modules}"
-    [ -d "$tree" ] || die "module_lgx: no source tree at $tree"
-    local src="${E2E_RUN_DIR:-.}/src-$input"
-    say "$attr: building from a filtered copy of $tree" >&2
+# Stage a WORKING TREE for a path: input override: a filtered copy carrying
+# the tree verbatim — uncommitted changes and any gitignored staged sources —
+# minus build outputs and .git: a raw `path:` override copies rust-lib/target
+# (~1 GB of local cargo artifacts) into /nix/store on every eval and fills
+# the disk. Nix content-addresses the copy, so unchanged trees rebuild for
+# free. Prints the staged path.
+# Usage: staged_tree <src-tree> <name>
+staged_tree() {
+    local tree="$1" name="$2"
+    [ -d "$tree" ] || die "staged_tree: no source tree at $tree"
+    local src="${E2E_RUN_DIR:-.}/src-$name"
     rsync -a --delete --exclude '*/rust-lib/target' --exclude 'result' \
         --exclude 'result-*' --exclude '.git' "$tree/" "$src/" \
         || die "rsync $tree failed"
-    local out
+    printf '%s' "$src"
+}
+
+# Build a module bundle from a WORKING TREE instead of the flake pin (see
+# staged_tree for the copy semantics).
+# Usage: module_lgx <flake-attr> <src-tree> [input-name]
+module_lgx() {
+    local attr="$1" tree="$2" input="${3:-rln-modules}"
+    local src out
+    say "$attr: building from a filtered copy of $tree" >&2
+    src=$(staged_tree "$tree" "$input")
     out=$(cd "$E2E_ROOT" && nix build --no-link --print-out-paths ".#$attr" \
         --override-input "$input" "path:$src") || die "nix build .#$attr failed"
     lgx_of "$out"

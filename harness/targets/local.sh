@@ -18,8 +18,33 @@
 #   E2E_DEPLOYMENT_DIR=<dir>   external mode only: reuse this deployment
 #                              instead of provisioning a fresh one.
 #   E2E_DEVNET_TIMEOUT_S=900   readiness budget for the sequencer.
+#   E2E_LOCAL_PROFILE=<name>   provision-input profile under profiles/
+#                              (default local-default): tree.txt pins the
+#                              tree id, wallet.storage.json is adopted so
+#                              account ids repeat. `fresh` = random tree +
+#                              fresh wallet (the pre-profile behavior).
+#                              Deterministic given a fixed lez-rln pin: the
+#                              config account is a PDA of tree id + guest
+#                              blobs (verify.sh guards guest drift).
+#   E2E_PAYER=<account-id>     the funded account provisioning draws fees from.
+#                              Normally left unset: host mode mints one and
+#                              funds it at genesis. Set it in external mode,
+#                              where this harness does not control genesis.
+#   E2E_PROVISION_FUNDING      provision policy → provision.sh flags
+#   E2E_CLAIM_CAP                (faucet|wallet-key, per-claim cap,
+#   E2E_REGISTRAR                free-registration registrar account,
+#   E2E_FREE_QUOTA               its RegisterFree quota). Policy is
+#                              immutable per tree — changing it under a
+#                              pinned tree redeploys the same tree with the
+#                              new policy on the fresh chain.
 #   The contract's poll budgets honour a pre-set env; the defaults below are
 #   the contract's local values.
+#
+# LEZ v0.2.5 charges a fee on every public transaction and runs its faucet only
+# in the genesis block, so no account created after the chain starts can hold
+# native balance. The payer is therefore minted BEFORE the devnet and funded at
+# genesis, which is why target_up mints into the provisioning wallet first and
+# hands dev.sh the id.
 #
 # Readiness is JSON-RPC getLastBlockId >= 1, never a port probe: the listener
 # accepts connections before the chain produces its first block.
@@ -28,6 +53,7 @@
 
 _LOCAL_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 _LOCAL_DEVNET_PID=""
+_LOCAL_PAYER_WS=""
 
 # Chain head, or non-zero when the endpoint does not answer.
 _local_chain_head() {
@@ -59,15 +85,43 @@ _local_wait_chain() {
     return 1
 }
 
+# Mint the fee payer into the wallet provisioning will adopt, and echo its id.
+#
+# The profile's wallet is copied first and the payer added to it, so the pinned
+# account ids stay exactly as they were and the payer travels with them. A
+# wallet that already carries a payer keeps the one it has.
+_local_mint_payer() {
+    local lez="$1" ws="$2" profile pdir
+    mkdir -p "$ws"
+    profile="${E2E_LOCAL_PROFILE:-local-default}"
+    if [ "$profile" != "fresh" ]; then
+        pdir="$_LOCAL_HERE/profiles/$profile"
+        [ -f "$pdir/wallet.storage.json" ] && cp "$pdir/wallet.storage.json" "$ws/storage.json"
+    fi
+    HOME="$ws" LEE_WALLET_HOME_DIR="$ws" "$lez/lez-rln/target/release/mint_payer" 2>"$ws/mint.err" && return 0
+
+    # A wallet written before LEZ v0.2.5 has no authorization_secret_key and the
+    # new wallet refuses it outright, so a pinned profile does not survive the
+    # bump. Say so here rather than letting it surface later as a wallet that
+    # will not open.
+    if grep -q "authorization_secret_key" "$ws/mint.err" 2>/dev/null; then
+        die "profiles/$profile/wallet.storage.json predates LEZ v0.2.5 and cannot be opened.
+  Regenerate it: run a local scenario with E2E_LOCAL_PROFILE=fresh E2E_KEEP=1,
+  then copy the run's wallet-home/storage.json.seed over it."
+    fi
+    cat "$ws/mint.err" >&2
+    return 1
+}
+
 _local_start_devnet() {
-    local lez="$1" log="$E2E_RUN_DIR/devnet.log"
+    local lez="$1" fund="${2:-}" log="$E2E_RUN_DIR/devnet.log"
     [ -f "$lez/dev.sh" ] || die "no logos-lez-rln checkout at $lez (set LEZ_RLN_CHECKOUT)"
     command -v cargo >/dev/null || die "dev.sh needs cargo — install Rust (https://rustup.rs)"
     say "starting devnet: $lez/dev.sh (log: $log)"
     # Monitor mode puts the job in its own process group, so target_down can
     # signal cargo and the sequencer it spawns as one tree.
     set -m
-    (cd "$lez" && exec bash ./dev.sh) </dev/null >>"$log" 2>&1 &
+    (cd "$lez" && LEZ_RLN_GENESIS_FUND="$fund" exec bash ./dev.sh) </dev/null >>"$log" 2>&1 &
     _LOCAL_DEVNET_PID=$!
     set +m
     # Off the job table: the group id stays valid for target_down, and the
@@ -99,6 +153,7 @@ _local_require_build() {
     local lez="$1" missing=""
     [ -x "$lez/lez-rln/target/release/run_setup" ] || missing="$missing lez-rln/target/release/run_setup"
     [ -x "$lez/lez-rln/target/release/derive_accounts" ] || missing="$missing lez-rln/target/release/derive_accounts"
+    [ -x "$lez/lez-rln/target/release/mint_payer" ] || missing="$missing lez-rln/target/release/mint_payer"
     ls "$lez"/lez-rln/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/*.bin >/dev/null 2>&1 \
         || missing="$missing lez-rln/methods/guest/target/riscv32im-risc0-zkvm-elf/docker/*.bin"
     [ -z "$missing" ] && return 0
@@ -107,17 +162,43 @@ _local_require_build() {
   build it (order matters — the host build strips the deploy blobs):
     cd $lez/lez-rln
     cargo risczero build --manifest-path methods/guest/Cargo.toml
-    PYO3_PYTHON=\$(command -v python3) cargo build --release --bin run_setup --bin derive_accounts"
+    PYO3_PYTHON=\$(command -v python3) cargo build --release --bin run_setup --bin derive_accounts --bin mint_payer"
 }
 
 _local_provision() {
     local lez="$1" outroot="$2" log="$E2E_RUN_DIR/provision.log"
+    local profile pdir tree="" treedesc="<fresh>"
+    # Seeded non-empty: bash 3.2 + set -u errors on expanding an empty array,
+    # even in an append.
+    local -a flags=(--funding "${E2E_PROVISION_FUNDING:-faucet}")
     _local_require_build "$lez"
     mkdir -p "$outroot"
-    say "provisioning a fresh faucet deployment on $E2E_SEQUENCER (run_setup — several minutes; log: $log)"
+
+    profile="${E2E_LOCAL_PROFILE:-local-default}"
+    if [ "$profile" != "fresh" ]; then
+        pdir="$_LOCAL_HERE/profiles/$profile"
+        [ -d "$pdir" ] || die "no profile at profiles/$profile (E2E_LOCAL_PROFILE=fresh for a random tree)"
+        if [ -f "$pdir/tree.txt" ]; then
+            tree=$(tr -d ' \n\r' < "$pdir/tree.txt")
+            treedesc="${tree:0:8}…"
+            flags=("${flags[@]}" --tree "$tree")
+        fi
+        say "provision profile: $profile (tree $treedesc)"
+    fi
+    # The payer wallet already carries the profile's accounts (see
+    # _local_mint_payer), so adopt that rather than the profile file itself —
+    # otherwise provisioning would run with a wallet holding no payer key.
+    [ -f "$_LOCAL_PAYER_WS/storage.json" ] \
+        && flags=("${flags[@]}" --adopt-wallet "$_LOCAL_PAYER_WS/storage.json")
+    [ -n "${E2E_PAYER:-}" ] && flags=("${flags[@]}" --payer "$E2E_PAYER")
+    [ -n "${E2E_CLAIM_CAP:-}" ]  && flags=("${flags[@]}" --claim-cap "$E2E_CLAIM_CAP")
+    [ -n "${E2E_REGISTRAR:-}" ]  && flags=("${flags[@]}" --registrar "$E2E_REGISTRAR")
+    [ -n "${E2E_FREE_QUOTA:-}" ] && flags=("${flags[@]}" --quota "$E2E_FREE_QUOTA")
+
+    say "provisioning on $E2E_SEQUENCER (run_setup — several minutes; log: $log)"
     (cd "$lez" && bash tools/deployments/provision.sh \
         --name local-e2e --sequencer "$E2E_SEQUENCER" --outdir "$outroot" \
-        --funding faucet) >>"$log" 2>&1 || {
+        "${flags[@]}") >>"$log" 2>&1 || {
         [ -f "$log" ] && tail -40 "$log" >&2
         die "provision.sh failed — see $log"
     }
@@ -136,9 +217,19 @@ target_up() {
     E2E_SEQUENCER="${E2E_SEQUENCER:-http://127.0.0.1:3040/}"
 
     t0=$(date +%s)
+    # The payer must exist before the chain does — see the note at the top of
+    # this file. External mode does not control genesis, so it takes E2E_PAYER.
+    _LOCAL_PAYER_WS="$E2E_RUN_DIR/payer-wallet"
+    if [ "$devnet" = "host" ]; then
+        _local_require_build "$lez"
+        E2E_PAYER=$(_local_mint_payer "$lez" "$_LOCAL_PAYER_WS") \
+            || die "could not mint the fee payer"
+        say "fee payer: $E2E_PAYER (funded at genesis)"
+    fi
+
     case "$devnet" in
         host)
-            _local_start_devnet "$lez"
+            _local_start_devnet "$lez" "$E2E_PAYER"
             _local_wait_chain "$E2E_SEQUENCER" "${E2E_DEVNET_TIMEOUT_S:-900}" \
                 || die "devnet never produced a block within ${E2E_DEVNET_TIMEOUT_S:-900}s — see $E2E_RUN_DIR/devnet.log"
             ;;
@@ -186,9 +277,11 @@ target_up() {
     E2E_POLL_INTERVAL_S="${E2E_POLL_INTERVAL_S:-5}"
     E2E_EPOCH_SIZE_SEC="${E2E_EPOCH_SIZE_SEC:-60}"
     E2E_ROOT_WINDOW_TIMEOUT_S="${E2E_ROOT_WINDOW_TIMEOUT_S:-60}"
+    # E2E_PAYER too: a scenario runs as its own process, and the modules it
+    # loads cannot pay a fee from the freshly created holdings they sign with.
     export E2E_SEQUENCER E2E_DEPLOYMENT_DIR E2E_WALLET_HOME E2E_TREE_ID \
         E2E_CONFIG_ACCOUNT E2E_FUNDING E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
-        E2E_EPOCH_SIZE_SEC E2E_ROOT_WINDOW_TIMEOUT_S
+        E2E_EPOCH_SIZE_SEC E2E_ROOT_WINDOW_TIMEOUT_S E2E_PAYER
     say "deployment: tree ${E2E_TREE_ID:0:8}… config $E2E_CONFIG_ACCOUNT funding $E2E_FUNDING"
 }
 
@@ -204,4 +297,5 @@ target_down() {
     say "stopping devnet (pid $_LOCAL_DEVNET_PID)"
     _local_kill_devnet "$_LOCAL_DEVNET_PID"
     _LOCAL_DEVNET_PID=""
+_LOCAL_PAYER_WS=""
 }

@@ -1,6 +1,13 @@
 {
   description = "Logos RLN e2e — composition root for RLN-on-LEZ scenarios";
 
+  # delivery-module's external libs (liblogosdelivery, librln) come prebuilt
+  # from the logos cache; without it the delivery bundle builds from source.
+  nixConfig = {
+    extra-substituters = [ "https://cache.nix.logos.co/public" ];
+    extra-trusted-public-keys = [ "public:l4HrXgL4nw246+LBh2SOJyhz64BoGegOYLheT/iIAPU=" ];
+  };
+
   inputs = {
     nixpkgs.follows = "logos-core/nixpkgs";
 
@@ -20,10 +27,18 @@
     };
     rln-modules.url = "github:logos-co/logos-rln-modules/main";
 
+    # The delivery scenario's module under test. Same matrix rule: the lock
+    # records the revision the scenarios are known to compose.
+    delivery-module.url = "github:logos-co/logos-delivery-module";
+
     # logoscore is consumed as a flake: its default package is the daemon/CLI
     # every scenario drives. The module-stack e2e used to fetch it unpinned at
     # run time; locking it here makes it part of the matrix.
     logoscore-cli.url = "github:logos-co/logos-logoscore-cli";
+
+    # The in-repo consumer module (Nim mock of logos-delivery) the consumer-*
+    # scenarios drive. A path subflake: the working tree is the pin.
+    nim-rln-consumer.url = "path:./nim-rln-consumer";
   };
 
   outputs =
@@ -32,7 +47,9 @@
       nixpkgs,
       lez-rln,
       rln-modules,
+      delivery-module,
       logoscore-cli,
+      nim-rln-consumer,
       ...
     }:
     let
@@ -63,6 +80,12 @@
           lez-rln-module-lgx = rln-modules.packages.${system}.logos-lez-rln-module-lgx;
           rln-module-lgx = rln-modules.packages.${system}.logos-rln-module-lgx;
           wallet-lgx = rln-modules.packages.${system}.wallet-module;
+        }
+        // lib.optionalAttrs (delivery-module.packages ? ${system}) {
+          delivery-lgx = delivery-module.packages.${system}.lgx;
+        }
+        // lib.optionalAttrs (nim-rln-consumer.packages ? ${system}) {
+          consumer-lgx = nim-rln-consumer.packages.${system}.lgx;
         }
         // lib.optionalAttrs (logoscore-cli.packages ? ${system}) {
           logoscore = logoscore-cli.packages.${system}.default;
