@@ -77,11 +77,34 @@ Each `scenarios/<id>/scenario.env` declares: `NODES` (daemon count),
 targets), `RUNNER` (`bash`; `pytest`/`compose` arrive with the delivery and
 mix phases), optional `STATUS=quarantined`.
 
+## Scenario conventions
+
+`rln_identifier` scopes the **application**, not the member. It feeds the
+external nullifier the sender and every validator derive independently, so
+every node in a scenario must be configured with the *same* one — derive it
+once at the top of `run.sh` and interpolate that variable everywhere. A
+per-node identifier does not fail loudly: the proof verifies against the wrong
+external nullifier and the message is simply rejected
+(`validatorRes=Reject`), which is indistinguishable from a real RLN fault.
+`delivery-rln` additionally asserts the module echoes the configured value back
+in `rlnGetMembershipStateRequest`.
+
 ## Harness primitives
 
 Sourced from `harness/lib/`: `node_call <node> <module> <method> [args…]` is
 the topology seam — identical whether the node is a host process or a
 container. Event-driven modules (delivery) get `node_watch_start <node>
-<module>` (attach a `logoscore watch` stream before the triggering call) and
-`node_wait_event <node> <module> <event> [timeout] [substring]`. `node_logs`,
+<module>` (attach a `logoscore watch` stream before the triggering call),
+`node_wait_event <node> <module> <event> [timeout] [substring]` and
+`node_watch_stop <node> <module>`.
+
+A `node_wait_event` match **consumes** it: the read cursor for that (node,
+module, event) advances past the line returned, so waiting twice for the same
+event waits for the *next* occurrence rather than re-matching the first. An
+event that arrived before the wait started still matches — that race is
+deliberate — and cursors are per event name, so waiting for one event never
+skips another's backlog. Watchers are reaped by `node_watch_stop`,
+`daemon_stop` and `daemon_stop_all` (including under `E2E_KEEP=1`, which keeps
+daemons up but not watch processes); once reaped, a further `node_wait_event`
+on that watcher dies rather than polling a file nobody writes. `node_logs`,
 wallet/chain helpers, JSON plumbing: see each lib file's header.

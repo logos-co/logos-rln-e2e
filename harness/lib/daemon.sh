@@ -121,15 +121,28 @@ node_call() {
 
 # Usage: node_watch_start <node> <module>
 # Streams the module's events (logoscore watch) into
-# nodes/<node>/events-<module>.jsonl until daemon_stop. Start it BEFORE the
-# call whose event you'll wait on — the stream only carries events emitted
-# after attach.
+# nodes/<node>/events-<module>.<gen>.jsonl until node_watch_stop or
+# daemon_stop. Start it BEFORE the call whose event you'll wait on — the
+# stream only carries events emitted after attach.
+#
+# Each attach takes a fresh generation, so the stream file and the read
+# cursors node_wait_event keeps are new: a re-attach never inherits the
+# previous watcher's position or its backlog.
 node_watch_start() {
     local node="${1:?node_watch_start <node> <module>}" mod="${2:?node_watch_start <node> <module>}"
-    local cfg evt pid
+    local cfg evt pid gen live
     cfg=$(node_cfg_dir "$node")
     [ -n "$cfg" ] || die "node_watch_start: unknown node '$node'"
-    evt="$(dirname "$(node_log_path "$node")")/events-$mod.jsonl"
+    # A second watcher on one node:module would append to the same stream and
+    # double every line. daemon_stop clears the bookkeeping, so a re-attach
+    # after a restart is fine; this only catches a genuine double-start.
+    live=$(gv NODEEVT "${node}_${mod}")
+    [ -z "$live" ] || die "node_watch_start: $node/$mod is already watched (node_watch_stop first)"
+    gen=$(gv NODEEVTGEN "${node}_${mod}"); [ -n "$gen" ] || gen=0
+    gen=$(( gen + 1 ))
+    sv NODEEVTGEN "${node}_${mod}" "$gen"
+    evt="$(dirname "$(node_log_path "$node")")/events-$mod.$gen.jsonl"
+    : > "$evt"
     sv NODEEVT "${node}_${mod}" "$evt"
     ( exec env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" \
         "$LOGOSCORE" --json watch "$mod" >>"$evt" 2>&1 ) &
@@ -143,20 +156,36 @@ node_watch_start() {
 # Prints the first matching event line (compact JSON: {"event":...,"data":
 # {"arg0":...}}) or returns 1 on timeout. substring is a fixed-string filter
 # over the raw line (e.g. a requestId or topic).
+#
+# A match consumes it: the read cursor for this (node, module, event) advances
+# past the line returned, so a second wait for the same event waits for the
+# NEXT one instead of re-matching the first. Without that, an event from an
+# earlier phase silently satisfies a later wait and the test passes for the
+# wrong reason. Cursors are per event name, so waiting for one event never
+# skips another's backlog, and an event that arrived before the wait started
+# still matches — that race is deliberate.
 node_wait_event() {
-    local node="$1" mod="$2" ev="$3" timeout="${4:-30}" match="${5:-}" evt _t
+    local node="$1" mod="$2" ev="$3" timeout="${4:-30}" match="${5:-}" evt key pos out _t
     evt=$(gv NODEEVT "${node}_${mod}")
     [ -n "$evt" ] || die "node_wait_event: no watcher for $node/$mod (node_watch_start first)"
+    key="${node}_${mod}_$(gv NODEEVTGEN "${node}_${mod}")_$(printf '%s' "$ev" | tr -c '[:alnum:]' '_')"
     for _t in $(seq 1 "$timeout"); do
-        python3 - "$evt" "$ev" "$match" <<'EOF' && return 0
+        pos=$(gv NODEEVTPOS "$key"); [ -n "$pos" ] || pos=0
+        out=$(python3 - "$evt" "$ev" "$match" "$pos" <<'EOF'
 import json, sys
-path, ev, match = sys.argv[1], sys.argv[2], sys.argv[3]
+path, ev, match, pos = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 try:
-    lines = open(path)
+    f = open(path, "rb")
 except OSError:
     sys.exit(1)
-for line in lines:
-    line = line.strip()
+f.seek(pos)
+while True:
+    raw = f.readline()
+    # A line without its newline is one the watcher is still writing; leave the
+    # cursor where it is and re-read it on the next poll.
+    if not raw or not raw.endswith(b"\n"):
+        break
+    line = raw.decode("utf-8", "replace").strip()
     if not line.startswith("{"):
         continue
     try:
@@ -167,24 +196,46 @@ for line in lines:
         continue
     if match and match not in line:
         continue
+    print(f.tell())
     print(json.dumps(d, separators=(",", ":")))
     sys.exit(0)
 sys.exit(1)
 EOF
+        ) || out=""
+        if [ -n "$out" ]; then
+            sv NODEEVTPOS "$key" "$(printf '%s' "$out" | head -1)"
+            printf '%s' "$(printf '%s' "$out" | tail -n +2)"
+            return 0
+        fi
         sleep 1
     done
     return 1
 }
 
+# Usage: node_watch_stop <node> <module>
+# Stop one watcher and forget it, so a later node_wait_event on it dies
+# loudly instead of polling a file nobody writes.
+node_watch_stop() {
+    local node="${1:?node_watch_stop <node> <module>}" mod="${2:?node_watch_stop <node> <module>}"
+    _watchers_stop "$node" "$mod"
+}
+
+# Usage: _watchers_stop <node|''> [module|'']   ('' = every node / every module)
+# Kills the matching watchers and clears their bookkeeping. Clearing NODEEVT is
+# the point: it is what turns "waiting on a dead watcher" from a silent timeout
+# into an immediate, named failure.
 _watchers_stop() {
-    # Usage: _watchers_stop <node|''>  ('' = all)
-    local node="$1" w rest
+    local node="$1" mod="${2:-}" w rest wnode wmod
     rest=""
     for w in $E2E_WATCHERS; do
-        case "$w" in
-            ${node:-*}:*) kill "${w##*:}" 2>/dev/null || true ;;
-            *) rest="$rest $w" ;;
-        esac
+        wnode="${w%%:*}"; wmod="${w#*:}"; wmod="${wmod%:*}"
+        if { [ -z "$node" ] || [ "$wnode" = "$node" ]; } \
+            && { [ -z "$mod" ] || [ "$wmod" = "$mod" ]; }; then
+            kill "${w##*:}" 2>/dev/null || true
+            sv NODEEVT "${wnode}_${wmod}" ""
+        else
+            rest="$rest $w"
+        fi
     done
     E2E_WATCHERS="$rest"
 }
@@ -236,6 +287,11 @@ daemon_restart() {
 
 daemon_stop_all() {
     local node
+    # Watchers go regardless of E2E_KEEP: they are disowned, so nothing else
+    # ever reaps them (the pkill below matches the DAEMON command line,
+    # `logoscore -m <dir>`, never a watcher's `logoscore --json watch <mod>`).
+    # E2E_KEEP means inspectable daemons, not orphaned watch processes.
+    _watchers_stop ""
     if [ "${E2E_KEEP:-0}" = "1" ]; then
         say "E2E_KEEP=1: leaving daemons up, state in ${E2E_RUN_DIR:-<none>}"
         return
