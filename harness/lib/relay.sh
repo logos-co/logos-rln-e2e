@@ -40,7 +40,7 @@ relay_sequencer_url() {
 # Usage: relay_up <node>
 # Start the container, wait for its daemon, and adopt it as <node>.
 relay_up() {
-    local node="${1:?relay_up <node>}" seq key _t
+    local node="${1:?relay_up <node>}" seq home _t
     docker image inspect "$E2E_RELAY_IMAGE" >/dev/null 2>&1 \
         || die "relay: no image $E2E_RELAY_IMAGE — build it: bash tools/build-e2e-image.sh"
     docker rm -f "$E2E_RELAY_NAME" >/dev/null 2>&1 || true
@@ -50,18 +50,50 @@ relay_up() {
     local -a env_args=()
     if [ "$E2E_RELAY_RLN" = 1 ]; then
         seq=$(relay_sequencer_url)
-        # The container gets a funded KEY, not a wallet: with an empty
-        # LEE_WALLET_HOME_DIR the module writes its own config (gas limit
-        # included) and imports this key as the fee payer. Handing it a
-        # storage.json would make a second writer of a module-owned file.
-        key=$(wallet_payer_key "${E2E_WALLET_HOME:?relay: E2E_WALLET_HOME unset}/storage.json.seed" \
-                "${E2E_PAYER:?relay: E2E_PAYER unset (the local target mints one)}") \
-            || die "relay: no secret key for payer $E2E_PAYER — it cannot pay a fee, and that surfaces much later as 'Incorrect fee'"
+        # The relay gets its OWN COPY of the wallet home — the same thing the
+        # harness does for every node past the first, so it is one writer per
+        # storage.json rather than a special case.
+        #
+        # Handing it only LEZ_RLN_PAYER_KEY does NOT work, though the import
+        # reports success: an account's identity is not recoverable from its
+        # `sk` alone (the seed carries `ssk` too, and the FFI import takes one
+        # key), so the wallet ends up holding a DIFFERENT account than
+        # LEZ_RLN_PAYER names and the sequencer answers "Fee payer's signing
+        # key is not held by this wallet" at the first charged transaction.
+        # Deleting storage.json makes the module reseed from storage.json.seed,
+        # which carries the payer whole.
+        home="$E2E_RUN_DIR/wallet-$node"
+        rm -rf "$home"
+        cp -R "${E2E_WALLET_HOME:?relay: E2E_WALLET_HOME unset}" "$home" \
+            || die "relay: cannot copy the wallet home to $home"
+        # storage.json is COPIED, not dropped. Deleting it does not make the
+        # module reseed from storage.json.seed — that was the old wallet_open's
+        # doing, and the module simply creates a fresh wallet instead, which
+        # holds no payer and fails at the first charged transaction with
+        # "Fee payer's signing key is not held by this wallet".
+        # The copy carries the payer whole, and the relay is its only writer.
+        # The copied config names the sequencer the HOST reaches (127.0.0.1),
+        # and an existing wallet_config.json is authoritative — the module will
+        # not rewrite it from LEZ_RLN_SEQUENCER. Left alone the wallet dials its
+        # own loopback and every account read fails with "client error
+        # (Connect)" while wallet_status still says ready. Rewrite it here; the
+        # gas limit staged alongside it is what a registration needs, so the
+        # copy is worth keeping over a self-provisioned config.
+        python3 - "$home/wallet_config.json" "$seq" <<'EOF' || die "relay: cannot point the wallet config at $seq"
+import json, sys
+path, seq = sys.argv[1], sys.argv[2]
+cfg = json.load(open(path))
+cfg["sequencer_addr"] = seq
+for entry in cfg.get("sequencers", []):
+    entry["sequencer_addr"] = seq
+json.dump(cfg, open(path, "w"), indent=2)
+EOF
         env_args+=(-e "LEZ_RLN_SEQUENCER=$seq"
                    -e "LEZ_RLN_TREE_ID_HEX=${E2E_TREE_ID:?relay: E2E_TREE_ID unset}"
-                   -e "LEZ_RLN_PAYER=$E2E_PAYER"
-                   -e "LEZ_RLN_PAYER_KEY=$key")
-        say "relay: sequencer $seq, payer $E2E_PAYER"
+                   -e "LEZ_RLN_PAYER=${E2E_PAYER:?relay: E2E_PAYER unset (the local target mints one)}"
+                   -e "LEE_WALLET_HOME_DIR=$home"
+                   -e "NSSA_WALLET_HOME_DIR=$home")
+        say "relay: sequencer $seq, payer $E2E_PAYER, wallet home $home"
     else
         say "relay: RLN off (E2E_RELAY_RLN=0) — forwarding without validating"
     fi

@@ -10,11 +10,10 @@
 # What this adds over delivery-rln, which wires the two peers directly:
 #   1. a real network hop — the relay is another process on another host stack,
 #      reached over a published port, not a second thread on loopback.
-#   2. the bring-up a deployed relay actually does: the container provisions
-#      its own wallet from LEZ_RLN_PAYER_KEY (nothing mounts a storage.json
-#      into it, which would make a second writer of a module-owned file) and
-#      reaches the chain by name, since 127.0.0.1 inside a container is the
-#      container.
+#   2. the bring-up a deployed relay actually does: its own copy of the wallet
+#      home (one writer per storage.json, the way every node past the first
+#      gets one) with the sequencer rewritten, since 127.0.0.1 inside a
+#      container is the container.
 #   3. with E2E_RELAY_RLN=1, a relay that VALIDATES every proof it forwards —
 #      a third membership on the same registry, under the same rln_identifier.
 #
@@ -277,6 +276,6 @@ echo "e2e: PASS — delivery-relay-rln (target $E2E_TARGET)"
 echo "e2e:   topology  n1 and n2 peered ONLY with the container relay; neither holds the other's address"
 echo "e2e:   relay     $RELAY_MADDR (rln=${E2E_RELAY_RLN:-1}$([ "${E2E_RELAY_RLN:-1}" = 1 ] && echo ", own membership, validates what it forwards"))"
 echo "e2e:   bring-up  configureRln + a conf with NO rln-* key — upstream delivery, no fork"
-echo "e2e:   wallet    the relay provisioned its own from LEZ_RLN_PAYER_KEY; nothing mounted a storage.json into it"
+echo "e2e:   wallet    the relay runs its OWN COPY of the wallet home — one writer per storage.json, the payer carried whole"
 echo "e2e:   message   n1 -> relay -> n2 on $TOPIC (attempt $ATTEMPT/$SEND_ATTEMPTS)"
 echo "e2e:   quota     $QUOTA_BEFORE -> $QUOTA_AFTER"

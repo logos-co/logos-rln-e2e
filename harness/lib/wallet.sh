@@ -56,37 +56,6 @@ wallet_sync() { wallet_ready "$1"; }
 # It asks the registry module, not lez_core: since 3.0.0 the wallet that signs
 # is the registry module's own, and an account derived anywhere else is one it
 # holds no key for.
-# Usage: wallet_payer_key <storage.json> <account-id>
-# Print the 32-byte hex secret key the wallet holds for <account-id>, or fail.
-#
-# This READS a storage.json, it never opens one — the file it is pointed at is
-# the static seed the local target minted the fee payer into, which no module
-# has a handle on. It exists so a container can be handed a funded key
-# (LEZ_RLN_PAYER_KEY) instead of a wallet: liblogos_lez_rln_module provisions
-# its own wallet when LEE_WALLET_HOME_DIR is empty and imports that key at
-# bring-up, so nothing outside the module ever writes its storage.
-wallet_payer_key() {
-    local storage="${1:?wallet_payer_key <storage.json> <account-id>}" acct="${2:?account-id}"
-    [ -f "$storage" ] || die "wallet_payer_key: no wallet storage at $storage"
-    python3 - "$storage" "$acct" <<'EOF'
-import json, sys
-storage, want = sys.argv[1], sys.argv[2]
-try:
-    accounts = json.load(open(storage))["key_chain"]["accounts"]
-except Exception as e:
-    sys.exit("cannot read key chain from %s: %s" % (storage, e))
-for entry in accounts:
-    pub = entry.get("Public") or {}
-    if pub.get("account_id") == want:
-        sk = (pub.get("data") or {}).get("sk")
-        if sk:
-            print(sk)
-            sys.exit(0)
-        sys.exit("account %s carries no secret key" % want)
-sys.exit("no account %s in %s" % (want, storage))
-EOF
-}
-
 # Usage: wallet_fresh_holding <node>
 wallet_fresh_holding() {
     local node="$1" acc bal_json _d
