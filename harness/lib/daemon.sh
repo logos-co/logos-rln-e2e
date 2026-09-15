@@ -157,6 +157,10 @@ node_watch_start() {
 # {"arg0":...}}) or returns 1 on timeout. substring is a fixed-string filter
 # over the raw line (e.g. a requestId or topic).
 #
+# <event> is matched as an ANCHORED regex, so a plain name still matches only
+# itself while a caller facing two spellings of one event can pass an
+# alternation instead of waiting twice.
+#
 # A match consumes it: the read cursor for this (node, module, event) advances
 # past the line returned, so a second wait for the same event waits for the
 # NEXT one instead of re-matching the first. Without that, an event from an
@@ -172,7 +176,7 @@ node_wait_event() {
     for _t in $(seq 1 "$timeout"); do
         pos=$(gv NODEEVTPOS "$key"); [ -n "$pos" ] || pos=0
         out=$(python3 - "$evt" "$ev" "$match" "$pos" <<'EOF'
-import json, sys
+import json, re, sys
 path, ev, match, pos = sys.argv[1], sys.argv[2], sys.argv[3], int(sys.argv[4])
 try:
     f = open(path, "rb")
@@ -192,7 +196,7 @@ while True:
         d = json.loads(line)
     except Exception:
         continue
-    if d.get("event") != ev:
+    if not re.fullmatch(ev, d.get("event") or ""):
         continue
     if match and match not in line:
         continue

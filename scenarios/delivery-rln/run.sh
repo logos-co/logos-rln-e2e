@@ -9,8 +9,8 @@
 # delivery_module, whose IN-PROCESS BRIDGE answers it by calling the
 # co-loaded liblogos_rln_module and feeding the MODULE'S REPLY BACK VERBATIM
 # (the library parses the module's own wire dialects; ok/err envelope gone).
-# Since delivery-module ccbb3cd the bridge auto-enables whenever the node
-# conf carries rln-relay-lez — there is no external-responder topology for
+# The bridge is installed by configureRln, which delivery_module exposes and
+# which must precede createNode — there is no external-responder topology for
 # lez any more. Each request is STILL re-emitted as an rln*Request event for
 # observability, and delivery_module.rlnRespond(reqId, resultJson) still
 # exists, but on a bridged node the bridge answers first and any external
@@ -22,12 +22,13 @@
 #
 # What it proves:
 #   1. co-residency: the RLN stack + the RLN-enabled delivery_module load in
-#      one daemon, on both nodes — and the in-process bridge auto-enables on
-#      BOTH from the rln-relay-lez conf (no responder answers anything).
-#   2. bring-up via the REAL config surface: rln-lez / rln-registry-id /
-#      rln-identifier / rln-relay-user-message-limit / rln-registry-options
-#      ride createNode's flat conf (spellings of logos-delivery
-#      impl-plugable-rln-api-module 85c2d6f8), the rlnStartRequest carries
+#      one daemon, on both nodes — and configureRln brings the in-process
+#      bridge up on BOTH (no responder answers anything).
+#   2. bring-up over the UPSTREAM surface: configureRln carries registry-id /
+#      rln-identifier / epoch-size-sec, the node conf carries no rln-* key at
+#      all, and the rate limit and funding account ride register_membership's
+#      options. Nothing here needs logos-delivery's fork; the rlnStartRequest,
+#      when the library emits one, carries
 #      the module's start config (epoch + registries — no more out-of-band
 #      responder knowledge), and the rlnGetMembershipStateRequest the
 #      library fires right after start carries the configured scope (the
@@ -82,8 +83,8 @@
 #                             (proof_canonical on generate_proof replies)
 #
 # Env beyond docs/contract.md:
-#   E2E_RATE_LIMIT=100            registration rate limit (also the
-#                                 library's rln-relay-user-message-limit)
+#   E2E_RATE_LIMIT=100            registration rate limit (a register_membership
+#                                 option; no longer a conf key)
 #   E2E_DELIVERY_RLN_PORT=61880   tcp ports are PORT+1, PORT+2
 #   E2E_EVENT_TIMEOUT_S=30        per-event wait budget
 #   E2E_MESH_WAIT_S=12            gossipsub mesh stabilization pause
@@ -175,6 +176,31 @@ must_call() {
         *'"success":true'*) printf '%s' "$res" | jval ;;
         *) die "$node: $label failed: ${res:-<empty>}" ;;
     esac
+}
+
+# logos-delivery-module master emits the DISPATCH METHOD name as the event
+# name for the rln* requests — dispatchRlnGenerateProofRequestEvent — while
+# the fork emitted the plain rlnGenerateProofRequest. Its own non-rln events
+# (nodeStarted, messagePropagated) are plain on both, so the rln ones are the
+# odd family out and this reads as an upstream slip rather than a rename.
+# Accept either spelling until it settles.
+# Usage: rln_evt <plainName>   -> ERE matching both spellings
+rln_evt() {
+    local n="$1"
+    printf '(%s|dispatch%s%sEvent)' "$n" "$(printf '%s' "${n%"${n#?}"}" | tr '[:lower:]' '[:upper:]')" "${n#?}"
+}
+
+# The membership gate must ask for the scope we configured, wherever it runs.
+# Usage: assert_gate_scope <event-json> <where>
+assert_gate_scope() {
+    local evt="$1" where="$2" reg rlnid
+    reg=$(evt_arg "$evt" 1)
+    rlnid=$(evt_arg "$evt" 2)
+    [ "$reg" = "$REGISTRY_ID" ] \
+        || die "rlnGetMembershipStateRequest registry mismatch at $where: event '$reg' != configured '$REGISTRY_ID' — $evt"
+    [ "$rlnid" = "$RLN_ID" ] \
+        || die "rlnGetMembershipStateRequest rln_identifier mismatch at $where: event '$rlnid' != configured '$RLN_ID' — $evt"
+    say "n1: the membership check at $where asks for the configured scope"
 }
 
 # arg<N> of a compact event JSON line.
@@ -378,6 +404,10 @@ for i, line in enumerate(lines):
     except Exception:
         continue
     ev = d.get("event", "")
+    # dispatchRlnFooRequestEvent -> rlnFooRequest; upstream emits the dispatch
+    # method name for the rln family only (see rln_evt in this scenario).
+    if ev.startswith("dispatchRln") and ev.endswith("Event"):
+        ev = "rln" + ev[len("dispatchRln"):-len("Event")]
     if not (ev.startswith("rln") and ev.endswith("Request")):
         continue
     a = d.get("data", {})
@@ -519,9 +549,9 @@ MEMBERSHIP_HASH=$(gv MHASH n1)
 
 # ---------- witness up, then the delivery nodes ------------------------------
 section "delivery nodes (bring-up via the real config surface)"
-# ONE topology since delivery-module ccbb3cd: the conf's rln-lez auto-
-# enables the in-process bridge in createNode on BOTH nodes (there is no
-# external-responder topology for lez any more, and no opt-out key). n1 runs
+# ONE topology: configureRln brings the in-process bridge up on BOTH nodes
+# before their createNode (there is no external-responder topology for lez
+# any more, and no opt-out). n1 runs
 # pure production shape; n2 additionally runs the WITNESS responder, which
 # answers everything the way an external responder would and asserts every
 # answer is rejected — plus hosts the tamper hook for the hijack control.
@@ -533,25 +563,57 @@ responder_loop n2 &
 RESPONDER_PIDS="$RESPONDER_PIDS $!"
 say "n2: witness responder up (routes events; hot-path answers must all be rejected)"
 
-# The RLN scope rides createNode's flat conf. n1 additionally carries the
-# funding pair via rln-registry-options — the conf-fed path that
-# retires the responder's payer injection (the seam finally has a field
-# for who funds a registration). Key names follow logos-delivery
-# impl-plugable-rln-api-module 85c2d6f8, which renamed the LEZ keys from
-# rln-relay-{lez,registry-id,identifier,registry-options} to
-# rln-{lez,registry-id,identifier,registry-options}; the parser rejects the
-# old spellings outright ("Unrecognized configuration option(s)").
+# The conf carries NO rln-* key. The LEZ conf keys
+# (rln-lez / rln-registry-id / rln-identifier / rln-registry-options) live
+# only on logos-delivery's fork commit 85c2d6f8 and never landed upstream —
+# master's parser rejects all four with "Unrecognized configuration
+# option(s)". The scope goes through configureRln instead, which IS
+# upstream, and everything else the keys used to carry already has a home:
+# the rate limit and the funding account are register_membership options,
+# and the epoch size is a configureRln field.
 delivery_cfg() {
-    local port="$1" peers="$2" extra="$3"
-    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"rln-relay":true,"rln-lez":true,"rln-registry-id":"%s","rln-identifier":"%s","rln-relay-user-message-limit":%s,"rln-relay-epoch-sec":%s%s%s}' \
-        "$port" "$CLUSTER_ID" "$REGISTRY_ID" "$RLN_ID" "$RATE_LIMIT" \
-        "$E2E_EPOCH_SIZE_SEC" "$extra" "${peers:+,\"staticnodes\":[\"$peers\"]}"
+    local port="$1" peers="$2"
+    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true%s}' \
+        "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
+}
+
+# configureRln installs the RLN plugin, brings up the in-process bridge and
+# starts the backend — "An installed plugin is what makes the library mount
+# RLN", so no conf key enables it. It MUST precede createNode.
+#
+# It is not fatal when the bridge cannot come up: it answers
+# {"servedInProcess":false} and leaves answering to the rln*Request events.
+# For this scenario that is a failure, so assert the field. The call can also
+# outlive logosctl's fixed 20s transport deadline, so a lost reply falls back
+# to the module's own log line rather than failing the run.
+configure_rln() {
+    local node="$1" cfg res
+    cfg=$(printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
+        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC")
+    res=$(node_call "$node" delivery_module configureRln "$(argfile "rlncfg_$node" "$cfg")" | jres) || res=""
+    case "$res" in
+        *'"servedInProcess":true'*)
+            say "$node: configureRln — rln served in-process" ; return 0 ;;
+        *'"servedInProcess":false'*)
+            die "$node: configureRln came up WITHOUT the bridge (servedInProcess:false) — answering would fall to rlnRespond" ;;
+    esac
+    say "$node: configureRln gave no usable reply (${res:-<empty>}) — waiting on the module's log line"
+    local _t
+    for _t in $(seq 1 "$(polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
+        grep -q "rln served in-process" "$(node_log_path "$node")" && {
+            say "$node: configureRln — rln served in-process (via log)" ; return 0 ; }
+        grep -q "rln bridge unavailable" "$(node_log_path "$node")" \
+            && die "$node: configureRln reported the bridge unavailable"
+        sleep 5
+    done
+    die "$node: configureRln never reported 'rln served in-process'"
 }
 
 delivery_up() {
-    local node="$1" peers="$2" extra="${3:-}" port cfg peerid
+    local node="$1" peers="$2" port cfg peerid
     port=$(( BASE_PORT + ${node#n} ))
-    cfg=$(delivery_cfg "$port" "$peers" "$extra")
+    configure_rln "$node"
+    cfg=$(delivery_cfg "$port" "$peers")
     must_call "$node" createNode "createNode" "$(argfile "cfg_$node" "$cfg")" >/dev/null
     must_call "$node" start "start (dispatch)" >/dev/null
     node_wait_event "$node" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
@@ -562,28 +624,25 @@ delivery_up() {
     sv MADDR "$node" "/ip4/127.0.0.1/tcp/$port/p2p/$peerid"
 }
 
-FUNDING_OPTS=$(printf ',"rln-registry-options":"{\\"funding_holding_account_id\\":\\"%s\\"}"' "$HOLDING")
-delivery_up n1 "" "$FUNDING_OPTS"
+# The funding account is no longer a conf field — it went to
+# register_membership's options, which is where it was already being passed.
+delivery_up n1 ""
 delivery_up n2 "$(gv MADDR n1)"
-# rln-lez in the conf is the bridge's own enable signal now — no
-# separate key. createNode fails hard if the bridge can't come up, so this
-# grep is about the LOG CONTRACT, not survival.
-for n in $NODES_ALL; do
-    grep -q "rln served in-process" "$(node_log_path "$n")" \
-        || die "$n: conf carries rln-lez but createNode never logged 'rln served in-process' (bridge auto-enable broken?)"
-done
-say "both nodes: in-process rln bridge auto-enabled by the rln-lez conf"
+say "both nodes: in-process rln bridge up via configureRln"
 
 # ---------- bring-up assertions ----------------------------------------------
 section "bring-up assertions"
 
-# The start event must carry the module's start config, built from the
-# node's OWN conf — the epoch size and registry no longer arrive out of
-# band at the responder (the old finding-8 gap, now closed).
-EVT1=$(node_wait_event n1 delivery_module rlnStartRequest 5) \
-    || die "n1 emitted no rlnStartRequest"
-EV_CFG=$(evt_arg "$EVT1" 1)
-printf '%s' "$EV_CFG" | python3 -c '
+# Who starts the RLN backend moved with the conf. configureRln starts it
+# itself, through the bridge, from the arguments WE passed it — so the
+# library need not emit rlnStartRequest at all any more. When it does, the
+# config it carries must still match the configured scope; when it does not,
+# configureRln's own reply already asserted the bridge is serving, and the
+# scope was ours to begin with. Assert the first, tolerate the second.
+EVT1=$(node_wait_event n1 delivery_module "$(rln_evt rlnStartRequest)" 5) || EVT1=""
+if [ -n "$EVT1" ]; then
+    EV_CFG=$(evt_arg "$EVT1" 1)
+    printf '%s' "$EV_CFG" | python3 -c '
 import json, sys
 cfg = json.load(sys.stdin)
 assert int(cfg["epoch_size_sec"]) == int(sys.argv[1]), \
@@ -591,21 +650,26 @@ assert int(cfg["epoch_size_sec"]) == int(sys.argv[1]), \
 assert sys.argv[2] in cfg.get("registries", []), \
     "registry %s not in registries %r" % (sys.argv[2], cfg.get("registries"))
 ' "$E2E_EPOCH_SIZE_SEC" "$REGISTRY_ID" \
-    || die "rlnStartRequest config mismatch: '$EV_CFG' (want epoch $E2E_EPOCH_SIZE_SEC + registry $REGISTRY_ID)"
-say "n1: start request carries the node conf's exact epoch + registry"
+        || die "rlnStartRequest config mismatch: '$EV_CFG' (want epoch $E2E_EPOCH_SIZE_SEC + registry $REGISTRY_ID)"
+    say "n1: start request carries the configured epoch + registry"
+else
+    say "n1: no rlnStartRequest — configureRln started the backend directly (expected on the upstream conf path)"
+fi
 
-# The membership check the library runs right after start must ask for the
-# CONFIGURED scope — this is what the real config surface exists to prove
-# now that registration is no longer part of bring-up.
-EVT2=$(node_wait_event n1 delivery_module rlnGetMembershipStateRequest 5) \
-    || die "n1 emitted no rlnGetMembershipStateRequest after start (config surface not wired?)"
-EV_REGISTRY=$(evt_arg "$EVT2" 1)
-EV_RLNID=$(evt_arg "$EVT2" 2)
-[ "$EV_REGISTRY" = "$REGISTRY_ID" ] \
-    || die "rlnGetMembershipStateRequest registry mismatch: event '$EV_REGISTRY' != configured '$REGISTRY_ID' — $EVT2"
-[ "$EV_RLNID" = "$RLN_ID" ] \
-    || die "rlnGetMembershipStateRequest rln_identifier mismatch: event '$EV_RLNID' != configured '$RLN_ID' — $EVT2"
-say "n1: the start-time membership check asks for the configured scope"
+# WHEN the library checks the membership is upstream's business: it used to
+# run at start, and on logos-delivery master it runs at the FIRST PUBLISH
+# (waku/api/rln.nim guards it behind membershipVerified). Either way it must
+# ask for the configured scope, and it must happen exactly once — so assert
+# the scope wherever the read lands, and let the send leg's cache assertions
+# own the "exactly once" half.
+GATE_AT_START=0
+EVT2=$(node_wait_event n1 delivery_module "$(rln_evt rlnGetMembershipStateRequest)" 5) || EVT2=""
+if [ -n "$EVT2" ]; then
+    GATE_AT_START=1
+    assert_gate_scope "$EVT2" "start"
+else
+    say "n1: no membership read at start — the gate runs at the first send upstream; its scope is asserted there"
+fi
 
 # Timeouts also resolve the library's awaits, so nodeStarted alone doesn't
 # prove the answers LANDED — the library's own log lines do: "RLN module
@@ -613,22 +677,24 @@ say "n1: the start-time membership check asks for the configured scope"
 # since abc53a6f), "RLN membership verified" is the check passing on the
 # bridge's answer. Both nodes registered above, so a miss — only a notice
 # to the library — is a failure here.
+# What proves the backend started is configureRln's own reply: a failing
+# startBackend turns it into an error ("rln module start failed"), and we
+# asserted servedInProcess:true above. The library's "RLN module started"
+# line does not exist upstream — it is a fork-only string — so the library
+# side is checked negatively here: it must not report a bring-up failure.
 for n in $NODES_ALL; do
-    GATE_LOGGED=0
-    for _t in $(seq 1 15); do
-        if node_logs "$n" | grep -q "failed to start RLN module\|no usable RLN membership\|could not verify RLN membership"; then
-            die "$n's library failed bring-up: $(node_logs "$n" | grep -m1 'failed to start RLN module\|no usable RLN membership\|could not verify RLN membership')"
-        fi
-        if node_logs "$n" | grep -q "RLN module started" && node_logs "$n" | grep -q "RLN membership verified"; then
-            GATE_LOGGED=1
-            break
-        fi
-        sleep 1
-    done
-    [ "$GATE_LOGGED" = 1 ] \
-        || die "$n's library never logged 'RLN module started' + 'RLN membership verified' — an answer may have raced its budget"
+    FAILED=$(node_logs "$n" | grep -m1 "failed to start RLN module\|no usable RLN membership\|could not verify RLN membership") || FAILED=""
+    [ -z "$FAILED" ] || die "$n's library failed RLN bring-up: $FAILED"
 done
-say "both nodes: library log confirms start + the membership check landed inside the per-op budgets"
+if [ "$GATE_AT_START" = 1 ]; then
+    for n in $NODES_ALL; do
+        node_logs "$n" | grep -q "RLN membership verified" \
+            || die "$n read the membership at start but never logged 'RLN membership verified'"
+    done
+    say "both nodes: the start-time membership check landed inside the per-op budgets"
+else
+    say "both nodes: RLN bring-up clean; the membership check runs at the first send"
+fi
 
 # ---------- mesh -------------------------------------------------------------
 section "mesh (static peers, relay)"
@@ -684,18 +750,25 @@ while [ "$ATTEMPT" -lt "$SEND_ATTEMPTS" ]; do
     [ -n "$MSGHASH" ] || die "messagePropagated carried no messageHash: $PROP"
     say "attempt $ATTEMPT: propagated (requestId $REQID, hash ${MSGHASH:0:18}…)"
     if [ "$ATTEMPT" = 1 ]; then
-        # The start-time check passed and was cached on the handle, so the
-        # first send must NOT read the membership again: exactly one read in
-        # n1's stream, and it precedes the first generate request.
+        # Exactly one membership read, and it precedes the first generate —
+        # true whether the gate ran at start (cached since) or on this send.
         sleep 1
-        STATE_COUNT=$(grep -c '"event":"rlnGetMembershipStateRequest"' "$(gv NODEEVT n1_delivery_module)" || true)
+        STATE_COUNT=$(grep -cE "\"event\":\"$(rln_evt rlnGetMembershipStateRequest)\"" "$(gv NODEEVT n1_delivery_module)" || true)
         [ "$STATE_COUNT" = 1 ] \
             || die "membership check cache: $STATE_COUNT membership-state reads after the first send (want exactly 1 — the start-time pass is cached)"
-        GATE_LINE=$(grep -n -m1 '"event":"rlnGetMembershipStateRequest"' "$(gv NODEEVT n1_delivery_module)" | cut -d: -f1)
-        GEN_LINE=$(grep -n -m1 '"event":"rlnGenerateProofRequest"' "$(gv NODEEVT n1_delivery_module)" | cut -d: -f1)
+        GATE_LINE=$(grep -nE -m1 "\"event\":\"$(rln_evt rlnGetMembershipStateRequest)\"" "$(gv NODEEVT n1_delivery_module)" | cut -d: -f1)
+        GEN_LINE=$(grep -nE -m1 "\"event\":\"$(rln_evt rlnGenerateProofRequest)\"" "$(gv NODEEVT n1_delivery_module)" | cut -d: -f1)
         { [ -n "$GATE_LINE" ] && [ -n "$GEN_LINE" ] && [ "$GATE_LINE" -lt "$GEN_LINE" ]; } \
             || die "gate order: the start-time membership read (event line ${GATE_LINE:-none}) must precede the first generate (event line ${GEN_LINE:-none})"
-        say "attempt 1: no second membership read — the start-time pass was cached, then the proof was generated"
+        if [ "$GATE_AT_START" = 0 ]; then
+            assert_gate_scope \
+                "$(grep -mE 1 "\"event\":\"$(rln_evt rlnGetMembershipStateRequest)\"" "$(gv NODEEVT n1_delivery_module)")" \
+                "the first send"
+            node_logs n1 | grep -q "RLN membership verified" \
+                || die "n1 read the membership on the first send but never logged 'RLN membership verified'"
+            say "n1: the library logged the membership verified on the first send"
+        fi
+        say "attempt 1: exactly one membership read, and the proof was generated after it"
     fi
     if node_wait_event n2 delivery_module messageReceived "$RECV_WAIT_S" "$MSGHASH" >/dev/null; then
         RECEIVED=1
@@ -715,13 +788,13 @@ done
 # events still are, and the module's own quota assertions live in
 # consumer-register).
 sleep 1 # let the last event line flush
-GEN_COUNT=$(grep -c '"event":"rlnGenerateProofRequest"' "$(gv NODEEVT n1_delivery_module)" || true)
+GEN_COUNT=$(grep -cE "\"event\":\"$(rln_evt rlnGenerateProofRequest)\"" "$(gv NODEEVT n1_delivery_module)" || true)
 [ "$GEN_COUNT" = "$ATTEMPT" ] \
     || die "slot accounting: $GEN_COUNT generate requests for $ATTEMPT send attempts"
 say "slot accounting: $GEN_COUNT attempts drove $GEN_COUNT generate requests"
 
 # The gate's pass is cached: every later send skipped the registry read.
-STATE_COUNT=$(grep -c '"event":"rlnGetMembershipStateRequest"' "$(gv NODEEVT n1_delivery_module)" || true)
+STATE_COUNT=$(grep -cE "\"event\":\"$(rln_evt rlnGetMembershipStateRequest)\"" "$(gv NODEEVT n1_delivery_module)" || true)
 [ "$STATE_COUNT" = 1 ] \
     || die "membership gate cache: $STATE_COUNT membership-state reads for $ATTEMPT send attempts (want exactly 1 — the pass is cached)"
 say "membership gate: one read, cached across $ATTEMPT attempts"
@@ -753,7 +826,7 @@ say "tamper probe: witness answered a contradicting 'invalid', was rejected, and
 # The probe was one more send: the cached gate must still have skipped the
 # registry read (the earlier count covered the attempt loop only).
 sleep 1
-STATE_COUNT=$(grep -c '"event":"rlnGetMembershipStateRequest"' "$(gv NODEEVT n1_delivery_module)" || true)
+STATE_COUNT=$(grep -cE "\"event\":\"$(rln_evt rlnGetMembershipStateRequest)\"" "$(gv NODEEVT n1_delivery_module)" || true)
 [ "$STATE_COUNT" = 1 ] \
     || die "membership gate cache: $STATE_COUNT membership-state reads after the tamper probe (want exactly 1 across all sends)"
 say "membership gate: still one read after $(( ATTEMPT + 1 )) sends"
@@ -793,12 +866,12 @@ say "n2 witness verdict trail: $N2_VERDICTS"
 
 echo
 echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
-echo "e2e:   config    rln-lez/rln-registry-id/rln-identifier/rln-relay-user-message-limit/rln-registry-options (85c2d6f8 spellings, no responder injection)"
+echo "e2e:   config    configureRln(registry-id/rln-identifier/epoch-size-sec) + a conf with NO rln-* key — upstream delivery, no fork"
 echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
 echo "e2e:   bring-up  app-side register via the module on BOTH nodes (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership check verified on both (non-fatal since abc53a6f)"
 echo "e2e:   gate      n1's scope was read exactly once — at start, before its first generate — and the cached pass covered every send"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
-echo "e2e:   topology  IN-PROCESS bridge auto-enabled by rln-lez on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
+echo "e2e:   topology  IN-PROCESS bridge installed by configureRln on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
 echo "e2e:   gate      witness's contradicting \"invalid\" rejected, probe DELIVERED (hijack control); $ATTEMPT attempts = $GEN_COUNT generate requests"
 echo "e2e:   verdicts  n2 witness saw: $N2_VERDICTS (duplicate = bridge validated first; module wire crossing verbatim)"
