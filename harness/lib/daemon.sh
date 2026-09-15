@@ -16,6 +16,11 @@
 #   E2E_DIE_NODE     node whose log tail die prints
 #   E2E_NODES        node ids started so far (daemon_stop_all's list)
 #   E2E_WATCHERS     node:module:pid triples of running event watchers
+#
+# A node is a host process by default. daemon_register_container makes one a
+# CONTAINER instead, and node_call/node_logs/daemon_load_modules/daemon_stop
+# dispatch on that — which is the seam docs/contract.md already promises:
+# "identical whether the node is a host process or a container".
 
 . "$(dirname "${BASH_SOURCE[0]}")/json.sh"
 
@@ -24,14 +29,31 @@ E2E_WATCHERS="${E2E_WATCHERS:-}"
 
 node_cfg_dir() { gv NODECFG "$1"; }
 node_log_path() { gv NODELOG "$1"; }
+node_kind()      { local k; k=$(gv NODEKIND "$1"); printf '%s' "${k:-host}"; }
+node_container() { gv NODECONT "$1"; }
+
+# Usage: daemon_register_container <node> <container> <config-dir>
+# Adopt an already-running container as <node>. The caller owns its lifetime
+# up to daemon_stop; everything else addresses it exactly like a host node.
+daemon_register_container() {
+    local node="${1:?daemon_register_container <node> <container> <cfgdir>}"
+    local cont="${2:?container}" cfg="${3:?config dir}"
+    sv NODEKIND "$node" docker
+    sv NODECONT "$node" "$cont"
+    sv NODECFG "$node" "$cfg"
+    E2E_NODES="$E2E_NODES $node"
+    [ -n "${E2E_DIE_NODE:-}" ] || E2E_DIE_NODE="$node"
+}
 
 die() {
     printf '%s\n' "e2e: FAIL: $*" >&2
-    local log
-    log=$(node_log_path "${E2E_DIE_NODE:-}")
-    if [ -n "$log" ] && [ -f "$log" ]; then
-        printf '%s\n' "---- daemon log tail (${E2E_DIE_NODE}) ----" >&2
-        tail -40 "$log" >&2 || true
+    if [ -n "${E2E_DIE_NODE:-}" ]; then
+        local tail_out
+        tail_out=$(node_logs "$E2E_DIE_NODE" 40 2>/dev/null) || tail_out=""
+        if [ -n "$tail_out" ]; then
+            printf '%s\n' "---- daemon log tail (${E2E_DIE_NODE}) ----" >&2
+            printf '%s\n' "$tail_out" >&2
+        fi
     fi
     exit 1
 }
@@ -104,8 +126,14 @@ daemon_load_modules() {
     [ -n "$cfg" ] || die "daemon_load_modules: unknown node '$node'"
     for mod in "$@"; do
         say "$node: load-module $mod"
-        _with_timeout 30 env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" "$LOGOSCORE" --json load-module "$mod" \
-            >>"$log" 2>&1 || die_node "$node" "load-module $mod failed"
+        if [ "$(node_kind "$node")" = docker ]; then
+            _with_timeout 60 docker exec -e LOGOSCORE_CONFIG_DIR="$cfg" \
+                "$(node_container "$node")" logoscore --json load-module "$mod" \
+                >/dev/null 2>&1 || die_node "$node" "load-module $mod failed"
+        else
+            _with_timeout 30 env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" "$LOGOSCORE" --json load-module "$mod" \
+                >>"$log" 2>&1 || die_node "$node" "load-module $mod failed"
+        fi
     done
 }
 
@@ -115,6 +143,15 @@ node_call() {
     local cfg
     cfg=$(node_cfg_dir "$node")
     [ -n "$cfg" ] || die "node_call: unknown node '$node'"
+    if [ "$(node_kind "$node")" = docker ]; then
+        # The config dir rides an env var rather than --config-dir so the
+        # argument list is identical to the host path. argfile's @/abs/path
+        # references resolve because the run dir is bind-mounted at the same
+        # absolute path inside (see relay.sh).
+        _with_timeout "${CALL_TIMEOUT:-180}" docker exec -e LOGOSCORE_CONFIG_DIR="$cfg" \
+            "$(node_container "$node")" logoscore --json call "$@" 2>/dev/null
+        return
+    fi
     export E2E_CFG_DIR="$cfg"
     call_json "$@"
 }
@@ -247,6 +284,11 @@ _watchers_stop() {
 # Usage: node_logs <node> [lines]   (whole log when lines is omitted)
 node_logs() {
     local node="$1" lines="${2:-}" log
+    if [ "$(node_kind "$node")" = docker ]; then
+        if [ -n "$lines" ]; then docker logs --tail "$lines" "$(node_container "$node")" 2>&1
+        else docker logs "$(node_container "$node")" 2>&1; fi
+        return
+    fi
     log=$(node_log_path "$node")
     [ -n "$log" ] && [ -f "$log" ] || return 1
     if [ -n "$lines" ]; then tail -n "$lines" "$log"; else cat "$log"; fi
@@ -255,6 +297,15 @@ node_logs() {
 daemon_stop() {
     local node="$1" pid
     _watchers_stop "$node"
+    if [ "$(node_kind "$node")" = docker ]; then
+        if [ "${E2E_KEEP:-0}" = "1" ]; then
+            say "E2E_KEEP=1: leaving container $(node_container "$node") up"
+        else
+            docker rm -f "$(node_container "$node")" >/dev/null 2>&1 || true
+        fi
+        sv NODEKIND "$node" ""
+        return 0
+    fi
     pid=$(gv NODEPID "$node")
     [ -n "$pid" ] || return 0
     kill "$pid" 2>/dev/null || true
