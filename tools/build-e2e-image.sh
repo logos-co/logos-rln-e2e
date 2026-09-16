@@ -19,8 +19,8 @@ set -euo pipefail
 
 TAG="${E2E_RELAY_IMAGE:-logos-rln-e2e:relay}"
 DELIVERY_VERSION="${DELIVERY_VERSION:-0.2.1-138.g7431d480}"
-LEZ_RLN_VERSION="${LEZ_RLN_VERSION:-4.0.0}"
-RLN_VERSION="${RLN_VERSION:-0.8.0}"
+LEZ_RLN_VERSION="${LEZ_RLN_VERSION:-4.0.1}"
+RLN_VERSION="${RLN_VERSION:-0.8.2}"
 RLN_INDEX="${RLN_INDEX:-https://github.com/logos-co/logos-rln-modules/releases/download/index}"
 
 while [ $# -gt 0 ]; do
