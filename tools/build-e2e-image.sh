@@ -10,7 +10,7 @@
 #
 # There is no "relay without RLN" image: delivery_module declares the RLN
 # module as a dependency and will not load without it. A relay that forwards
-# without validating is this image with configureRln never called.
+# without validating is this image given a preset with RLN off.
 #
 # The labels this stamps are the image's half of the pin check: version
 # equality cannot catch a same-version-different-rev build, so the rev the
