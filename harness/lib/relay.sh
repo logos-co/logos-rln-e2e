@@ -60,7 +60,21 @@ _relay_check_image_pins() {
             "$E2E_MODULES_DIR/$label/manifest.json" 2>/dev/null)
         have=$(docker image inspect "$E2E_RELAY_IMAGE" \
             --format "{{index .Config.Labels \"org.logos.$m-module.version\"}}" 2>/dev/null)
-        [ -n "$want" ] && [ -n "$have" ] || continue
+        [ -n "$want" ] || continue
+        # A Go template prints `<no value>` for a key a map does not hold, so
+        # that string is the absent case, not a version.
+        [ "$have" = "<no value>" ] && have=""
+        # No label at all is not "nothing to compare" — it is an image this
+        # repo's build script did not stamp, so nothing says which modules are
+        # inside it. That is the very state the check exists to refuse: a bare
+        # `docker build -f harness/container/Dockerfile.relay .` produces one,
+        # carrying whatever the ARG defaults happen to say.
+        [ -n "$have" ] || die "relay: $E2E_RELAY_IMAGE carries no \
+org.logos.$m-module.version label, so what it holds is unknown.
+
+  Build it with the script that stamps the labels:
+
+    bash tools/build-e2e-image.sh"
         [ "$want" = "$have" ] && continue
         die "relay: $E2E_RELAY_IMAGE carries $label $have, this run built $want.
 
