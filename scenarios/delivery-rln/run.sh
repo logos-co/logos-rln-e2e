@@ -85,6 +85,10 @@
 #   E2E_MESH_WAIT_S=12            gossipsub mesh stabilization pause
 #   E2E_SEND_ATTEMPTS=3           send-leg attempts (fresh-root window)
 #   E2E_RECV_WAIT_S=12            per-attempt receive wait on n2
+#   E2E_FUND_LATE=<node>          withhold that node's funding until AFTER its
+#                                 start(), to exercise provisioning's park-and-
+#                                 recover path; unset = the ordinary order
+#   E2E_AWAIT_FUNDING_S=90        budget for seeing it parked at awaiting_funding
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -466,7 +470,16 @@ done
 # Each node pays for its own membership out of its own wallet, and the module
 # derived that account itself — so the one thing the harness still does is put
 # native balance in it. Nothing else can: no program mints native.
+#
+# E2E_FUND_LATE=<node> withholds ONE node's transfer until after its start(),
+# so the run exercises the path a real deployment hits when the operator funds
+# the wallet second. The other node keeps the normal order and is the control
+# in the same run. See the late-funding section below.
 for n in $NODES_ALL; do
+    if [ "$n" = "${E2E_FUND_LATE:-}" ]; then
+        say "$n: funding deliberately withheld until after start (E2E_FUND_LATE)"
+        continue
+    fi
     wallet_fund "$n" >/dev/null || die_node "$n" "funding its payer failed"
     say "$n: payer $(wallet_payer "$n") holds $(wallet_native_balance "$n") native"
 done
@@ -482,6 +495,43 @@ for n in $NODES_ALL; do
         *) die "$n: rln module start (pre-warm) failed: ${PREWARM:-<empty>}" ;;
     esac
 done
+
+# ---------- late funding (only when E2E_FUND_LATE names a node) --------------
+# The claim under test: a module started with an EMPTY payer parks rather than
+# fails, and recovers on its own when the money arrives. `ensure.rs` polls the
+# balance every 5s against a 900s deadline and deliberately does not read a
+# failed balance read as a zero balance — but until this ran, every scenario
+# either funded before start (so the loop broke on its first poll) or never
+# funded at all (so it parked until teardown). The transition between the two
+# had never executed.
+#
+# Two assertions, and the first is what makes the second mean anything: the
+# task must be SEEN parked at awaiting_funding before the transfer, otherwise a
+# pass would only show that funding-then-waiting works, which is the ordinary
+# path.
+if [ -n "${E2E_FUND_LATE:-}" ]; then
+    section "late funding (${E2E_FUND_LATE} was started with an empty payer)"
+    PARKED=""
+    PROV=""
+    for _t in $(seq 1 "$(polls "${E2E_AWAIT_FUNDING_S:-90}" "$E2E_POLL_INTERVAL_S")"); do
+        PROV=$(node_call "$E2E_FUND_LATE" liblogos_rln_module get_membership_state \
+            "$REGISTRY_ID" "$(argfile "late_$E2E_FUND_LATE" "$RLN_ID")" | jres \
+            | jfield provisioning) || PROV=""
+        say "  $E2E_FUND_LATE provisioning poll $_t: ${PROV:-<none>}"
+        case "$PROV" in
+            *awaiting_funding*) PARKED=1; break ;;
+            *refused*) die "$E2E_FUND_LATE: provisioning REFUSED rather than waiting for funds: $PROV" ;;
+        esac
+        sleep "$E2E_POLL_INTERVAL_S"
+    done
+    [ -n "$PARKED" ] \
+        || die "$E2E_FUND_LATE: provisioning never reported awaiting_funding (last: ${PROV:-<none>}) — \
+it should wait for a payer it cannot fill itself, and name the account to send to"
+    say "$E2E_FUND_LATE: parked at awaiting_funding with an empty payer, as it should"
+    wallet_fund "$E2E_FUND_LATE" >/dev/null \
+        || die_node "$E2E_FUND_LATE" "late funding failed"
+    say "$E2E_FUND_LATE: funded AFTER start — from here the module has to recover unaided"
+fi
 
 # ---------- provisioning (the MODULE's job — the harness does not register) --
 # This section performs no registration. The library's bring-up gate requires
