@@ -37,8 +37,11 @@
 #   3. keystore custody default: NO unlock call anywhere — the module
 #      self-provisions its own secret (the headless deployment shape;
 #      contract: docs/delivery-integration.md §1).
-#   4. registration is REAL, and it is the APP's job, not bring-up's: since
-#      logos-delivery 131fc9b1 the library no longer registers at startup.
+#   4. registration is REAL, and it is NOBODY's job here — not the app's,
+#      not bring-up's, not this test's. logos-delivery 131fc9b1 stopped the
+#      library registering at startup; liblogos_rln_module 0.8.0 made a
+#      membership something `start` provisions from the registries its config
+#      names. So this scenario funds a node and asserts a membership arrives.
 #      Since abc53a6f startNode starts the module BEFORE the switch listens
 #      (a start failure is fatal), then verifies the node's own membership
 #      NON-fatally: a usable state is cached on the handle so sends skip the
@@ -853,7 +856,7 @@ echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
 echo "e2e:   config    configureRln(registry-id/rln-identifier/epoch-size-sec) + a conf with NO rln-* key — upstream delivery, no fork"
 echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
-echo "e2e:   bring-up  app-side register via the module on BOTH nodes (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership check verified on both (non-fatal since abc53a6f)"
+echo "e2e:   bring-up  the MODULE provisioned on BOTH nodes — this test registered nothing (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership check verified on both (non-fatal since abc53a6f)"
 echo "e2e:   gate      n1's scope was read exactly once — at start, before its first generate — and the cached pass covered every send"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
 echo "e2e:   topology  IN-PROCESS bridge installed by configureRln on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
