@@ -6,14 +6,14 @@
 # Topology:
 #   basecamp   the desktop app (dev #app build, QML inspector compiled in),
 #              launched headless with a throwaway --user-dir; the harness
-#              modules dir is copied in wholesale and lez_core + the RLN
-#              stack + delivery_module + chat_module are loaded through
+#              modules dir is copied in wholesale and the RLN stack +
+#              delivery_module + chat_module are loaded through
 #              MainUIBackend.loadCoreModule. Every module call goes through
 #              the inspector's result-returning `evaluate` ->
 #              backend.callCoreModuleMethod(...) — see harness/lib/basecamp.sh.
 #   n1         an ordinary logoscore daemon (delivery-rln's n2 role, plus
 #              chat peer B): same module stack + chat_module, in-process
-#              bridge (rlnBridgeEnable), a wallet of its own that is NEVER
+#              bridge (configureRln), a wallet of its own that is NEVER
 #              funded — its best-effort registration degrades on purpose; it
 #              receives basecamp's chat message only after its own module
 #              validates the proof.
@@ -27,20 +27,25 @@
 # What it proves:
 #   1. the product shape: chat -> delivery -> RLN modules co-resident inside
 #      Basecamp (embedded logos-core, side-loaded module dirs), headless.
-#   2. registration through chat's own boot: delivery's startNode register
-#      leg fires with the conf-fed scope, the module mints a membership and
-#      pays for it from its own payer's NATIVE balance, and the registry
-#      confirms registered:true + a real leaf (chain oracle via n1 — the
-#      delivery-rln barrier).
+#   2. a membership arrives for the app, and the app pays for it. Which of
+#      two paths produces it is no longer something this scenario can tell
+#      apart, and it deliberately does not try: since liblogos_rln_module
+#      0.8.0 `start` provisions a registry-wide membership on its own, and
+#      scope_candidates lets a registry-wide record back any scope — so the
+#      configured scope reads as satisfied either way. What IS asserted is the
+#      part that matters to a product: the app derives its own payer, the
+#      harness funds that account and nothing else, and the registry confirms
+#      registered:true + a real leaf (chain oracle via n1). Attribution to an
+#      explicit call is tested by delivery-basecamp-rln, which controls
+#      `start` and turns provisioning off.
 #   3. the message path: chat send_message -> delivery publish (proof
 #      attached by the fork's prover leg) -> gossipsub -> n1's validator ->
 #      in-process bridge validate_proof -> chat message_received on n1 with
 #      the plaintext (decrypt + full pipeline).
 #
 # Required (beyond docs/contract.md):
-#   DELIVERY_MODULE_CHECKOUT  logos-delivery-module @ rln/integration-fixes
-#   LOGOS_DELIVERY_CHECKOUT   logos-delivery @ rln/integration-fixes
-#   RLN_MODULES_CHECKOUT      logos-rln-modules @ feat/lip-alignment (0.7 wire)
+#   DELIVERY_MODULE_CHECKOUT  logos-delivery-module @ master
+#   LOGOS_DELIVERY_CHECKOUT   logos-delivery @ master (submodules checked out)
 #   CHAT_MODULE_CHECKOUT      logos-chat-module @ rln/e2e-extra-conf
 #   BASECAMP_CHECKOUT         logos-basecamp (or BASECAMP_APP binary)
 #
@@ -48,6 +53,10 @@
 #   E2E_RATE_LIMIT=100          registration rate limit / user-message-limit
 #   E2E_CHAT_RLN_PORT=61890     tcp ports are PORT+1 (n1), PORT+2 (basecamp)
 #   E2E_INSPECTOR_PORT=3768     basecamp QML inspector port (must be free)
+#   E2E_FUND_LATE=1             run the whole bring-up with an EMPTY payer and
+#                               fund only afterwards — the sequence a real user
+#                               follows; needs liblogos_rln_module >= 0.8.1
+#   E2E_AWAIT_FUNDING_S=120     budget for seeing it parked at awaiting_funding
 #   E2E_BASECAMP_SETTLE_S=20    post-launch settle before driving the app
 #   E2E_EVENT_TIMEOUT_S=30      per-event wait budget
 #   E2E_MESH_WAIT_S=12          gossipsub mesh stabilization pause
@@ -142,11 +151,27 @@ say "registry: $REGISTRY_ID (scope rate $RATE_LIMIT)"
 # chat's CHAT_DELIVERY_CONF_OVERRIDE replaces the config wholesale, so
 # everything must be here. COMPACT (no spaces): the n1 copy rides the
 # whitespace-split E2E_DAEMON_ENV.
+# The conf carries NO rln key at all — the same conf delivery-rln passes.
+#
+# Two removals, and the second is the one that is easy to get wrong. The LEZ
+# keys (rln-relay-lez / -registry-id / -identifier) are gone from upstream
+# outright, and an unknown key is refused. But `rln-relay: true` had to go too:
+# what survives in api/conf/messaging_conf.nim is the ETHEREUM RLN surface, so
+# that flag makes the conf builder demand a chain id and a contract address —
+# "RLN Relay Conf building failed: RLN Relay Chain Id is not specified". The
+# LEZ backend is mounted by the plugin configureRln installs, not by a conf
+# flag. The rate limit is a register_membership option and the epoch size is a
+# configureRln field, so nothing is lost with them.
 chat_delivery_cfg() {
-    local port="$1" peers="$2" extra="$3"
-    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"rln-relay":true,"rln-relay-lez":true,"rln-relay-registry-id":"%s","rln-relay-identifier":"%s","rln-relay-user-message-limit":%s,"rln-relay-epoch-sec":%s%s%s}' \
-        "$port" "$CLUSTER_ID" "$REGISTRY_ID" "$RLN_ID" "$RATE_LIMIT" \
-        "$E2E_EPOCH_SIZE_SEC" "$extra" "${peers:+,\"staticnodes\":[\"$peers\"]}"
+    local port="$1" peers="$2" extra="${3:-}"
+    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true%s%s}' \
+        "$port" "$CLUSTER_ID" "$extra" "${peers:+,\"staticnodes\":[\"$peers\"]}"
+}
+
+# The scope, as configureRln takes it.
+rln_cfg_json() {
+    printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
+        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
 }
 
 # ---------- n1: verifier daemon (chain oracle + chat peer B) -----------------
@@ -160,9 +185,9 @@ daemon_self_paying n1 "$E2E_RUN_DIR/wallet-n1"
 E2E_DAEMON_ENV="CHAT_DELIVERY_CONF_OVERRIDE=$V_CONF" daemon_start n1 \
     || die "daemon_start n1 failed"
 NODES_UP=1
-daemon_load_modules n1 lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules n1 liblogos_lez_rln_module liblogos_rln_module \
     delivery_module chat_module || die "n1: load-module failed"
-say "n1: all 5 modules loaded (module-owned keystore custody, no unlock call)"
+say "n1: all 4 modules loaded (module-owned keystore custody, no unlock call)"
 
 section "n1 wallet (chain oracle; its own home, never funded)"
 CHAIN_HEAD=$(chain_head) || die "cannot probe chain head at $E2E_SEQUENCER"
@@ -170,19 +195,14 @@ say "chain head: $CHAIN_HEAD"
 wallet_open n1 || die "n1: wallet open failed"
 wallet_sync n1 >/dev/null || die "n1: wallet sync failed"
 
-# Basecamp's wallet: its OWN copy of the STAGED home — the wallet signs only
-# for accounts its storage knows, and the staged storage knows E2E_PAYER's
-# key, which is the account basecamp registers with below. n1 holds a
-# different home entirely, so no two lez_core instances share one mutable
-# storage.json. The sync height is NOT carried across sessions by this wallet
-# build; basecamp re-syncs from ~0 regardless.
-cp -R "$E2E_WALLET_HOME" "$E2E_RUN_DIR/wallet-basecamp" \
-    || die "cannot copy wallet home for basecamp"
-
-# Pre-warm n1's module (start is idempotent; the same config basecamp's chat
-# boot will carry).
+# Pre-warm n1's module. `"provision": false` keeps n1 the thing this scenario
+# describes: a verifier with no membership, whose register leg is meant to
+# degrade. Since 0.8.0 `start` would otherwise spawn a provisioning task on
+# n1's deliberately unfunded payer, which does not fail — it parks in
+# awaiting_funding for fifteen minutes and muddies the degradation notice
+# asserted below.
 PREWARM=$(node_call n1 liblogos_rln_module start \
-    "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"]}" | jres | jval) || PREWARM=""
+    "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"],\"provision\":false}" | jres | jval) || PREWARM=""
 case "$PREWARM" in
     *'"started":true'*) say "n1: rln module pre-warmed" ;;
     *) die "n1: rln module start (pre-warm) failed: ${PREWARM:-<empty>}" ;;
@@ -191,10 +211,22 @@ esac
 section "n1 chat up (in-process rln bridge + chat peer B)"
 node_watch_start n1 delivery_module
 node_watch_start n1 chat_module
-ATTACH=$(node_call n1 delivery_module rlnBridgeEnable | jres)
+# configureRln, not rlnBridgeEnable: it installs the plugin, brings the
+# in-process bridge up AND carries the scope the conf can no longer hold. It
+# must precede chat's bootstrap, which is what calls createNode.
+ATTACH=$(node_call n1 delivery_module configureRln \
+    "$(argfile rlncfg_n1 "$(rln_cfg_json)")" | jres) || ATTACH=""
 case "$ATTACH" in
-    *'"success":true'*) say "n1: in-process rln bridge enabled" ;;
-    *) die "n1: rlnBridgeEnable failed: ${ATTACH:-<empty>}" ;;
+    *'"servedInProcess":true'*) say "n1: configureRln — rln served in-process" ;;
+    *'"servedInProcess":false'*) die "n1: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
+    *) say "n1: configureRln gave no usable reply (${ATTACH:-<empty>}) — waiting on the module's log line"
+       for _t in $(seq 1 "$(polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
+           grep -q "rln served in-process" "$(node_log_path n1)" && break
+           sleep 5
+       done
+       grep -q "rln served in-process" "$(node_log_path n1)" \
+           || die "n1: configureRln never reported 'rln served in-process'"
+       say "n1: configureRln — rln served in-process (via log)" ;;
 esac
 INIT=$(node_call n1 chat_module init "str:" | jres) || INIT=""
 case "$INIT" in
@@ -228,18 +260,32 @@ fi
 # ---------- basecamp ---------------------------------------------------------
 section "basecamp up (headless, side-loaded modules)"
 # No rln-relay-registry-options at all: the registry is single-asset and
-# nothing in the options names who pays any more. The payer is named by
-# LEZ_RLN_PAYER instead — basecamp_launch does not inherit the daemons'
-# environment, so without it the module inside the app derives a brand-new
-# account holding nothing and chat's register leg cannot be paid for.
+# nothing in the options names who pays any more. Who pays is the account the
+# module derives in its own wallet home, which the harness funds below — not
+# LEZ_RLN_PAYER on a copy of the staged home, which made the app sign as the
+# deployment's own payer and put two processes on one nonce.
 BC_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 2 ))" "$N1_MADDR" "")
-basecamp_launch "$UD" "$E2E_RUN_DIR/wallet-basecamp" "$BC_CONF" "LEZ_RLN_PAYER=$E2E_PAYER"
+basecamp_wallet_home "$E2E_RUN_DIR/wallet-basecamp"
+basecamp_launch "$UD" "$E2E_RUN_DIR/wallet-basecamp" "$BC_CONF"
 
 section "basecamp: load the module stack"
-basecamp_load_modules lez_core liblogos_lez_rln_module liblogos_rln_module delivery_module chat_module
+basecamp_load_modules liblogos_lez_rln_module liblogos_rln_module delivery_module chat_module
 
 section "basecamp wallet (open + sync)"
 basecamp_wallet_open_sync "$E2E_RUN_DIR/wallet-basecamp"
+
+section "basecamp payer (derived by the module, funded by the harness)"
+BC_PAYER=$(basecamp_payer) || die "basecamp: no payer"
+if [ -n "${E2E_FUND_LATE:-}" ]; then
+    # The production sequence: install delivery, start it, fund the account
+    # whenever you get round to it. Everything below runs with an empty payer
+    # and the transfer happens after chat is fully up — see the late-funding
+    # section.
+    say "basecamp: payer $BC_PAYER — funding deliberately withheld until after bring-up (E2E_FUND_LATE)"
+else
+    basecamp_fund || die "basecamp: funding failed"
+    say "basecamp: payer $BC_PAYER funded — an account that held nothing until this transfer"
+fi
 
 # ---------- basecamp RLN + bridge + chat -------------------------------------
 section "basecamp: rln pre-warm + bridge + chat init"
@@ -249,10 +295,13 @@ case "$RSTART" in
     *'"started":true'*) say "basecamp: rln module started" ;;
     *) die "basecamp: rln module start failed: ${RSTART:-<empty>}" ;;
 esac
-BATTACH=$(bc_call delivery_module rlnBridgeEnable '[]') || BATTACH=""
+BATTACH=$(bc_call delivery_module configureRln "$(jq -cn --arg c "$(rln_cfg_json)" '[$c]')") || BATTACH=""
 case "$BATTACH" in
-    *'"success":true'*) say "basecamp: in-process rln bridge enabled" ;;
-    *) die "basecamp: rlnBridgeEnable failed: ${BATTACH:-<empty>}" ;;
+    *'"servedInProcess":true'*) say "basecamp: configureRln — rln served in-process" ;;
+    *'"servedInProcess":false'*) die "basecamp: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
+    *) bc_log_wait "rln served in-process" "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" \
+           || die "basecamp: configureRln never reported 'rln served in-process' (reply: ${BATTACH:-<empty>})"
+       say "basecamp: configureRln — rln served in-process (via log)" ;;
 esac
 BINIT=$(bc_call chat_module init '[""]') || BINIT=""
 case "$BINIT" in
@@ -273,7 +322,43 @@ A_ADDR=$(bc_call chat_module get_address | tr -d '"')
 say "basecamp: chat online — addr ${A_ADDR:-<none>}"
 
 # ---------- registration asserts ---------------------------------------------
-section "registration (through chat's own boot)"
+# ---------- late funding (only when E2E_FUND_LATE is set) --------------------
+# What a Basecamp user actually does: install delivery, start it, and get the
+# native balance later — a bridge or an exchange, so hours, not minutes. Until
+# liblogos_rln_module 0.8.1 that failed at fifteen minutes and failed for good,
+# because the provisioning task is only ever entered from start(): fund at
+# minute sixteen and the node never registered.
+#
+# So the whole bring-up above just ran against an EMPTY payer. Delivery is
+# expected to have come up anyway — logos-delivery logs a notice, not an error,
+# and gates sending rather than starting — and provisioning is expected to be
+# parked, naming the account and the amount.
+if [ -n "${E2E_FUND_LATE:-}" ]; then
+    section "late funding (basecamp ran its whole bring-up with an empty payer)"
+    grep -q "no usable RLN membership" "$E2E_RUN_DIR/basecamp.log" 2>/dev/null \
+        && say "basecamp: delivery came up and logged the unfunded notice, as it should (sends gated, start not)"
+    PARKED=""
+    PROV=""
+    for _t in $(seq 1 "$(polls "${E2E_AWAIT_FUNDING_S:-120}" "$E2E_POLL_INTERVAL_S")"); do
+        PROV=$(bc_call liblogos_rln_module get_membership_state \
+            "$(jq -cn --arg r "$REGISTRY_ID" --arg i "$RLN_ID" '[$r,$i]')" \
+            | jfield provisioning) || PROV=""
+        say "  basecamp provisioning poll $_t: ${PROV:-<none>}"
+        case "$PROV" in
+            *awaiting_funding*) PARKED=1; break ;;
+            *refused*) die "basecamp: provisioning REFUSED rather than waiting — \
+this is the 0.8.0 behaviour the unbounded wait replaced: $PROV" ;;
+        esac
+        sleep "$E2E_POLL_INTERVAL_S"
+    done
+    [ -n "$PARKED" ] \
+        || die "basecamp: provisioning never reported awaiting_funding (last: ${PROV:-<none>})"
+    say "basecamp: parked at awaiting_funding with an empty payer — it names the account and the amount"
+    basecamp_fund || die "basecamp: late funding failed"
+    say "basecamp: funded AFTER the whole bring-up — the module must now recover with no restart"
+fi
+
+section "registration (the app pays; chat's boot and start's provisioning both reach here)"
 STATE=""
 GMS=""
 for _t in $(seq 1 "$(polls "$REG_WAIT_S" 5)"); do
@@ -291,8 +376,28 @@ case "$STATE" in
     *) die "basecamp never reached a live membership state (last: '${STATE:-<none>}' — $GMS)" ;;
 esac
 MEMS=$(bc_call liblogos_rln_module get_memberships "$(jq -cn --arg r "$REGISTRY_ID" '[$r]')") || MEMS=""
+# Exactly one. Two paths can register here — chat's own boot under the configured
+# scope, and `start`'s provisioning under the registry-wide one — and if both
+# do, the app holds two leaves and two slices of the registry's rate-limit
+# budget for one node, paid for twice. get_membership_state would not notice:
+# a scoped record simply wins the scope_candidates preference. Count instead.
+NMEMS=$(printf '%s' "$MEMS" | jq -r '.memberships | length' 2>/dev/null) || NMEMS=""
+[ "$NMEMS" = 1 ] \
+    || die "basecamp holds ${NMEMS:-<unreadable>} memberships on this registry, expected 1 — chat's register leg and start's provisioning both landed, which spends twice and takes two leaves: $MEMS"
 IDC=$(printf '%s' "$MEMS" | jq -r '.memberships[0].credential.identity_commitment' 2>/dev/null) || IDC=""
 [ -n "$IDC" ] && [ "$IDC" != "null" ] || die "cannot extract identity_commitment: $MEMS"
+
+# WHICH path produced it. The module says so itself when provisioning is what
+# registered — "provision <registry>: registered a registry-wide membership" —
+# and says nothing there when chat's own register leg got in first. Report the
+# answer rather than assert one: both are legitimate outcomes of this config,
+# and which wins is a race the scenario does not control.
+if grep -q "registered a registry-wide membership" "$E2E_RUN_DIR/basecamp.log" 2>/dev/null; then
+    REG_PATH="provisioned by start (registry-wide scope)"
+else
+    REG_PATH="chat's own register leg (configured scope)"
+fi
+say "basecamp membership came from: $REG_PATH"
 say "basecamp identity commitment: ${IDC:0:18}…"
 
 # Chain oracle via n1 (the delivery-rln barrier: registered:true + real leaf,
@@ -375,7 +480,7 @@ done
     || die "n1 never received a chat message in $SEND_ATTEMPTS attempts"
 
 # The transport leg is the proof-gated delivery topic (chat rides
-# /logos-chat/1/<addr>/proto); n1 runs rln-relay:true so messageReceived only
+# /logos-chat/1/<addr>/proto); n1 mounts RLN through configureRln, so messageReceived only
 # surfaces after its in-process bridge validated the proof.
 node_wait_event n1 delivery_module messageReceived 5 "/logos-chat/1/" >/dev/null \
     || say "note: no delivery messageReceived event matched the chat topic (event may predate the watch) — chat receipt already proves the pipeline"
@@ -384,7 +489,7 @@ echo
 echo "e2e: PASS — chat-basecamp-rln (target $E2E_TARGET)"
 echo "e2e:   product   chat_module -> delivery_module -> RLN stack co-resident INSIDE Basecamp (headless, side-loaded, embedded logos-core)"
 echo "e2e:   driving   inspector evaluate -> backend.callCoreModuleMethod (loadCoreModule + every module call)"
-echo "e2e:   config    the fork's CHAT_DELIVERY_CONF_OVERRIDE carried the full flat conf: scope, rate, epoch, cluster (no registry options — the payer is not one)"
-echo "e2e:   register  through chat's own boot, paid from the app's payer: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: n1)"
+echo "e2e:   config    the fork's CHAT_DELIVERY_CONF_OVERRIDE carried the conf; every rln key is gone from it and the scope went through configureRln"
+echo "e2e:   register  $REG_PATH, paid from the app's OWN payer $BC_PAYER: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: n1)"
 echo "e2e:   degrade   n1's unfunded best-effort register: $N1_REG; node validates fine"
 echo "e2e:   message   basecamp send_message -> proof attached -> gossipsub -> n1 validate (in-process bridge) -> chat message_received (attempt $ATTEMPT/$SEND_ATTEMPTS)"

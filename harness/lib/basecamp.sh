@@ -28,7 +28,8 @@
 #   - This wallet build keeps checkpoints, not a sync cursor: a fresh session
 #     syncs from ~0 (≈25 min on the hosted testnet).
 #
-# Requires: compat.sh (say/die), chain.sh (chain_head), json.sh; the caller's
+# Requires: compat.sh (say/die), chain.sh (chain_head), json.sh, wallet.sh
+# (wallet_fund_account) and daemon.sh (wallet_home_fresh); the caller's
 # die() may call basecamp_die_tails for diagnostics.
 #
 # Globals set: BASECAMP_PID, BC_UD (user-dir), BC_INSPECTOR_PORT.
@@ -130,7 +131,22 @@ if isinstance(d, dict):
 if isinstance(d, int) and not isinstance(d, bool):
     print(d)
 '; }
-bc_synced() { bc_call lez_core get_last_synced_block | bc_int; }
+
+# Wait for a line in basecamp's app log — the delivery library and the plugin
+# log there, and some of what a scenario needs to know is only stated in a log
+# line (configureRln outliving its transport deadline, "RLN membership
+# verified"). Lives here because the log path is basecamp_launch's to choose;
+# it was a private copy in delivery-basecamp-rln while two other scenarios
+# called it.
+# Usage: bc_log_wait <pattern> [seconds]
+bc_log_wait() {
+    local pattern="$1" budget="${2:-20}" _t
+    for _t in $(seq 1 "$budget"); do
+        grep -q "$pattern" "$E2E_RUN_DIR/basecamp.log" 2>/dev/null && return 0
+        sleep 1
+    done
+    return 1
+}
 
 # basecamp_launch <user-dir> <wallet-home> <chat-delivery-conf-json>
 # Stages the harness modules dir into <user-dir>/modules, launches the app
@@ -199,18 +215,16 @@ basecamp_load_modules() {
 
 # basecamp_wallet_open_sync <wallet-home>
 # Waits until the registry module's own wallet is open and caught up on the
-# given home (seeding storage.json from storage.json.seed when absent — the
-# module needs a storage file to adopt). Prints nothing; dies on failure.
+# given home. Prints nothing; dies on failure.
+#
+# It used to seed storage.json from storage.json.seed here, under a comment
+# saying the seeding had to happen before the app started — while every caller
+# invoked this AFTER basecamp_launch, so the module had already adopted the
+# home. Both halves are gone: the home is built by basecamp_wallet_home before
+# the launch, and it deliberately carries no storage for the module to adopt.
 basecamp_wallet_open_sync() {
     local home="$1" st _t tries iv
     [ -f "$home/wallet_config.json" ] || die "basecamp wallet: no wallet_config.json in $home"
-    # The module opens this home itself and would find nothing to open without
-    # a storage file; seeding stays here because it has to happen before the
-    # app starts, not after.
-    if [ ! -f "$home/storage.json" ]; then
-        cp "$home/storage.json.seed" "$home/storage.json" \
-            || die "basecamp wallet: cannot seed $home/storage.json"
-    fi
 
     # Since liblogos_lez_rln_module 3.0.0 the module owns its wallet: it adopts
     # the home LEE_WALLET_HOME_DIR names and syncs it on its own thread at
@@ -229,6 +243,96 @@ basecamp_wallet_open_sync() {
         esac
     done
     die "basecamp registry wallet never became ready (last: ${st:-<empty>})"
+}
+
+# basecamp_wallet_home <dir>
+# The app's own wallet home: the staged wallet_config.json and nothing else, so
+# the module creates a wallet there and derives a payer only this instance
+# holds. MUST precede basecamp_launch — the home reaches the module as
+# LEE_WALLET_HOME_DIR on the app's command line and is never re-read.
+#
+# The alternative this replaces was a copy of the whole staged home plus
+# LEZ_RLN_PAYER naming the deployment's funded account. That works, in the
+# sense that the app can sign — but the harness signs as the same account, so
+# two processes advance one nonce, and under liblogos_rln_module 0.8.0 both
+# also submit a Register.
+basecamp_wallet_home() {
+    local dir="${1:?basecamp_wallet_home <dir>}"
+    wallet_home_fresh "$dir"
+}
+
+# The account the app's registry module signs and pays with, published by the
+# module precisely so something outside can fund it. Basecamp has no logoscore
+# CLI seam, so this is wallet_payer's twin over the inspector.
+basecamp_payer() {
+    local st payer
+    st=$(bc_call liblogos_lez_rln_module wallet_status) || st=""
+    payer=$(printf '%s' "$st" | jfield payer)
+    # Qt parses a JSON-shaped module reply into an object and the driver
+    # re-emits it, so what arrives here is usually clean JSON — but not always
+    # (a reply that came back as a STRING re-emits with its braces escaped).
+    # Fall back to reading the field out of the text rather than reporting a
+    # module that answered as one that published nothing.
+    [ -n "$payer" ] || payer=$(printf '%s' "$st" \
+        | grep -oE '"payer":"[^"]*"' | head -1 | cut -d'"' -f4)
+    [ -n "$payer" ] || die "basecamp: the registry module published no payer account (wallet_status: ${st:-<empty>})"
+    printf '%s' "$payer"
+}
+
+# Live NATIVE balance of <account>, or of the app's own payer when omitted.
+# Prints a decimal string; "" when the module could not answer — which is NOT
+# zero and must not be compared as such.
+basecamp_native_balance() {
+    local acct="${1:-}"
+    bc_call liblogos_lez_rln_module get_native_balance \
+        "$(python3 -c 'import json,sys; print(json.dumps([sys.argv[1]]))' "$acct")" \
+        | jfield balance
+}
+
+# Poll until the app's payer holds at least <want> native.
+# Prints the last balance seen; 1 when the budget runs out.
+basecamp_wait_native() {
+    local want="$1" bal="" _w tries
+    local iv="${E2E_POLL_INTERVAL_S:-5}"
+    tries=$(( ${E2E_CONFIRM_TIMEOUT_S:-180} / iv ))
+    [ "$tries" -lt 1 ] && tries=1
+    for _w in $(seq 1 "$tries"); do
+        bal=$(basecamp_native_balance)
+        case "$bal" in
+            ''|*[!0-9]*) sleep "$iv"; continue ;;
+        esac
+        if [ "$bal" -ge "$want" ]; then printf '%s' "$bal"; return 0; fi
+        sleep "$iv"
+    done
+    printf '%s' "${bal:-0}"
+    return 1
+}
+
+# Fund the app's own payer and wait for the balance to land — wallet_fund's
+# twin for an instance node_call cannot reach.
+#
+# It prints NOTHING. `say` writes to stdout, so a function that both logs and
+# prints a value cannot be read with $( ): the first version of this returned
+# its own log line glued to the account id. Ask basecamp_payer for the id.
+basecamp_fund() {
+    local amount="${1:-${E2E_FUND_AMOUNT:-5000000000}}" payer before
+    payer=$(basecamp_payer) || exit 1
+    [ -n "$payer" ] || die "basecamp: no payer to fund"
+    # A payer derived in a home that carries no storage has never held
+    # anything, so this is where a home built wrong shows up — and it is the
+    # only place it can. Comparing the id against E2E_PAYER cannot do it: the
+    # module publishes hex and the deployment names base58, so that comparison
+    # is true whatever happened.
+    before=$(basecamp_native_balance "$payer")
+    case "$before" in
+        '') die "basecamp: cannot read $payer's balance — refusing to fund an account whose state is unknown" ;;
+        0)  : ;;
+        *)  die "basecamp: payer $payer already holds $before native before anything funded it — its wallet home carried storage, so it derived an existing account rather than one of its own" ;;
+    esac
+    say "basecamp: funding its payer $payer with $amount native"
+    wallet_fund_account "$payer" "$amount"
+    basecamp_wait_native "$amount" >/dev/null \
+        || die "basecamp: payer $payer never reached $amount native"
 }
 
 # Diagnostics for a scenario's die(): app stderr, the newest session log

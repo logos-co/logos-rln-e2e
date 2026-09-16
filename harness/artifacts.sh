@@ -161,9 +161,11 @@ resolve_artifacts() {
     export LEZ_RLN_LGX RLN_LGX
 
     # lez_core, like every other optional module: only when the scenario loads
-    # it. Since liblogos_lez_rln_module 3.0.0 owns its wallet in-process the
-    # RLN path never calls lez_core, and only the Basecamp scenarios still do
-    # — for Basecamp's OWN wallet. The rest must not pay for the build.
+    # it. Since liblogos_lez_rln_module 3.0.0 owns its wallet in-process,
+    # nothing in this repo asks for lez_core any more — the Basecamp scenarios
+    # were the last, and they read the app's balance off the chain instead.
+    # The branch stays because a scenario may still want a wallet of its own;
+    # nothing else must pay for the build.
     case " ${NEEDS_MODULES:-} " in
         *" lez_core "*)
             [ -n "${WALLET_LGX:-}" ] || WALLET_LGX=$(_bundle_lgx wallet-lgx)

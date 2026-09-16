@@ -14,21 +14,28 @@
 #   n1         verifier + chat peer B (chat-basecamp-rln's n1): a wallet of
 #              its own that is never funded, so its own best-effort
 #              registration degrades on purpose.
-#   basecamp   the desktop app, headless (harness/lib/basecamp.sh): lez_core
-#              + lez-rln + libp2p_module + rln_gifter_module (the CLIENT half
-#              the RLN module's provider dials the gifter through) + RLN
-#              module + delivery_module + chat_module. Its wallet is a FRESH
-#              copy (config + seed only): no accounts, no funds, ever.
-#              rln-relay-registry-options carries
+#   basecamp   the desktop app, headless (harness/lib/basecamp.sh): lez-rln
+#              + libp2p_module + rln_gifter_module (the CLIENT half the RLN
+#              module's provider dials the gifter through) + RLN module +
+#              delivery_module + chat_module. Its wallet home carries the
+#              staged wallet_config.json and NOTHING else, so the module
+#              derives a payer that has never held anything — asserted on
+#              chain, before and after, rather than assumed.
+#              The delegated options —
 #              {"delegated":"true","gifter_peer_id":…,"gifter_multiaddr":…}
-#              — delivery's startNode folds it into the RegistryOptions
-#              array untouched, the module selects the delegated path and
-#              the gifter pays.
+#              — go to register_membership directly; the module selects the
+#              delegated path and the gifter pays. They used to ride the
+#              delivery conf, which has no successor key (see the
+#              registration section).
 #
 # What it proves (beyond chat-basecamp-rln):
-#   1. the delegated register wire survives the whole product path: node
-#      conf -> chat's CHAT_DELIVERY_CONF_OVERRIDE -> delivery RegistryOptions
-#      -> RLN module -> co-loaded gifter client -> libp2p -> the service.
+#   1. the delegated register wire survives the product path it still has:
+#      RegistryOptions -> RLN module -> co-loaded gifter client -> libp2p ->
+#      the service, all inside Basecamp's embedded core. The leg from a
+#      delivery conf is NOT covered any more and cannot be: upstream
+#      logos-delivery dropped every LEZ conf key and configureRln carries
+#      only registry-id / rln-identifier / epoch-size-sec, so there is no
+#      route from a node conf to the allocation protocol to test.
 #   2. a fundless Basecamp registers: its accounts' native balances are
 #      identical before and after, its payer is not the gifter's, and the
 #      GIFTER's native balance drops — by the registration price
@@ -128,20 +135,27 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 RLN_ID=$(openssl rand -hex 32)
 say "registry: $REGISTRY_ID (scope rate $RATE_LIMIT)"
 
+# The conf carries NO rln key at all — the same conf delivery-rln passes.
+#
+# Two removals, and the second is the one that is easy to get wrong. The LEZ
+# keys (rln-relay-lez / -registry-id / -identifier) are gone from upstream
+# outright, and an unknown key is refused. But `rln-relay: true` had to go too:
+# what survives in api/conf/messaging_conf.nim is the ETHEREUM RLN surface, so
+# that flag makes the conf builder demand a chain id and a contract address —
+# "RLN Relay Conf building failed: RLN Relay Chain Id is not specified". The
+# LEZ backend is mounted by the plugin configureRln installs, not by a conf
+# flag. The rate limit is a register_membership option and the epoch size is a
+# configureRln field, so nothing is lost with them.
 chat_delivery_cfg() {
-    local port="$1" peers="$2" extra="$3"
-    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"rln-relay":true,"rln-relay-lez":true,"rln-relay-registry-id":"%s","rln-relay-identifier":"%s","rln-relay-user-message-limit":%s,"rln-relay-epoch-sec":%s%s%s}' \
-        "$port" "$CLUSTER_ID" "$REGISTRY_ID" "$RLN_ID" "$RATE_LIMIT" \
-        "$E2E_EPOCH_SIZE_SEC" "$extra" "${peers:+,\"staticnodes\":[\"$peers\"]}"
+    local port="$1" peers="$2"
+    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true%s}' \
+        "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-# A fresh wallet home (config + seed only) — every lez_core instance gets
-# its own mutable storage.json; the seed derives deterministically.
-fresh_home() {
-    local dest="$1"
-    mkdir -p "$dest"
-    cp "$E2E_WALLET_HOME/wallet_config.json" "$dest/" || die "cannot copy wallet_config.json to $dest"
-    cp "$E2E_WALLET_HOME/storage.json.seed" "$dest/storage.json.seed" || die "cannot copy storage seed to $dest"
+# The scope, as configureRln takes it.
+rln_cfg_json() {
+    printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
+        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
 }
 
 CHAIN_HEAD=$(chain_head) || die "cannot probe chain head at $E2E_SEQUENCER"
@@ -157,7 +171,7 @@ N2_HOME="$E2E_RUN_DIR/wallet-n2"
 daemon_self_paying n2 "$N2_HOME"
 daemon_start n2 || die "daemon_start n2 failed"
 NODES_UP="n2"
-daemon_load_modules n2 lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules n2 liblogos_lez_rln_module liblogos_rln_module \
     libp2p_module rln_gifter_module || die "n2: load-module failed"
 wallet_open n2 || die "n2: wallet open failed"
 say "syncing the gifter's wallet"
@@ -196,7 +210,7 @@ esac
 
 # ---------- n1: verifier + chat peer B ---------------------------------------
 section "n1: logoscore daemon (verifier + chat peer B)"
-V_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 1 ))" "" "")
+V_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 1 ))" "")
 # n1 reads chain state and validates; it must never be able to pay for
 # anything, so it gets a wallet of its own rather than the deployment's
 # shared payer.
@@ -204,23 +218,37 @@ daemon_self_paying n1 "$E2E_RUN_DIR/wallet-n1"
 E2E_DAEMON_ENV="CHAT_DELIVERY_CONF_OVERRIDE=$V_CONF" daemon_start n1 \
     || die "daemon_start n1 failed"
 NODES_UP="n1 n2"
-daemon_load_modules n1 lez_core liblogos_lez_rln_module liblogos_rln_module \
+daemon_load_modules n1 liblogos_lez_rln_module liblogos_rln_module \
     delivery_module chat_module || die "n1: load-module failed"
 # n1 reads chain state only (roots, membership) — its own home, never funded.
 wallet_open n1 || die "n1: wallet open failed"
 wallet_sync n1 >/dev/null || die "n1: wallet sync failed"
+# `"provision": false`: n1 is the verifier and holds no membership by design.
+# Since liblogos_rln_module 0.8.0 `start` would otherwise park a provisioning
+# task on its deliberately unfunded payer for fifteen minutes.
 PREWARM=$(node_call n1 liblogos_rln_module start \
-    "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"]}" | jres | jval) || PREWARM=""
+    "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"],\"provision\":false}" | jres | jval) || PREWARM=""
 case "$PREWARM" in
     *'"started":true'*) say "n1: rln module pre-warmed" ;;
     *) die "n1: rln module start (pre-warm) failed: ${PREWARM:-<empty>}" ;;
 esac
 node_watch_start n1 delivery_module
 node_watch_start n1 chat_module
-ATTACH=$(node_call n1 delivery_module rlnBridgeEnable | jres)
+# configureRln, not rlnBridgeEnable: it installs the plugin, brings the
+# in-process bridge up AND carries the scope the conf can no longer hold.
+ATTACH=$(node_call n1 delivery_module configureRln \
+    "$(argfile rlncfg_n1 "$(rln_cfg_json)")" | jres) || ATTACH=""
 case "$ATTACH" in
-    *'"success":true'*) say "n1: in-process rln bridge enabled" ;;
-    *) die "n1: rlnBridgeEnable failed: ${ATTACH:-<empty>}" ;;
+    *'"servedInProcess":true'*) say "n1: configureRln — rln served in-process" ;;
+    *'"servedInProcess":false'*) die "n1: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
+    *) say "n1: configureRln gave no usable reply (${ATTACH:-<empty>}) — waiting on the module's log line"
+       for _t in $(seq 1 "$(polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
+           grep -q "rln served in-process" "$(node_log_path n1)" && break
+           sleep 5
+       done
+       grep -q "rln served in-process" "$(node_log_path n1)" \
+           || die "n1: configureRln never reported 'rln served in-process'"
+       say "n1: configureRln — rln served in-process (via log)" ;;
 esac
 INIT=$(node_call n1 chat_module init "str:" | jres) || INIT=""
 case "$INIT" in
@@ -245,14 +273,16 @@ say "n1: chat B up — addr $B_ADDR, maddr $N1_MADDR"
 # ---------- basecamp: fresh (fundless) wallet, delegated options --------------
 section "basecamp up (headless; fresh never-funded wallet)"
 BHOME="$E2E_RUN_DIR/wallet-basecamp"
-fresh_home "$BHOME"
-DELEGATED_OPTS=$(printf ',"rln-relay-registry-options":"{\\"delegated\\":\\"true\\",\\"gifter_peer_id\\":\\"%s\\",\\"gifter_multiaddr\\":\\"%s\\"}"' \
-    "$GPEER" "$GADDR")
-BC_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 2 ))" "$N1_MADDR" "$DELEGATED_OPTS")
+# Config only, no storage and no seed. Derivation is deterministic from the
+# seed, so a home carrying the staged one derives the STAGED accounts — which
+# is how "basecamp cannot pay for itself" used to rest on nothing but the
+# gifter having derived a different account.
+basecamp_wallet_home "$BHOME"
+BC_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 2 ))" "$N1_MADDR")
 basecamp_launch "$UD" "$BHOME" "$BC_CONF"
 
 section "basecamp: load the module stack (gifter client half before the RLN module)"
-basecamp_load_modules lez_core liblogos_lez_rln_module libp2p_module rln_gifter_module \
+basecamp_load_modules liblogos_lez_rln_module libp2p_module rln_gifter_module \
     liblogos_rln_module delivery_module chat_module
 
 section "basecamp wallet (open + sync, read-only use)"
@@ -261,29 +291,21 @@ basecamp_wallet_open_sync "$BHOME"
 # deterministic, so two wallets that started from the same material land on
 # the same account — and then "the gifter paid" would be unfalsifiable. The
 # homes above are built to avoid that; assert it rather than trust it.
-BC_PAYER=$(bc_call liblogos_lez_rln_module wallet_status \
-    | grep -oE '"payer":"[0-9a-fA-F]*"' | head -1 | cut -d'"' -f4) || BC_PAYER=""
-[ -n "$BC_PAYER" ] || die "basecamp's registry module published no payer"
+BC_PAYER=$(basecamp_payer) || die "basecamp: no payer"
 [ "$BC_PAYER" != "$GPAYER" ] \
     || die "basecamp's payer IS the gifter's funded account ($GPAYER) — this run could not tell a delegated registration from a self-funded one"
 say "basecamp payer: $BC_PAYER (not the gifter's $GPAYER)"
 
-# The seed derives a few accounts of its own, so "fundless" is an invariant,
-# not an empty list: basecamp's accounts and their NATIVE balances must be
-# IDENTICAL before and after the registration (read through n2's registry
-# module; "" is "could not ask", NOT zero, so it is recorded as itself and
-# still has to match).
-bc_accounts_snapshot() {
-    local accts ids id bal
-    accts=$(bc_call lez_core list_accounts) || accts=""
-    ids=$(printf '%s' "$accts" | jq -r '.[]?.account_id' 2>/dev/null)
-    for id in $ids; do
-        bal=$(wallet_native_balance n2 "$id")
-        printf '%s %s\n' "$id" "${bal:-unreadable}"
-    done | sort
-}
-SNAP0=$(bc_accounts_snapshot)
-say "basecamp wallet: $(printf '%s\n' "$SNAP0" | grep -c .) seed-derived accounts, native balances: $(printf '%s\n' "$SNAP0" | awk '{print $2}' | tr '\n' ' ')"
+# "Fundless" is an invariant, not a hope. The account basecamp would pay from
+# holds nothing before the delegated registration and must hold nothing after
+# — read off the chain through n2, whose wallet can read any public account.
+# "" is "could not ask", NOT zero, and fails rather than passing quietly.
+bc_payer_balance() { wallet_native_balance n2 "$BC_PAYER"; }
+BCBAL0=$(bc_payer_balance)
+case "$BCBAL0" in ''|*[!0-9]*) die "cannot read basecamp's native balance: '${BCBAL0:-<empty>}'" ;; esac
+[ "$BCBAL0" = 0 ] \
+    || die "basecamp's payer $BC_PAYER already holds $BCBAL0 native — it could have paid for itself, and 'the gifter paid' would be unfalsifiable"
+say "basecamp payer $BC_PAYER holds $BCBAL0 native — it cannot pay for anything"
 
 # The gifter CLIENT dials out through basecamp's own libp2p node.
 LP=$(bc_call libp2p_module createNode "$(jq -cn --arg c '{"addrs":["/ip4/127.0.0.1/tcp/0"]}' '[$c]')") || LP=""
@@ -305,14 +327,17 @@ case "$RSTART" in
     *'"started":true'*) say "basecamp: rln module started" ;;
     *) die "basecamp: rln module start failed: ${RSTART:-<empty>}" ;;
 esac
-BATTACH=$(bc_call delivery_module rlnBridgeEnable '[]') || BATTACH=""
+BATTACH=$(bc_call delivery_module configureRln "$(jq -cn --arg c "$(rln_cfg_json)" '[$c]')") || BATTACH=""
 case "$BATTACH" in
-    *'"success":true'*) say "basecamp: in-process rln bridge enabled" ;;
-    *) die "basecamp: rlnBridgeEnable failed: ${BATTACH:-<empty>}" ;;
+    *'"servedInProcess":true'*) say "basecamp: configureRln — rln served in-process" ;;
+    *'"servedInProcess":false'*) die "basecamp: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
+    *) bc_log_wait "rln served in-process" "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" \
+           || die "basecamp: configureRln never reported 'rln served in-process' (reply: ${BATTACH:-<empty>})"
+       say "basecamp: configureRln — rln served in-process (via log)" ;;
 esac
 BINIT=$(bc_call chat_module init '[""]') || BINIT=""
 case "$BINIT" in
-    *'"success":true'*) say "basecamp: chat init accepted (delegated options in the conf)" ;;
+    *'"success":true'*) say "basecamp: chat init accepted (conf via CHAT_DELIVERY_CONF_OVERRIDE; the delegated options are NOT in it — see the registration section)" ;;
     *) die "basecamp: chat init failed: ${BINIT:-<empty>}" ;;
 esac
 ONLINE=""
@@ -329,7 +354,28 @@ A_ADDR=$(bc_call chat_module get_address | tr -d '"')
 say "basecamp: chat online — addr ${A_ADDR:-<none>}"
 
 # ---------- registration asserts (the gifter pays) ---------------------------
-section "delegated registration (through chat's own boot, paid by the gifter)"
+# The delegated options used to ride the delivery conf as
+# rln-relay-registry-options, and chat's bootstrap folded them into the
+# registration. Upstream has no such key any more and configureRln takes only
+# registry-id / rln-identifier / epoch-size-sec (delivery_module_plugin.cpp:964),
+# so there is no path from a delivery conf to the allocation protocol at all.
+#
+# What the protocol needs is unchanged — liblogos_rln_module reads
+# "delegated"/"gifter_peer_id"/"gifter_multiaddr" straight off RegistryOptions
+# (lib.rs:363) — so the scenario asks for it directly. What is lost is only the
+# attribution: this no longer proves chat's boot can request a gifted
+# membership, because on today's surface it cannot. Everything the allocation
+# protocol itself claims is still proven below: the gifter pays, basecamp's own
+# payer is never funded and never moves, and the membership is real on chain.
+section "delegated registration (asked for directly; chat's conf can no longer carry it)"
+DELEGATED_OPTS=$(jq -cn --arg r "$RATE_LIMIT" --arg p "$GPEER" --arg m "$GADDR" \
+    '[{key:"rate_limit",value:$r},{key:"delegated",value:"true"},{key:"gifter_peer_id",value:$p},{key:"gifter_multiaddr",value:$m}]')
+DREG=$(bc_call liblogos_rln_module register_membership \
+    "$(jq -cn --arg r "$REGISTRY_ID" --arg i "$RLN_ID" --arg o "$DELEGATED_OPTS" '[$r,$i,$o]')") || DREG=""
+case "$DREG" in
+    *'"state":"pending"'*|*'"state":"active"'*) say "basecamp: delegated register_membership accepted" ;;
+    *) die "basecamp: delegated register_membership failed: ${DREG:-<empty>}" ;;
+esac
 STATE=""
 GMS=""
 for _t in $(seq 1 "$(polls "$REG_WAIT_S" 5)"); do
@@ -384,10 +430,11 @@ EXPECTED=$(( RATE_LIMIT * PRICE ))
 [ "$PAID" -ge "$EXPECTED" ] \
     || die "the gifter paid $PAID native, less than the registry price $EXPECTED (rate $RATE_LIMIT × price $PRICE) — leaf $E2E_ACTUAL_LEAF was not paid for out of this account"
 say "gifter paid $PAID native = price $EXPECTED (rate $RATE_LIMIT × price $PRICE) + fee $(( PAID - EXPECTED ))"
-SNAP1=$(bc_accounts_snapshot)
-[ "$SNAP0" = "$SNAP1" ] \
-    || die "basecamp's wallet changed across a delegated registration (it should have paid nothing) — before: [$(printf '%s' "$SNAP0" | tr '\n' ';')] after: [$(printf '%s' "$SNAP1" | tr '\n' ';')]"
-say "basecamp wallet unchanged (same accounts, same balances) — it paid nothing"
+BCBAL1=$(bc_payer_balance)
+case "$BCBAL1" in ''|*[!0-9]*) die "cannot read basecamp's balance after registration: '${BCBAL1:-<empty>}'" ;; esac
+[ "$BCBAL1" = "$BCBAL0" ] \
+    || die "basecamp's payer moved across a delegated registration ($BCBAL0 -> $BCBAL1) — it should have paid nothing"
+say "basecamp payer still holds $BCBAL1 native — it paid nothing"
 
 # ---------- message leg -------------------------------------------------------
 section "message leg (proof-gated chat, basecamp -> n1)"
@@ -460,7 +507,7 @@ echo
 echo "e2e: PASS — chat-basecamp-gifter (target $E2E_TARGET)"
 echo "e2e:   service   n2 = logoscore + libp2p_module + rln_gifter_module (open gifter paying from its funded payer $GPAYER)"
 echo "e2e:   product   chat_module -> delivery_module -> RLN module -> gifter client -> libp2p -> the service, all INSIDE Basecamp"
-echo "e2e:   config    rln-relay-registry-options = {delegated:true, gifter_peer_id, gifter_multiaddr} via CHAT_DELIVERY_CONF_OVERRIDE"
-echo "e2e:   register  delegated, through chat's own boot: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: $ORACLE)"
-echo "e2e:   payer     the gifter paid $PAID native from $GPAYER; basecamp's own payer ($BC_PAYER) is a different account and its wallet (accounts + balances) is unchanged"
+echo "e2e:   config    scope via configureRln; delegated options {delegated:true, gifter_peer_id, gifter_multiaddr} via register_membership — no delivery conf carries them any more"
+echo "e2e:   register  delegated, asked for directly: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: $ORACLE)"
+echo "e2e:   payer     the gifter paid $PAID native from $GPAYER; basecamp's own payer ($BC_PAYER) is a different account and still holds $BCBAL1"
 echo "e2e:   message   basecamp send_message -> proof attached -> gossipsub -> n1 validate -> chat message_received (attempt $ATTEMPT/$SEND_ATTEMPTS)"
