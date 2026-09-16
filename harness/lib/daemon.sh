@@ -42,24 +42,36 @@ node_wallet_home() { local h; h=$(gv NODEWALL "$1"); printf '%s' "${h:-${E2E_WAL
 # Whether <node> runs its own wallet and pays from an account it derived.
 node_self_paying() { local v; v=$(gv NODESELFPAY "$1"); printf '%s' "${v:-0}"; }
 
-# Usage: daemon_self_paying <node> <dir>
-# Give <node> a wallet of its OWN — a home carrying the staged
-# wallet_config.json and nothing else, so the registry module creates a fresh
-# wallet there and derives a payer only it holds.
+# Usage: wallet_home_fresh <dir>
+# Build a wallet home carrying the staged wallet_config.json and nothing else,
+# so the registry module creates a fresh wallet there and derives a payer only
+# that instance holds.
 #
 # Deliberately not a copy of the staged storage.json: derivation is
-# deterministic from the seed, so every node copying one wallet derives the
+# deterministic from the seed, so every instance copying one wallet derives the
 # SAME account id, and "its own payer" would be a fiction. Withholding the
 # storage is what makes the seeds differ.
+#
+# It lives here rather than in wallet.sh because both callers must see it and
+# wallet.sh sources this file, not the other way round. The second caller is
+# Basecamp, which embeds logos-core and has no node to key anything on.
+wallet_home_fresh() {
+    local dir="${1:?wallet_home_fresh <dir>}"
+    [ -n "${E2E_WALLET_HOME:-}" ] || die "wallet_home_fresh: no staged wallet home to copy a config from"
+    rm -rf "$dir"
+    mkdir -p "$dir" || die "wallet_home_fresh: cannot create $dir"
+    cp "$E2E_WALLET_HOME/wallet_config.json" "$dir/" \
+        || die "wallet_home_fresh: cannot copy wallet_config.json to $dir"
+}
+
+# Usage: daemon_self_paying <node> <dir>
+# Give <node> a wallet of its OWN, and record that it pays for itself —
+# wallet_fund refuses any node that does not.
 #
 # Must precede daemon_start, like daemon_wallet_home, and it implies it.
 daemon_self_paying() {
     local node="${1:?daemon_self_paying <node> <dir>}" dir="${2:?wallet home dir}"
-    [ -n "${E2E_WALLET_HOME:-}" ] || die "daemon_self_paying: no staged wallet home to copy a config from"
-    rm -rf "$dir"
-    mkdir -p "$dir" || die "daemon_self_paying: cannot create $dir"
-    cp "$E2E_WALLET_HOME/wallet_config.json" "$dir/" \
-        || die "daemon_self_paying: cannot copy wallet_config.json to $dir"
+    wallet_home_fresh "$dir"
     sv NODESELFPAY "$node" 1
     daemon_wallet_home "$node" "$dir"
 }
