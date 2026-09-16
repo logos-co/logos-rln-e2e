@@ -28,22 +28,31 @@ lgx_of() {
     printf '%s' "$out"
 }
 
-# Build a module bundle from a WORKING TREE instead of the flake pin: copy the
-# tree (filtered) and override the flake input with it. The copy carries the
-# tree verbatim — uncommitted changes and any gitignored staged sources —
-# minus target/result/.git: a raw `path:` override copies rust-lib/target
-# (~1 GB of local cargo artifacts) into /nix/store on every eval and fills the
-# disk. Nix content-addresses the copy, so unchanged trees rebuild for free.
-# Usage: module_lgx <flake-attr> <src-tree> [input-name]
-module_lgx() {
-    local attr="$1" tree="$2" input="${3:-rln-modules}"
-    [ -d "$tree" ] || die "module_lgx: no source tree at $tree"
-    local src="${E2E_RUN_DIR:-.}/src-$input"
-    say "$attr: building from a filtered copy of $tree" >&2
+# Stage a WORKING TREE for a path: input override: a filtered copy carrying
+# the tree verbatim — uncommitted changes and any gitignored staged sources —
+# minus build outputs and .git: a raw `path:` override copies rust-lib/target
+# (~1 GB of local cargo artifacts) into /nix/store on every eval and fills
+# the disk. Nix content-addresses the copy, so unchanged trees rebuild for
+# free. Prints the staged path.
+# Usage: staged_tree <src-tree> <name>
+staged_tree() {
+    local tree="$1" name="$2"
+    [ -d "$tree" ] || die "staged_tree: no source tree at $tree"
+    local src="${E2E_RUN_DIR:-.}/src-$name"
     rsync -a --delete --exclude '*/rust-lib/target' --exclude 'result' \
         --exclude 'result-*' --exclude '.git' "$tree/" "$src/" \
         || die "rsync $tree failed"
-    local out
+    printf '%s' "$src"
+}
+
+# Build a module bundle from a WORKING TREE instead of the flake pin (see
+# staged_tree for the copy semantics).
+# Usage: module_lgx <flake-attr> <src-tree> [input-name]
+module_lgx() {
+    local attr="$1" tree="$2" input="${3:-rln-modules}"
+    local src out
+    say "$attr: building from a filtered copy of $tree" >&2
+    src=$(staged_tree "$tree" "$input")
     out=$(cd "$E2E_ROOT" && nix build --no-link --print-out-paths ".#$attr" \
         --override-input "$input" "path:$src") || die "nix build .#$attr failed"
     lgx_of "$out"
@@ -71,7 +80,15 @@ install_lgx() {
     rm -rf "${dest:?}/$name"
     mkdir -p "$dest/$name"
     cp "$tmp/manifest.json" "$dest/$name/"
-    cp -L "$tmp/variants/$variant/"* "$dest/$name/"
+    # -R because a ui_qml bundle carries qml/ and icons/ subdirectories, and a
+    # module missing its qml loads as a broken app rather than failing outright.
+    # -L stays: the tarball's entries deliberately point into /nix/store.
+    # The glob is checked first — unmatched, it goes literal and cp reports a
+    # path that never existed.
+    [ -n "$(find "$tmp/variants/$variant" -mindepth 1 -maxdepth 1 -print -quit)" ] \
+        || die "install_lgx: $lgx has an empty variants/$variant"
+    cp -RL "$tmp/variants/$variant/"* "$dest/$name/" \
+        || die "install_lgx: cannot stage variants/$variant from $lgx"
     printf '%s' "$variant" > "$dest/$name/variant"
     rm -rf "$tmp"
 }

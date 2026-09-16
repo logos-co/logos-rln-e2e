@@ -1,0 +1,101 @@
+# harness/container/Dockerfile.relay — the bootstrap relay.
+#
+# A third delivery node, in a container, that the two host peers meet at and
+# never dial past. With RELAY_RLN=1 it holds its own membership and validates
+# every proof it forwards; that is the property this image exists to prove.
+#
+# NOTHING IS COMPILED HERE. The RLN bundles come from logos-rln-modules'
+# rolling catalog, delivery_module from logos-modules-dev, and logoscore from
+# its own release assets. An in-image nix build of the delivery fork was the
+# expensive way to get a validating relay; it is unnecessary, because
+# logos-modules-dev publishes RLN-capable delivery_module builds from master
+# (0.2.1-138.g7431d480 carries src/rln_bridge.cpp and configureRln).
+#
+# Build context = repo root: harness/lib is copied in so a bundle is flattened
+# by the harness's own install_lgx rather than a second implementation of it.
+
+FROM ubuntu:24.04 AS modules
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG TARGETARCH
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends ca-certificates curl python3 tar findutils \
+    && rm -rf /var/lib/apt/lists/*
+
+# The RLN modules are ALWAYS installed. Every RLN-capable delivery_module
+# build declares dependencies:["liblogos_rln_module"], so it will not load
+# without them ("Cannot resolve dependencies for: delivery_module") — the only
+# build with no deps is 0.2.1-130.g3770771e, which predates the RLN bridge.
+# So a relay that forwards without validating is not a different IMAGE, it is
+# the same image with configureRln never called (E2E_RELAY_RLN=0 at scenario
+# time). Building it from the pre-RLN bundle instead would change the binary
+# the topology control exists to hold constant.
+ARG RLN_INDEX=https://github.com/logos-co/logos-rln-modules/releases/download/index
+ARG LEZ_RLN_VERSION=3.1.0
+ARG RLN_VERSION=0.7.0
+ARG DEV_INDEX=https://github.com/logos-co/logos-modules-dev/releases/download
+ARG DELIVERY_VERSION=0.2.1-138.g7431d480
+
+COPY harness/lib/compat.sh harness/lib/lgx.sh /harness/lib/
+# lez_core is NOT fetched: liblogos_lez_rln_module 3.1.0 declares
+# dependencies:[] because it owns its wallet in-process.
+RUN mkdir -p /bundles /modules \
+    && curl -fsSL -o /bundles/delivery_module.lgx \
+         "$DEV_INDEX/delivery_module-v$DELIVERY_VERSION/delivery_module-$DELIVERY_VERSION.lgx" \
+    && curl -fsSL -o /bundles/liblogos_lez_rln_module.lgx \
+         "$RLN_INDEX/liblogos_lez_rln_module-$LEZ_RLN_VERSION.lgx" \
+    && curl -fsSL -o /bundles/liblogos_rln_module.lgx \
+         "$RLN_INDEX/liblogos_rln_module-$RLN_VERSION.lgx"
+
+# The catalog ships PORTABLE bundles, whose variants are linux-amd64 /
+# linux-arm64 / darwin-arm64 — no "-dev" suffix, unlike the ones the harness
+# builds for host daemons. TARGETARCH is docker's own amd64/arm64.
+RUN . /harness/lib/compat.sh \
+    && . /harness/lib/lgx.sh \
+    && export E2E_PLATFORM="linux-$TARGETARCH" \
+    && for b in /bundles/*.lgx; do install_lgx "$b" /modules; done \
+    && ls -1 /modules
+
+FROM ubuntu:24.04
+SHELL ["/bin/bash", "-o", "pipefail", "-c"]
+ARG TARGETARCH
+# logoscore ships prebuilt per platform, so the image needs no nix at all.
+# This is NOT the rev the host daemons run (the e2e flake pins logoscore-cli
+# by commit); the two only have to interoperate over gossipsub, since module
+# ABI is internal to each process. _check_image_pins is what keeps the gap
+# visible rather than silent.
+ARG LOGOSCORE_RELEASE=0.3.0-rc.2
+RUN apt-get update -qq \
+    && apt-get install -y -qq --no-install-recommends \
+         ca-certificates curl python3 tar jq libstdc++6 \
+    && rm -rf /var/lib/apt/lists/* \
+    && case "$TARGETARCH" in \
+         arm64) LARCH=aarch64 ;; \
+         amd64) LARCH=x86_64 ;; \
+         *) echo "unsupported TARGETARCH $TARGETARCH" >&2; exit 1 ;; \
+       esac \
+    && curl -fsSL -o /tmp/logoscore.tar.gz \
+         "https://github.com/logos-co/logos-logoscore-cli/releases/download/$LOGOSCORE_RELEASE/logoscore-$LARCH-linux.tar.gz" \
+    && tar xzf /tmp/logoscore.tar.gz -C /tmp \
+    # The release ships an AppImage, which needs FUSE to self-mount and there
+    # is none in a container — so unpack it at build time and point at the
+    # AppRun inside, which is what sets LD_LIBRARY_PATH for the bundled Qt.
+    && cd /tmp && "/tmp/logoscore-$LARCH.AppImage" --appimage-extract >/dev/null \
+    && mv /tmp/squashfs-root /opt/logoscore \
+    && ln -s /opt/logoscore/AppRun /usr/local/bin/logoscore \
+    && rm -rf "/tmp/logoscore-$LARCH.AppImage" /tmp/logoscore.tar.gz \
+    # Assert rather than probe: a `command -v || find` here would let a broken
+    # install through to a confusing runtime failure.
+    && logoscore --help >/dev/null 2>&1 \
+    && echo "logoscore: $(readlink -f /usr/local/bin/logoscore)"
+
+COPY --from=modules /modules /modules
+
+# The daemon's config dir is not the client default, so every `logoscore call`
+# into this container must name it too — passed as an env var rather than
+# --config-dir so the harness's node_call seam stays one string.
+ENV LOGOSCORE_CONFIG_DIR=/var/lib/logos/config \
+    LEE_WALLET_HOME_DIR=/var/lib/logos/wallet-home \
+    PATH=/usr/local/bin:$PATH
+RUN mkdir -p /var/lib/logos/config /var/lib/logos/wallet-home
+
+ENTRYPOINT ["/bin/bash", "-lc", "exec logoscore -m /modules -D"]

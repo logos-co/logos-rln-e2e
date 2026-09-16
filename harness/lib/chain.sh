@@ -69,15 +69,18 @@ diagnose_reg() {
     local node="$1" logs
     logs=$(node_logs "$node" "${E2E_DIAG_LINES:-2000}" 2>/dev/null)
     printf '%s\n' "  !! RLN registration on node '$node' did not confirm on-chain." >&2
-    if printf '%s' "$logs" | grep -qiE "Insufficient balance|may be out of funds|range end index 49"; then
+    if printf '%s' "$logs" | grep -qiE "Insufficient balance|Incorrect fee|may be out of funds"; then
         cat >&2 <<EOF
-  CAUSE: the run's funding account ran out of RLNTOK mid-run (each
-         registration costs price_per_unit x rate_limit, read live from
-         get_registry_bounds).
-  FIX: claim a bigger budget — raise the scenario's rate limit budget
-       (E2E_RATE_LIMIT / the scenario's claim multiplier) and re-run; nothing
-       needs re-provisioning:
-    E2E_RATE_LIMIT=<smaller rate> ./run.sh ${E2E_SCENARIO:-<scenario>} --target ${E2E_TARGET:-local}
+  CAUSE: the node's payer ran short of NATIVE balance. Registration is
+         single-asset now: one account signs, pays price_per_unit x rate_limit
+         (live from get_registry_bounds), AND pays the transaction fee.
+         The fee RESERVE dominates — about 6.5e8 per transaction against a
+         price near 1e6 — so an account funded from the price alone cannot
+         transact at all, and the sequencer says only "Incorrect fee".
+  FIX: send it more and re-run; nothing needs re-provisioning:
+    E2E_FUND_AMOUNT=<larger> ./run.sh ${E2E_SCENARIO:-<scenario>} --target ${E2E_TARGET:-local}
+       Read what it actually holds with the registry module's
+       get_native_balance, and which account that is with wallet_status.
 EOF
     elif printf '%s' "$logs" | grep -qiE "Would exceed max total rate limit|max_total_rate_limit"; then
         cat >&2 <<EOF
