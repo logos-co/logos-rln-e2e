@@ -7,24 +7,32 @@ known tree instead of re-provisioning one.
 ```
 deployments/<name>/
   deployment.json   descriptor: name, tree_id, sequencer, registration_program_id,
-                    merkle_program_id, config_account, payment_account,
-                    supply_holding, funding (faucet|wallet-key)
-  storage.json      the wallet holding payment_account (and, on wallet-key
-                    deployments, supply_holding)
+                    merkle_program_id, config_account, payer_account,
+                    treasury_account
+  storage.json      the wallet holding payer_account
 ```
 
-`--target testnet` requires `E2E_DEPLOYMENT=<name>` — there is no default: a
-testnet run always names the tree it spends against. The target reads
-`.sequencer` from the descriptor, asserts it answers `getLastBlockId`, and
-stages the pair through logos-lez-rln's `tools/deployments/stage.sh` into the
-run's wallet home; every other contract value (tree id, config account,
-funding) comes out of that staged fixture.
+**This directory is empty, and that is deliberate.**
 
-The descriptor and its wallet are one unit: `stage.sh` fails when the wallet
-does not hold the descriptor's accounts. Copy both files or neither.
+Registration became native-asset-only, which changed the registry guest
+program. The config account is a PDA of `(registration_program_id, tree_id)`
+and the program id derives from the guest ELF, so a new guest re-derives every
+PDA of every tree. The three profiles that used to live here — `shared-faucet`,
+`testnet-faucet-260908`, `testnet-shrink-verify` — addressed a program that no
+longer exists, and their descriptors name `payment_account`, `supply_holding`
+and `funding`: fields of a 296-byte config layout nothing can decode any more.
+`stage.sh` refuses them by name, `verify.sh` by guest hash.
 
-`--target local` never reads this directory — it provisions a fresh tree per
-run into `$E2E_RUN_DIR/deployments/local-e2e`.
+They were deleted rather than kept as history, because a deployment profile
+that cannot be staged is not a record of anything — it is a trap for whoever
+tries it next. `git log -- deployments/` has them.
+
+`--target testnet` therefore has nothing to run against until a native-only
+testnet deployment exists. That needs a payer funded in the new chain's genesis
+block, which is the same external dependency that parked testnet runs already.
+
+`--target local` never read this directory — it provisions a fresh tree per run
+into `$E2E_RUN_DIR/deployments/local-e2e`, and is unaffected.
 
 ## Adding one
 
@@ -34,19 +42,13 @@ commit the pair:
 ```sh
 cd <logos-lez-rln>
 bash tools/deployments/provision.sh --name <name> \
-    --sequencer https://testnet.lez.logos.co/ --funding faucet \
-    --outdir <this-repo>/deployments
+    --sequencer https://testnet.lez.logos.co/ --payer <account-id>
 ```
 
-`funding=faucet` deployments are the paid `Register` path (anyone claims
-tokens up to the deployment's cap). `wallet-key` deployments carry a
-pre-minted supply in the committed wallet — a scenario that needs the faucet
-must assert `E2E_FUNDING=faucet`.
+`--payer` must already hold native balance on that chain: no program can mint
+native, so it arrives at genesis, over the L1 bridge, or by transfer.
 
-Guest drift invalidates a descriptor: rebuilt guest binaries change the
-program id, so the same `tree_id` derives a different `config_account`. Run
-`bash <logos-lez-rln>/tools/deployments/verify.sh deployments/<name>` after a
-guest bump; a failure means re-provision, not a chain bug.
-
-The committed wallet is a test wallet on a test chain — treat any key in here
-as public.
+**Treat any key in here as public.** A committed `storage.json` used to carry
+keys to test tokens with no value. It would now carry keys to an account
+holding **native** balance — the same asset that pays every fee on the chain.
+Fund such an account with only what a run needs.

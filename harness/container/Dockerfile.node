@@ -30,7 +30,7 @@ RUN source /nix/var/nix/profiles/default/etc/profile.d/nix-daemon.sh && \
     nix build --no-accept-flake-config --fallback github:logos-co/logos-logoscore-cli -o /logoscore
 
 # Clone logos-lez-rln pinned to feat/deploy-policies @ 7e6e9ab (deployment-
-# configurable funding: faucet claim_tokens + tri-state get_token_balance in
+# single-asset registration: one account signs, pays the price in native and
 # the rln module, on top of the rc6 SPEL stack + mint-on-demand mint_tokens).
 # Its flake fetches the execution zone (lssa) at v0.2.0-rc6 (e37876a6) via
 # fetchFromGitHub — so nothing is vendored/overlaid. nix emits raw lib/include;

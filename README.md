@@ -17,18 +17,30 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 |---|---|---|
 | `register` | in progress | full single-node membership lifecycle: faucet claim → register → merkle proof + registry cross-check → generate/verify proof (valid + tampered) |
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
-| `delivery` | planned | logos-delivery-module propagation; RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
+| `delivery` | scaffold | 3-daemon co-residency (RLN module stack + delivery_module in one process) and 3-node static-peer relay propagation, chainless (`--target none`); grows RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
+| `delivery-rln` | **active** | the real logos-delivery RLN integration end to end: bring-up via delivery's config surface, real registration on chain, proof-gated relay n1→n2, negative control (tampered message NOT delivered). **Delivery devs start at [docs/delivery-integration.md]** |
+| `keystore` | active | the RLN module's keystore custody modes (module-owned default, opt-out) |
+| `consumer-selftest` / `consumer-register` / `consumer-gifter` | active | the nim-rln-consumer mock of delivery's RLN seam: layer liveness (chainless), full register→prove→validate through the mirrored seam, delegated registration via the open gifter |
+| `delivery-relay-rln` | **active** | the shipping topology: two RLN-gated peers that never dial each other, meeting at a containerised relay that holds its own membership and validates what it forwards |
+| `chat-basecamp-rln` / `chat-basecamp-gifter` / `delivery-basecamp-rln` | active | the stack inside Basecamp's embedded core, where it actually ships: proof-gated chat, gifted membership through the allocation protocol, and the delivery plugin loaded with no consumer app |
 | `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
 ./run.sh --list
 ./run.sh register --target local     # boots a local sequencer, provisions a fresh RLN tree
 ./run.sh register --target testnet   # runs against a committed testnet deployment
+./run.sh delivery --target none      # chainless: 3 daemons, module co-residency, relay mesh
+./run.sh delivery-rln --target local # the logos-delivery RLN acceptance
 ```
+
+**Working on logos-delivery's RLN integration?** Start at
+[docs/delivery-integration.md] — the consumer contract plus the copy-paste
+local and testnet one-liners for the `delivery-rln` acceptance scenario.
 
 A scenario is `scenarios/<id>/{scenario.env,run.sh}` driven through the
 harness contract (`docs/contract.md`); a target
-(`harness/targets/{local,testnet}.sh`) stands up and provisions the chain.
+(`harness/targets/{local,testnet,none}.sh`) stands up and provisions the
+chain (`none` stands up nothing — for module-runtime-only scenarios).
 The target is always a flag, never part of a scenario's name.
 
 ## Prerequisites
@@ -42,17 +54,38 @@ The target is always a flag, never part of a scenario's name.
   `../logos-lez-rln`, override with `LEZ_RLN_CHECKOUT`) with the host
   binaries and risc0 guest blobs built — the target prints the exact build
   recipe when they are missing.
-- **docker** — only for compose-topology scenarios (mix, later delivery).
+- **`delivery-rln` / `delivery-relay-rln`**: checkouts of
+  [logos-delivery-module] and [logos-delivery] at upstream `master`
+  (submodules checked out on the latter). The flake pins delivery-module at a
+  rev that predates its RLN bridge; the rln-modules and lez-rln pins are
+  current, so the module stack needs no checkout. Copy-paste quickstart:
+  [docs/delivery-integration.md].
+- **docker** — the containerised relay (`delivery-relay-rln`,
+  `tools/build-e2e-image.sh`) and the compose-topology scenarios (mix).
 
 Platforms: darwin-arm64 and linux (x86_64/aarch64).
 
 ## Pinning
 
 `flake.lock` is the compatibility matrix: the exact revisions of
-logos-lez-rln, logos-rln-modules and logoscore this repo's scenarios are
-known to compose. Bumping the lock is the act of declaring a new known-good
-set. Artifact resolution (env override → nix build → staged-source build) is
-`harness/artifacts.sh`.
+logos-lez-rln, logos-rln-modules, logos-delivery-module and logoscore this
+repo's scenarios are known to compose. Bumping the lock is the act of
+declaring a new known-good set. Artifact resolution (env override → nix
+build → staged-source build) is `harness/artifacts.sh`.
+
+The dev loop is env-var checkout overrides — run any scenario against a
+working tree without touching the lock:
+
+```sh
+RLN_MODULES_CHECKOUT=../logos-rln-modules        ./run.sh register --target local
+DELIVERY_MODULE_CHECKOUT=../logos-delivery-module ./run.sh delivery --target none
+LOGOS_DELIVERY_CHECKOUT=../logos-delivery         ./run.sh delivery --target none  # Nim lib: source build
+```
+
+The delivery overrides compose (set both to test a shim change against a
+lib change). A `LOGOS_DELIVERY_CHECKOUT` tree must have its git submodules
+checked out, and only pinned revs are prebuilt in the logos cache — a
+changed Nim tree builds liblogosdelivery from source.
 
 ## Naming
 
@@ -64,21 +97,26 @@ The module stack was renamed on 2026-08-10 and two names **swapped meaning**
 
 ```
 run.sh                  entrypoint: ./run.sh <scenario> --target <t>
-flake.nix flake.lock    the pins (lez-rln, rln-modules, logoscore)
+flake.nix flake.lock    the pins (lez-rln, rln-modules, delivery-module, logoscore)
 harness/
   artifacts.sh          binary/bundle resolution
   lib/                  shared primitives (json, lgx, daemon, wallet, chain)
   targets/              local (sequencer lifecycle + provisioning) / testnet
-  container/            compose topology pieces (quarantined with mix)
+  container/            Dockerfile.relay (the bootstrap relay image)
+  lib/relay.sh          the relay container's lifecycle
 scenarios/
-  register/  live-registry/  delivery/  mix/
+  register/ keystore/ delivery/ delivery-rln/ delivery-relay-rln/
+  consumer-*/ *-basecamp-*/ live-registry/ mix/
 deployments/            committed testnet descriptors (local is per-run)
+profiles/               committed local provision inputs (pinned tree + wallet)
 docs/                   contract.md, naming.md
 tools/                  check-naming.sh
 ```
 
 [logos-lez-rln]: https://github.com/logos-co/logos-lez-rln
 [logos-rln-modules]: https://github.com/logos-co/logos-rln-modules
+[logos-delivery-module]: https://github.com/logos-co/logos-delivery-module
+[logos-delivery]: https://github.com/logos-messaging/logos-delivery
 [LIP-158]: https://lip.logos.co/anoncomms/raw/rln-membership-service.html
 [LIP-144]: https://lip.logos.co/anoncomms/raw/mix-spam-protection-rln.html
 
@@ -86,3 +124,4 @@ tools/                  check-naming.sh
 
 Dual-licensed under [MIT](./LICENSE-MIT) or
 [Apache 2.0](./LICENSE-APACHE-v2), at your option.
+[docs/delivery-integration.md]: docs/delivery-integration.md

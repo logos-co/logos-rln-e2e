@@ -26,7 +26,9 @@ _TESTNET_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 _testnet_chain_head() {
     local head
-    head=$(curl -sS -m 15 -X POST -H 'Content-Type: application/json' \
+    # -m 60: the hosted testnet's first request after idle can take ~15s alone
+    # (cold LB); a 15s budget flaked target_up on an otherwise healthy chain.
+    head=$(curl -sS -m 60 -X POST -H 'Content-Type: application/json' \
         --data '{"jsonrpc":"2.0","method":"getLastBlockId","params":[],"id":1}' \
         "$1" 2>/dev/null | jq -re '.result // empty' 2>/dev/null) || return 1
     case "$head" in
@@ -101,10 +103,29 @@ target_up() {
     cp "$E2E_WALLET_HOME/storage.json.seed" "$E2E_WALLET_HOME/storage.json" \
         || die "no storage.json.seed in $E2E_WALLET_HOME"
 
+    # An old stage.sh emits a wallet_config without the calibration cap;
+    # v0.2.2's open then runs 100 sequential sequencer probes and wedges the
+    # module's dispatch queue on a slow LB — the classic "Statistics not
+    # found, then silence" wallet-open failure. Patch the cap in so the
+    # pinned stage.sh works without a LEZ_RLN_CHECKOUT.
+    if ! jq -e '.multi_sequencer_client_config.calibration_limit' \
+        "$E2E_WALLET_HOME/wallet_config.json" >/dev/null 2>&1; then
+        jq '. + {multi_sequencer_client_config:{distribution_limit:1, calibration_limit:3}}' \
+            "$E2E_WALLET_HOME/wallet_config.json" > "$E2E_WALLET_HOME/wallet_config.json.tmp" \
+            && mv "$E2E_WALLET_HOME/wallet_config.json.tmp" "$E2E_WALLET_HOME/wallet_config.json" \
+            || die "cannot patch calibration cap into staged wallet_config.json"
+        say "staged wallet_config: calibration cap patched in (stage.sh predates it)"
+    fi
+
     E2E_TREE_ID=$(grep -oE 'LEZ_RLN_TREE_ID_HEX=[0-9a-f]{64}' "$E2E_WALLET_HOME/env.sh" | cut -d= -f2)
     E2E_CONFIG_ACCOUNT=$(tr -d '\n\r' < "$E2E_WALLET_HOME/config_account.txt")
-    E2E_FUNDING=$(tr -d '\n\r' < "$E2E_WALLET_HOME/funding.txt")
-    [ -n "$E2E_TREE_ID" ] && [ -n "$E2E_CONFIG_ACCOUNT" ] && [ -n "$E2E_FUNDING" ] \
+    # The account that signs and pays for registrations against this
+    # deployment. The local target mints one before genesis; here it comes
+    # from the descriptor, and the staged wallet must hold its key — stage.sh
+    # asserts exactly that. Nothing exported it before, which meant a testnet
+    # run self-paid from an account with no native balance.
+    E2E_PAYER=$(tr -d '\n\r' < "$E2E_WALLET_HOME/payer_account.txt")
+    [ -n "$E2E_TREE_ID" ] && [ -n "$E2E_CONFIG_ACCOUNT" ] && [ -n "$E2E_PAYER" ] \
         || die "staged fixtures incomplete in $E2E_WALLET_HOME"
 
     E2E_CONFIRM_TIMEOUT_S="${E2E_CONFIRM_TIMEOUT_S:-600}"
@@ -112,9 +133,9 @@ target_up() {
     E2E_EPOCH_SIZE_SEC="${E2E_EPOCH_SIZE_SEC:-600}"
     E2E_ROOT_WINDOW_TIMEOUT_S="${E2E_ROOT_WINDOW_TIMEOUT_S:-120}"
     export E2E_SEQUENCER E2E_DEPLOYMENT_DIR E2E_WALLET_HOME E2E_TREE_ID \
-        E2E_CONFIG_ACCOUNT E2E_FUNDING E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
+        E2E_CONFIG_ACCOUNT E2E_PAYER E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
         E2E_EPOCH_SIZE_SEC E2E_ROOT_WINDOW_TIMEOUT_S
-    say "deployment: $name tree ${E2E_TREE_ID:0:8}… config $E2E_CONFIG_ACCOUNT funding $E2E_FUNDING"
+    say "deployment: $name tree ${E2E_TREE_ID:0:8}… config $E2E_CONFIG_ACCOUNT payer $E2E_PAYER"
 }
 
 target_down() { :; }
