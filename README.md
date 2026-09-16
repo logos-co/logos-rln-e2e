@@ -23,6 +23,7 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 | `consumer-selftest` / `consumer-register` / `consumer-gifter` | active | the nim-rln-consumer mock of delivery's RLN seam: layer liveness (chainless), full register→prove→validate through the mirrored seam, delegated registration via the open gifter |
 | `delivery-relay-rln` | **active** | the shipping topology: two RLN-gated peers that never dial each other, meeting at a containerised relay that holds its own membership and validates what it forwards |
 | `chat-basecamp-rln` / `chat-basecamp-gifter` / `delivery-basecamp-rln` | active | the stack inside Basecamp's embedded core, where it actually ships: proof-gated chat, gifted membership through the allocation protocol, and the delivery plugin loaded with no consumer app |
+| `delivery-basecamp-pair` | **active** | two Basecamp instances and no daemon at all: both halves of the RLN path inside an embedded core, each app provisioning its own membership and paying from its own derived account. `--keep` leaves both up for hands-on work |
 | `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
