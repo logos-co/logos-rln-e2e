@@ -167,6 +167,7 @@ ls -1 "$OUTDIR"/*.lgx 2>/dev/null | sed 's/^/  /' || echo "  (none)"
 [ "$FAILED" = 0 ] || echo "
 $FAILED module(s) failed — see the logs under $WORK"
 echo "
-Load these into Basecamp. Then: configureRln BEFORE createNode, and give both
-peers the SAME rln-identifier."
+Load these into Basecamp. RLN needs no call of its own: point each instance's
+LOGOS_DELIVERY_RLN_PRESETS at a presets file whose \"\" entry names the
+registry, the rln-identifier both peers share, and the epoch size."
 exit "$FAILED"

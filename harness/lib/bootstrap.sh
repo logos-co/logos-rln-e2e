@@ -41,6 +41,7 @@ E2E_BOOTSTRAP_NAME="${E2E_BOOTSTRAP_NAME:-rln-e2e-bootstrap-$$}"
 E2E_BOOTSTRAP_RLN="${E2E_BOOTSTRAP_RLN:-1}"
 BOOTSTRAP_CFG_DIR=/var/lib/logos/config
 BOOTSTRAP_WALLET=/home/ubuntu/wallet
+BOOTSTRAP_RLN_PRESETS=/home/ubuntu/rln-presets.json
 BOOTSTRAP_UP=0
 
 bootstrap_call() {
@@ -161,7 +162,9 @@ bootstrap_up() {
     say "bootstrap: starting $E2E_BOOTSTRAP_NAME from $E2E_BOOTSTRAP_IMAGE"
     # rln_core derives its PDAs from the tree id, same as the host daemons.
     docker run -d --name "$E2E_BOOTSTRAP_NAME" \
-        -e LEZ_RLN_TREE_ID_HEX="$E2E_TREE_ID" "$E2E_BOOTSTRAP_IMAGE" >/dev/null \
+        -e LEZ_RLN_TREE_ID_HEX="$E2E_TREE_ID" \
+        -e LOGOS_DELIVERY_RLN_PRESETS="$BOOTSTRAP_RLN_PRESETS" \
+        "$E2E_BOOTSTRAP_IMAGE" >/dev/null \
         || die "bootstrap: docker run failed"
     BOOTSTRAP_UP=1
 
@@ -180,19 +183,13 @@ bootstrap_up() {
 
     if [ "$E2E_BOOTSTRAP_RLN" = 1 ]; then
         _bootstrap_register "$registry" "$rlnid" "$rate"
-        # Same fire-and-wait-on-the-log shape the peers use: configureRln
-        # outlives logosctl's fixed 20 s transport deadline.
-        bootstrap_call delivery_module configureRln \
-            "{\"registry-id\":\"$registry\",\"rln-identifier\":\"$rlnid\",\"epoch-size-sec\":$E2E_EPOCH_SIZE_SEC}" \
-            >/dev/null 2>&1 || true
-        verdict=""
-        for _t in $(seq 1 "$(_bootstrap_polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
-            if bootstrap_logs 200 | grep -q "rln served in-process"; then verdict=ok; break; fi
-            if bootstrap_logs 200 | grep -q "rln bridge unavailable"; then verdict=nobridge; break; fi
-            sleep 5
-        done
-        [ "$verdict" = ok ] || die "bootstrap: configureRln never reported (${verdict:-timeout})"
-        say "bootstrap: RLN mounted — it validates every message it relays"
+        # delivery_module takes RLN from the node's preset, and this deployment
+        # is not one of the shipped ones — so it arrives as a presets file, at
+        # the path the container's LOGOS_DELIVERY_RLN_PRESETS already names.
+        printf '{"": {"enabled": true, "registry-id": "%s", "rln-identifier": "%s", "epoch-size-sec": %s}}\n' \
+            "$registry" "$rlnid" "$E2E_EPOCH_SIZE_SEC" \
+            | docker exec -i "$E2E_BOOTSTRAP_NAME" sh -c "cat > $BOOTSTRAP_RLN_PRESETS" \
+            || die "bootstrap: could not stage $BOOTSTRAP_RLN_PRESETS"
     else
         say "bootstrap: RLN off (E2E_BOOTSTRAP_RLN=0) — relaying without validating"
     fi
@@ -210,6 +207,22 @@ JSON
         *'"success":true'*) ;;
         *) die "bootstrap: createNode failed: ${raw:-<empty>}" ;;
     esac
+    if [ "$E2E_BOOTSTRAP_RLN" = 1 ]; then
+        # Bring-up runs off createNode's thread, and start fires the library's
+        # get_membership_state gate, so the backend has to be up by then.
+        verdict=""
+        for _t in $(seq 1 "$(_bootstrap_polls "${E2E_RLN_READY_TIMEOUT_S:-180}" 5)"); do
+            verdict=$(bootstrap_call delivery_module rlnState | jres | jval | jfield state) || verdict=""
+            case "$verdict" in
+                Ready) break ;;
+                Failed|Disabled) die "bootstrap: RLN $verdict — $(bootstrap_call delivery_module rlnState | jres | jval | jfield message)" ;;
+            esac
+            sleep 5
+        done
+        [ "$verdict" = Ready ] || die "bootstrap: RLN never became Ready (${verdict:-timeout})"
+        say "bootstrap: RLN mounted — it validates every message it relays"
+    fi
+
     raw=$(bootstrap_call delivery_module start | jres) || raw=""
     case "$raw" in
         *'"success":true'*) ;;

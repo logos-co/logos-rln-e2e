@@ -3,13 +3,13 @@
 # logos-delivery-module nodes, driven entirely through the Messaging API.
 #
 # Each node registers its own membership on the same registry through the RLN
-# module (the `register` scenario's path, run twice), hands the delivery module
-# that membership through `configureRln`, then comes up as a real node:
+# module (the `register` scenario's path, run twice), then comes up as a real
+# node against a preset that names that deployment:
 #
 #   per node: open wallet -> sync -> fresh holding -> claim_tokens (faucet)
 #     -> register -> poll get_membership_state to "active"
-#     -> delivery_module.configureRln(registry-id, rln-identifier)
-#     -> createNode -> start
+#     -> createNode (resolves the preset, installs the plugin, brings RLN up
+#        on its own thread) -> wait for rlnState Ready -> start
 #   then: B dials A (A's multiaddr as an entry node) -> both subscribe
 #     -> warm both RLN root windows -> quota snapshot on A -> A.send
 #     -> B sees messageReceived
@@ -37,6 +37,13 @@
 # one. A bare top-level WakuNodeConf key (even `logLevel`) would drop the whole
 # config into the legacy flat parser, which pins every node to tcp/60000.
 #
+# RLN config: delivery_module has no method for it. The node's `preset` selects
+# the deployment's registry, rln identifier and epoch size together, and this
+# run's deployment is not one of the shipped presets — so the scenario stages a
+# presets file and names it in LOGOS_DELIVERY_RLN_PRESETS for every daemon. Its
+# one entry is keyed "" because that is the preset these nodes pass. The file is
+# written before any node is created and read at createNode.
+#
 # Target-agnostic: chain, deployment, funding mode and every poll budget arrive
 # through the harness contract (docs/contract.md).
 #
@@ -48,7 +55,7 @@
 #   E2E_CLUSTER_ID=198       test cluster (isolated from any real network)
 #   E2E_TCP_PORT_BASE=61100  node n's TCP port is base+n
 #   E2E_RECEIVE_TIMEOUT_S=60 budget for the receiver's messageReceived
-#   E2E_CONFIGURE_RLN_TIMEOUT_S=180  budget for configureRln to report
+#   E2E_RLN_READY_TIMEOUT_S=180  budget for rlnState to reach Ready
 #   E2E_RLN_IDENTIFIER       the app-scope rln identifier both nodes share
 #                            (64 hex; a fresh random one per run by default)
 #   E2E_BOOTSTRAP=docker     both peers meet at a logos-docker relay; `none`
@@ -67,7 +74,7 @@ RATE_LIMIT="${E2E_RATE_LIMIT:-100}"
 CLUSTER_ID="${E2E_CLUSTER_ID:-198}"
 TCP_PORT_BASE="${E2E_TCP_PORT_BASE:-61100}"
 RECEIVE_TIMEOUT_S="${E2E_RECEIVE_TIMEOUT_S:-60}"
-CONFIGURE_RLN_TIMEOUT_S="${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}"
+RLN_READY_TIMEOUT_S="${E2E_RLN_READY_TIMEOUT_S:-180}"
 CONTENT_TOPIC="/test/1/logos-rln-e2e-delivery/proto"
 PAYLOAD="logos rln delivery e2e"
 SENDER=n1
@@ -123,6 +130,21 @@ EOF
 ) || die "cannot decode config account '$E2E_CONFIG_ACCOUNT'"
 REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 say "registry: $REGISTRY_ID (tree ${E2E_TREE_ID:0:8}…, sequencer $E2E_SEQUENCER)"
+
+# delivery_module resolves RLN from the node's preset, so this deployment has to
+# arrive as one. Keyed "" — the preset these nodes pass. Written before any
+# daemon starts; delivery_module reads the file at createNode.
+RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
+mkdir -p "$(dirname "$RLN_PRESETS_FILE")"
+cat >"$RLN_PRESETS_FILE" <<JSON
+{"": {"enabled": true,
+      "registry-id": "$REGISTRY_ID",
+      "rln-identifier": "$RLN_IDENTIFIER",
+      "epoch-size-sec": $E2E_EPOCH_SIZE_SEC}}
+JSON
+E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_DELIVERY_RLN_PRESETS=$RLN_PRESETS_FILE"
+export E2E_DAEMON_ENV
+say "rln presets: $RLN_PRESETS_FILE"
 
 # ---------- membership: the register scenario's path, once per node ----------
 # Leaves the node's rln identifier in RLNID/<node>.
@@ -191,36 +213,16 @@ register_node() {
 }
 
 # ---------- the delivery node -----------------------------------------------
-# configureRln installs the library's RLN plugin and starts the RLN backend; it
-# must precede createNode, which is what reads the installed plugin.
+# createNode resolves the preset, installs the library's RLN plugin (which is
+# what makes it mount RLN) and then brings the RLN backend up on its own
+# thread. Waiting for Ready before start() is not optional: start fires the
+# library's get_membership_state gate, and a backend that has not started yet
+# has nothing to answer it with.
 start_delivery_node() {
-    local node="$1" index="$2" peer="${3:-}" rlnid cfg entry
+    local node="$1" index="$2" peer="${3:-}" cfg entry
 
     section "$node: delivery node"
-    rlnid=$(gv RLNID "$node")
-    [ -n "$rlnid" ] || die "start_delivery_node: $node has no membership"
-
-    # logosctl's transport deadline is a fixed 20 s with no CLI override, and
-    # configureRln outlives it: it warms the registry root window over the
-    # chain. The client's RPC_FAILED therefore says nothing about the module,
-    # so fire and forget, then wait for the module's own verdict in the log.
-    node_call "$node" delivery_module configureRln \
-        "{\"registry-id\":\"$REGISTRY_ID\",\"rln-identifier\":\"$rlnid\",\"epoch-size-sec\":$E2E_EPOCH_SIZE_SEC}" \
-        >/dev/null 2>&1 || true
-    local _t verdict=""
-    for _t in $(seq 1 "$(polls "$CONFIGURE_RLN_TIMEOUT_S" 5)"); do
-        if node_logs "$node" | grep -q "rln served in-process"; then verdict=ok; break; fi
-        if node_logs "$node" | grep -q "rln bridge unavailable"; then verdict=nobridge; break; fi
-        if node_logs "$node" | grep -q "rln module start failed"; then verdict=nostart; break; fi
-        sleep 5
-    done
-    case "$verdict" in
-        ok) ;;
-        nobridge) die_node "$node" "configureRln installed the plugin but the RLN bridge did not come up — nothing would answer the library's RLN requests" ;;
-        nostart) die_node "$node" "configureRln could not start the RLN backend" ;;
-        *) die_node "$node" "configureRln never reported within ${CONFIGURE_RLN_TIMEOUT_S}s" ;;
-    esac
-    say "$node: RLN configured on $REGISTRY_ID"
+    [ -n "$(gv RLNID "$node")" ] || die "start_delivery_node: $node has no membership"
 
     entry=""
     [ -n "$peer" ] && entry=",\"entry-node\":[\"$peer\"]"
@@ -233,8 +235,25 @@ start_delivery_node() {
 JSON
 )
     dm_call "$node" createNode "$(argfile "nodecfg-$node" "$cfg")" >/dev/null
+    await_rln_ready "$node"
     dm_call "$node" start >/dev/null
     say "$node: node started on tcp $(( TCP_PORT_BASE + index ))"
+}
+
+# rlnState answers inside logosctl's fixed 20 s deadline — it reads a field, it
+# does not wait on the chain — so this polls the method rather than the log.
+await_rln_ready() {
+    local node="$1" _t state=""
+    for _t in $(seq 1 "$(polls "$RLN_READY_TIMEOUT_S" 5)"); do
+        state=$(dm_call "$node" rlnState | jfield state) || state=""
+        case "$state" in
+            Ready) say "$node: RLN ready on $REGISTRY_ID"; return 0 ;;
+            Failed) die_node "$node" "RLN bring-up failed: $(dm_call "$node" rlnState | jfield message)" ;;
+            Disabled) die_node "$node" "the node's preset carries no RLN — is LOGOS_DELIVERY_RLN_PRESETS reaching the daemon?" ;;
+        esac
+        sleep 5
+    done
+    die_node "$node" "RLN never left ${state:-<unknown>} within ${RLN_READY_TIMEOUT_S}s"
 }
 
 # The first dialable multiaddr the node advertises.

@@ -77,6 +77,17 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 # it can never validate each other's proofs.
 RLN_IDENTIFIER="${E2E_RLN_IDENTIFIER:-$(openssl rand -hex 32)}"
 
+# delivery_module resolves RLN from the node's preset, so this deployment has
+# to arrive as one. Keyed "" — the preset bc_node_cfg passes.
+RLN_PRESETS_FILE="$INSTANCE_ROOT/rln-presets.json"
+mkdir -p "$INSTANCE_ROOT" || die "cannot create $INSTANCE_ROOT"
+cat >"$RLN_PRESETS_FILE" <<JSON
+{"": {"enabled": true,
+      "registry-id": "$REGISTRY_ID",
+      "rln-identifier": "$RLN_IDENTIFIER",
+      "epoch-size-sec": ${E2E_EPOCH_SIZE_SEC:-600}}}
+JSON
+
 # The createNode config for one instance, with the relay as its entry node when
 # there is one.
 bc_node_cfg() {
@@ -108,10 +119,13 @@ instance() {
     say "$label: installed $(find "$mods" -maxdepth 1 -mindepth 1 -type d | wc -l | tr -d ' ') modules into $mods"
 
     # LEZ_RLN_TREE_ID_HEX must reach the app: rln_core derives its PDAs from it.
+    # LOGOS_DELIVERY_RLN_PRESETS carries this deployment to delivery_module,
+    # which has no other way to learn a registry that is not a shipped preset.
     # Software rendering because these run over X11 forwarding to XQuartz,
     # which cannot give Qt Quick a usable GLX context.
     (cd "$udir" && exec env \
         LEZ_RLN_TREE_ID_HEX="$E2E_TREE_ID" \
+        LOGOS_DELIVERY_RLN_PRESETS="$RLN_PRESETS_FILE" \
         QT_QUICK_BACKEND=software \
         QT_XCB_GL_INTEGRATION=none \
         "$BIN" --user-dir "$udir" >>"$udir/basecamp-stdout.log" 2>&1) &
@@ -169,8 +183,12 @@ Manual test, in this order:
      rln-identifier   $RLN_IDENTIFIER
    The identifier must be THE SAME in both, or neither can validate the other.
 
-2. In BOTH: delivery_module.configureRln, BEFORE createNode --
-   {"registry-id":"$REGISTRY_ID","rln-identifier":"$RLN_IDENTIFIER","epoch-size-sec":${E2E_EPOCH_SIZE_SEC:-600}}
+2. Nothing to do: RLN has no method to call any more. Both instances already
+   have LOGOS_DELIVERY_RLN_PRESETS pointing at
+     $RLN_PRESETS_FILE
+   whose "" entry carries the registry, the identifier and the epoch size, so
+   createNode brings RLN up by itself. Watch the demo's RLN badge reach Ready
+   before sending — bring-up runs after createNode returns.
 
 3. In a, createNode with
    $(bc_node_cfg $((TCP_PORT_BASE+1)))
