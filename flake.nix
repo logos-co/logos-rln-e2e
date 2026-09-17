@@ -29,7 +29,7 @@
 
     # The delivery scenario's module under test. Same matrix rule: the lock
     # records the revision the scenarios are known to compose.
-    delivery-module.url = "github:logos-co/logos-delivery-module";
+    delivery-module.url = "github:logos-co/logos-delivery-module/v0.3.0-rc.1";
 
     # logoscore is consumed as a flake: its default package is the daemon/CLI
     # every scenario drives. The module-stack e2e used to fetch it unpinned at
