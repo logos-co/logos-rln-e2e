@@ -10,7 +10,7 @@
 #
 # There is no "relay without RLN" image: delivery_module declares the RLN
 # module as a dependency and will not load without it. A relay that forwards
-# without validating is this image with configureRln never called.
+# without validating is this image given a preset with RLN off.
 #
 # The labels this stamps are the image's half of the pin check: version
 # equality cannot catch a same-version-different-rev build, so the rev the
@@ -18,7 +18,7 @@
 set -euo pipefail
 
 TAG="${E2E_RELAY_IMAGE:-logos-rln-e2e:relay}"
-DELIVERY_VERSION="${DELIVERY_VERSION:-0.2.1-138.g7431d480}"
+DELIVERY_VERSION="${DELIVERY_VERSION:-0.3.0-146.gfd00701f}"
 LEZ_RLN_VERSION="${LEZ_RLN_VERSION:-4.0.0}"
 RLN_VERSION="${RLN_VERSION:-0.8.0}"
 RLN_INDEX="${RLN_INDEX:-https://github.com/logos-co/logos-rln-modules/releases/download/index}"

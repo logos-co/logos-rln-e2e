@@ -9,7 +9,7 @@
 # its own release assets. An in-image nix build of the delivery fork was the
 # expensive way to get a validating relay; it is unnecessary, because
 # logos-modules-dev publishes RLN-capable delivery_module builds from master
-# (0.2.1-138.g7431d480 carries src/rln_bridge.cpp and configureRln).
+# (the bundle must carry src/rln_bridge.cpp and preset-resolved RLN).
 #
 # Build context = repo root: harness/lib is copied in so a bundle is flattened
 # by the harness's own install_lgx rather than a second implementation of it.
@@ -26,14 +26,14 @@ RUN apt-get update -qq \
 # without them ("Cannot resolve dependencies for: delivery_module") — the only
 # build with no deps is 0.2.1-130.g3770771e, which predates the RLN bridge.
 # So a relay that forwards without validating is not a different IMAGE, it is
-# the same image with configureRln never called (E2E_RELAY_RLN=0 at scenario
+# the same image given a preset with RLN off (E2E_RELAY_RLN=0 at scenario
 # time). Building it from the pre-RLN bundle instead would change the binary
 # the topology control exists to hold constant.
 ARG RLN_INDEX=https://github.com/logos-co/logos-rln-modules/releases/download/index
 ARG LEZ_RLN_VERSION=3.1.0
 ARG RLN_VERSION=0.7.0
 ARG DEV_INDEX=https://github.com/logos-co/logos-modules-dev/releases/download
-ARG DELIVERY_VERSION=0.2.1-138.g7431d480
+ARG DELIVERY_VERSION=0.3.0-146.gfd00701f
 
 COPY harness/lib/compat.sh harness/lib/lgx.sh /harness/lib/
 # lez_core is NOT fetched: liblogos_lez_rln_module 3.1.0 declares

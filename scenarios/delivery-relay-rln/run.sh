@@ -95,6 +95,22 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 # APPLICATION, not the member (docs/contract.md). A per-node value rejects
 # every message in a way that reads like a product fault.
 RLN_ID=$(openssl rand -hex 32)
+
+# delivery_module resolves RLN from the node's preset, so this deployment has
+# to arrive as one. Keyed "" — the preset delivery_cfg passes. Exported because
+# relay.sh hands the same path to the container, which sees it through the
+# run-dir mount.
+E2E_RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
+cat >"$E2E_RLN_PRESETS_FILE" <<JSON
+{"": {"enabled": true,
+      "registry-id": "$REGISTRY_ID",
+      "rln-identifier": "$RLN_ID",
+      "epoch-size-sec": $E2E_EPOCH_SIZE_SEC}}
+JSON
+export E2E_RLN_PRESETS_FILE
+E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_DELIVERY_RLN_PRESETS=$E2E_RLN_PRESETS_FILE"
+export E2E_DAEMON_ENV
+say "rln presets: $E2E_RLN_PRESETS_FILE"
 say "registry: $REGISTRY_ID (rate $RATE_LIMIT, relay-rln=${E2E_RELAY_RLN:-1})"
 
 # ---------- host peers -------------------------------------------------------
@@ -182,23 +198,27 @@ fi
 
 # ---------- bring-up ---------------------------------------------------------
 # The conf carries NO rln-* key: those exist only on a logos-delivery fork.
-# configureRln is the upstream door and must precede createNode.
+# RLN arrives through the node's preset instead (logos-delivery-module#118),
+# and createNode is what resolves it — so the presets file has to exist before
+# any node is created. Keyed "" because delivery_cfg passes no preset.
 section "delivery bring-up"
-configure_rln() {
-    local node="$1" cfg res
-    cfg=$(printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
-        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC")
-    res=$(node_call "$node" delivery_module configureRln "$(argfile "rlncfg_$node" "$cfg")" | jres) || res=""
-    case "$res" in
-        *'"servedInProcess":true'*) say "$node: configureRln — rln served in-process"; return 0 ;;
-        *'"servedInProcess":false'*) die_node "$node" "configureRln came up WITHOUT the bridge" ;;
-    esac
-    local _t
-    for _t in $(seq 1 "$(polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
-        node_logs "$node" 200 | grep -q "rln served in-process" && { say "$node: configureRln (via log)"; return 0; }
+
+# createNode installs the plugin synchronously and brings the backend up on its
+# own thread, so start — which fires the library's get_membership_state gate —
+# has to wait for it. rlnState is a field read, not a chain round trip, so it
+# answers inside logosctl's fixed 20s deadline.
+rln_wait_ready() {
+    local node="$1" st _t
+    for _t in $(seq 1 "$(polls "${E2E_RLN_READY_TIMEOUT_S:-180}" 5)"); do
+        st=$(node_call "$node" delivery_module rlnState | jres | jval) || st=""
+        case "$st" in
+            *Ready*)    say "$node: rlnState Ready"; return 0 ;;
+            *Failed*)   die_node "$node" "rlnState Failed — $st" ;;
+            *Disabled*) die_node "$node" "rlnState Disabled — is LOGOS_DELIVERY_RLN_PRESETS reaching the daemon?" ;;
+        esac
         sleep 5
     done
-    die_node "$node" "configureRln never reported 'rln served in-process'"
+    die_node "$node" "rlnState never reached Ready (last: ${st:-<empty>})"
 }
 
 # listenAddress 0.0.0.0, not loopback: the relay must be able to dial a peer
@@ -209,9 +229,9 @@ delivery_cfg() {
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-[ "${E2E_RELAY_RLN:-1}" = 1 ] && configure_rln r1
 must_call r1 createNode "r1 createNode" \
     "$(argfile cfg_r1 "$(delivery_cfg "$E2E_RELAY_PORT" "")")" >/dev/null
+[ "${E2E_RELAY_RLN:-1}" = 1 ] && rln_wait_ready r1
 must_call r1 start "r1 start" >/dev/null
 RELAY_MADDR=$(relay_maddr r1)
 say "relay listening at $RELAY_MADDR"
@@ -220,11 +240,11 @@ i=0
 for n in $PEERS; do
     i=$(( i + 1 ))
     node_watch_start "$n" delivery_module
-    configure_rln "$n"
     # Each peer is given the RELAY and nothing else — neither ever holds the
     # other's address, which is what makes the hop structural.
     must_call "$n" createNode "$n createNode" \
         "$(argfile "cfg_$n" "$(delivery_cfg "$(( PEER_PORT + i ))" "$RELAY_MADDR")")" >/dev/null
+    rln_wait_ready "$n"
     must_call "$n" start "$n start" >/dev/null
     node_wait_event "$n" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
         || die_node "$n" "no nodeStarted within ${EVT_TIMEOUT}s"
@@ -284,7 +304,7 @@ echo
 echo "e2e: PASS — delivery-relay-rln (target $E2E_TARGET)"
 echo "e2e:   topology  n1 and n2 peered ONLY with the container relay; neither holds the other's address"
 echo "e2e:   relay     $RELAY_MADDR (rln=${E2E_RELAY_RLN:-1}$([ "${E2E_RELAY_RLN:-1}" = 1 ] && echo ", own membership, validates what it forwards"))"
-echo "e2e:   bring-up  configureRln + a conf with NO rln-* key — upstream delivery, no fork"
+echo "e2e:   bring-up  an RLN preset + a conf with NO rln-* key — upstream delivery, no fork"
 echo "e2e:   wallet    the relay runs its OWN COPY of the wallet home — one writer per storage.json, the payer carried whole"
 echo "e2e:   message   n1 -> relay -> n2 on $TOPIC (attempt $ATTEMPT/$SEND_ATTEMPTS)"
 echo "e2e:   quota     $QUOTA_BEFORE -> $QUOTA_AFTER"

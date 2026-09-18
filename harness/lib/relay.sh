@@ -16,7 +16,7 @@
 #                     what it forwards; 0 it relays blind. This is a SCENARIO
 #                     switch, not an image one — delivery_module depends on
 #                     liblogos_rln_module either way, so the same image serves
-#                     both and 0 simply never calls configureRln.
+#                     both; 0 gives the relay a preset with RLN off.
 
 . "$(dirname "${BASH_SOURCE[0]}")/daemon.sh"
 . "$(dirname "${BASH_SOURCE[0]}")/wallet.sh"
@@ -127,10 +127,13 @@ for entry in cfg.get("sequencers", []):
     entry["sequencer_addr"] = seq
 json.dump(cfg, open(path, "w"), indent=2)
 EOF
+        # The presets file needs no copying: the run dir is mounted at the same
+        # absolute path, so the container reads the one the scenario wrote.
         env_args+=(-e "LEZ_RLN_SEQUENCER=$seq"
                    -e "LEZ_RLN_TREE_ID_HEX=${E2E_TREE_ID:?relay: E2E_TREE_ID unset}"
                    -e "LEE_WALLET_HOME_DIR=$home"
-                   -e "NSSA_WALLET_HOME_DIR=$home")
+                   -e "NSSA_WALLET_HOME_DIR=$home"
+                   -e "LOGOS_DELIVERY_RLN_PRESETS=${E2E_RLN_PRESETS_FILE:?relay: E2E_RLN_PRESETS_FILE unset — the scenario stages it}")
         # Deliberately does not name E2E_PAYER: this node derives its own and the
         # harness funds it, so printing the deployment payer here described the
         # arrangement this commit replaced.

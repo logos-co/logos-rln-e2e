@@ -9,9 +9,9 @@
 # delivery_module, whose IN-PROCESS BRIDGE answers it by calling the
 # co-loaded liblogos_rln_module and feeding the MODULE'S REPLY BACK VERBATIM
 # (the library parses the module's own wire dialects; ok/err envelope gone).
-# The bridge is installed by configureRln, which delivery_module exposes and
-# which must precede createNode — there is no external-responder topology for
-# lez any more. Each request is STILL re-emitted as an rln*Request event for
+# The bridge is installed by createNode, which resolves RLN from the network
+# preset the node config names — there is no configureRln any more, and no
+# external-responder topology for lez either (logos-delivery-module#118). Each request is STILL re-emitted as an rln*Request event for
 # observability, and delivery_module.rlnRespond(reqId, resultJson) still
 # exists, but on a bridged node the bridge answers first and any external
 # answer is rejected as a duplicate. THIS SCRIPT runs a WITNESS responder on
@@ -22,9 +22,9 @@
 #
 # What it proves:
 #   1. co-residency: the RLN stack + the RLN-enabled delivery_module load in
-#      one daemon, on both nodes — and configureRln brings the in-process
+#      one daemon, on both nodes — and createNode brings the in-process
 #      bridge up on BOTH (no responder answers anything).
-#   2. bring-up over the UPSTREAM surface: configureRln carries registry-id /
+#   2. bring-up over the UPSTREAM surface: the preset carries registry-id /
 #      rln-identifier / epoch-size-sec, the node conf carries no rln-* key at
 #      all, and the rate limit rides register_membership's options — there is
 #      no funding account any more, since one account signs and pays.
@@ -422,9 +422,26 @@ EOF
 }
 
 # ---------- daemons ----------------------------------------------------------
-# E2E_DAEMON_ENV is NOT touched here: the RLN module runs its default
-# module-owned keystore custody (self-provisioned secret, zero unlock calls)
-# — exactly the headless shape the delivery integration deploys.
+# The RLN module still runs its default module-owned keystore custody
+# (self-provisioned secret, zero unlock calls) — the headless shape the
+# delivery integration deploys.
+#
+# What E2E_DAEMON_ENV does carry is the presets file. delivery_module resolves
+# RLN from the preset its createNode config names, and this run's deployment is
+# not one of the shipped ones — all of which ship RLN off. The entry is keyed
+# "" because delivery_cfg passes no preset. Written before any daemon starts:
+# the file is read at createNode, and a file that cannot be parsed fails that
+# call rather than quietly leaving RLN off.
+RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
+cat >"$RLN_PRESETS_FILE" <<JSON
+{"": {"enabled": true,
+      "registry-id": "$REGISTRY_ID",
+      "rln-identifier": "$RLN_ID",
+      "epoch-size-sec": $E2E_EPOCH_SIZE_SEC}}
+JSON
+E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_DELIVERY_RLN_PRESETS=$RLN_PRESETS_FILE"
+export E2E_DAEMON_ENV
+say "rln presets: $RLN_PRESETS_FILE"
 section "daemons: RLN stack + delivery_module on both nodes"
 # Each node gets a wallet of its OWN before its daemon starts: only the staged
 # wallet_config.json is copied, so the module creates a fresh wallet there and
@@ -533,7 +550,7 @@ MEMBERSHIP_HASH=$(gv MHASH n1)
 
 # ---------- witness up, then the delivery nodes ------------------------------
 section "delivery nodes (bring-up via the real config surface)"
-# ONE topology: configureRln brings the in-process bridge up on BOTH nodes
+# ONE topology: createNode brings the in-process bridge up on BOTH nodes
 # before their createNode (there is no external-responder topology for lez
 # any more, and no opt-out). n1 runs
 # pure production shape; n2 additionally runs the WITNESS responder, which
@@ -551,10 +568,10 @@ say "n2: witness responder up (routes events; hot-path answers must all be rejec
 # (rln-lez / rln-registry-id / rln-identifier / rln-registry-options) live
 # only on logos-delivery's fork commit 85c2d6f8 and never landed upstream —
 # master's parser rejects all four with "Unrecognized configuration
-# option(s)". The scope goes through configureRln instead, which IS
+# option(s)". The scope goes through the preset instead, which IS
 # upstream, and everything else the keys used to carry already has a home:
 # the rate limit is a register_membership option and the epoch size is a
-# configureRln field. The funding account those keys also carried has no
+# preset field. The funding account those keys also carried has no
 # successor: registration is single-asset and the registry module pays from
 # its own account.
 delivery_cfg() {
@@ -563,44 +580,35 @@ delivery_cfg() {
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-# configureRln installs the RLN plugin, brings up the in-process bridge and
-# starts the backend — "An installed plugin is what makes the library mount
-# RLN", so no conf key enables it. It MUST precede createNode.
+# createNode installs the library's RLN plugin synchronously and then brings
+# the backend up on its own thread, so a node is not ready the moment the call
+# returns. start fires the library's get_membership_state gate, and a backend
+# still initializing has nothing to answer it with — so wait in between.
 #
-# It is not fatal when the bridge cannot come up: it answers
-# {"servedInProcess":false} and leaves answering to the rln*Request events.
-# For this scenario that is a failure, so assert the field. The call can also
-# outlive logosctl's fixed 20s transport deadline, so a lost reply falls back
-# to the module's own log line rather than failing the run.
-configure_rln() {
-    local node="$1" cfg res
-    cfg=$(printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
-        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC")
-    res=$(node_call "$node" delivery_module configureRln "$(argfile "rlncfg_$node" "$cfg")" | jres) || res=""
-    case "$res" in
-        *'"servedInProcess":true'*)
-            say "$node: configureRln — rln served in-process" ; return 0 ;;
-        *'"servedInProcess":false'*)
-            die "$node: configureRln came up WITHOUT the bridge (servedInProcess:false) — answering would fall to rlnRespond" ;;
-    esac
-    say "$node: configureRln gave no usable reply (${res:-<empty>}) — waiting on the module's log line"
-    local _t
-    for _t in $(seq 1 "$(polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
-        grep -q "rln served in-process" "$(node_log_path "$node")" && {
-            say "$node: configureRln — rln served in-process (via log)" ; return 0 ; }
-        grep -q "rln bridge unavailable" "$(node_log_path "$node")" \
-            && die "$node: configureRln reported the bridge unavailable"
+# rlnState is polled rather than the log grepped: it reads a field instead of
+# waiting on a chain round trip, so it answers well inside logosctl's fixed 20s
+# deadline. Disabled means the preset carried no RLN, which for this scenario
+# is a misconfigured run, not a slow one.
+rln_wait_ready() {
+    local node="$1" st _t
+    for _t in $(seq 1 "$(polls "${E2E_RLN_READY_TIMEOUT_S:-180}" 5)"); do
+        st=$(node_call "$node" delivery_module rlnState | jres | jval) || st=""
+        case "$st" in
+            *Ready*)        say "$node: rlnState Ready"; return 0 ;;
+            *Failed*)       die "$node: rlnState Failed — $st" ;;
+            *Disabled*)     die "$node: rlnState Disabled — the preset carries no RLN. Is LOGOS_DELIVERY_RLN_PRESETS reaching the daemon?" ;;
+        esac
         sleep 5
     done
-    die "$node: configureRln never reported 'rln served in-process'"
+    die "$node: rlnState never reached Ready within ${E2E_RLN_READY_TIMEOUT_S:-180}s (last: ${st:-<empty>})"
 }
 
 delivery_up() {
     local node="$1" peers="$2" port cfg peerid
     port=$(( BASE_PORT + ${node#n} ))
-    configure_rln "$node"
     cfg=$(delivery_cfg "$port" "$peers")
     must_call "$node" createNode "createNode" "$(argfile "cfg_$node" "$cfg")" >/dev/null
+    rln_wait_ready "$node"
     must_call "$node" start "start (dispatch)" >/dev/null
     node_wait_event "$node" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
         || die "$node: no nodeStarted within ${EVT_TIMEOUT}s (RLN legs unanswered? see responder log)"
@@ -612,16 +620,16 @@ delivery_up() {
 
 delivery_up n1 ""
 delivery_up n2 "$(gv MADDR n1)"
-say "both nodes: in-process rln bridge up via configureRln"
+say "both nodes: rln up from the preset, backend Ready"
 
 # ---------- bring-up assertions ----------------------------------------------
 section "bring-up assertions"
 
-# Who starts the RLN backend moved with the conf. configureRln starts it
-# itself, through the bridge, from the arguments WE passed it — so the
+# Who starts the RLN backend moved with the conf. createNode starts it
+# itself, through the bridge, from the preset it resolved — so the
 # library need not emit rlnStartRequest at all any more. When it does, the
 # config it carries must still match the configured scope; when it does not,
-# configureRln's own reply already asserted the bridge is serving, and the
+# rlnState reaching Ready already asserted the bridge is serving, and the
 # scope was ours to begin with. Assert the first, tolerate the second.
 EVT1=$(node_wait_event n1 delivery_module "$(rln_evt rlnStartRequest)" 5) || EVT1=""
 if [ -n "$EVT1" ]; then
@@ -637,7 +645,7 @@ assert sys.argv[2] in cfg.get("registries", []), \
         || die "rlnStartRequest config mismatch: '$EV_CFG' (want epoch $E2E_EPOCH_SIZE_SEC + registry $REGISTRY_ID)"
     say "n1: start request carries the configured epoch + registry"
 else
-    say "n1: no rlnStartRequest — configureRln started the backend directly (expected on the upstream conf path)"
+    say "n1: no rlnStartRequest — createNode started the backend directly (expected on the preset path)"
 fi
 
 # WHEN the library checks the membership is upstream's business: it used to
@@ -661,7 +669,7 @@ fi
 # since abc53a6f), "RLN membership verified" is the check passing on the
 # bridge's answer. Both nodes registered above, so a miss — only a notice
 # to the library — is a failure here.
-# What proves the backend started is configureRln's own reply: a failing
+# What proves the backend started is rlnState reaching Ready: a failing
 # startBackend turns it into an error ("rln module start failed"), and we
 # asserted servedInProcess:true above. The library's "RLN module started"
 # line does not exist upstream — it is a fork-only string — so the library
@@ -850,12 +858,12 @@ say "n2 witness verdict trail: $N2_VERDICTS"
 
 echo
 echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
-echo "e2e:   config    configureRln(registry-id/rln-identifier/epoch-size-sec) + a conf with NO rln-* key — upstream delivery, no fork"
+echo "e2e:   config    an RLN preset (registry-id/rln-identifier/epoch-size-sec) + a conf with NO rln-* key — upstream delivery, no fork"
 echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
 echo "e2e:   bring-up  app-side register via the module on BOTH nodes (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership check verified on both (non-fatal since abc53a6f)"
 echo "e2e:   gate      n1's scope was read exactly once — at start, before its first generate — and the cached pass covered every send"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
-echo "e2e:   topology  IN-PROCESS bridge installed by configureRln on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
+echo "e2e:   topology  IN-PROCESS bridge installed at createNode on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"
 echo "e2e:   gate      witness's contradicting \"invalid\" rejected, probe DELIVERED (hijack control); $ATTEMPT attempts = $GEN_COUNT generate requests"
 echo "e2e:   verdicts  n2 witness saw: $N2_VERDICTS (duplicate = bridge validated first; module wire crossing verbatim)"
