@@ -188,8 +188,9 @@ if isinstance(d, int) and not isinstance(d, bool):
 
 # Wait for a line in basecamp's app log — the delivery library and the plugin
 # log there, and some of what a scenario needs to know is only stated in a log
-# line (configureRln outliving its transport deadline, "RLN membership
-# verified"). Lives here because the log path is basecamp_launch's to choose;
+# line ("RLN module started", "RLN membership verified" — the library's own
+# lines, which no method reports). Lives here because the log path is
+# basecamp_launch's to choose;
 # it was a private copy in delivery-basecamp-rln while two other scenarios
 # called it.
 # Usage: bc_log_wait <pattern> [seconds]

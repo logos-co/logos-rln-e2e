@@ -45,7 +45,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx daemon wallet chain basecamp; do
+for _lib in compat json lgx daemon wallet chain basecamp delivery; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -108,20 +108,22 @@ say "registry: $REGISTRY_ID (scope rate $RATE_LIMIT, identifier ${RLN_ID:0:16}�
 # The node conf carries NO rln key at all — the same conf delivery-rln passes.
 # The LEZ keys are gone from upstream outright and an unknown key is refused;
 # `rln-relay: true` would make the conf builder demand an Ethereum chain id.
-# The scope rides configureRln, the rate limit is a register option and the
-# epoch size is a configureRln field.
+# The scope and the epoch size ride the RLN preset, which createNode resolves
+# from LOGOS_DELIVERY_RLN_PRESETS; the rate limit is a register option.
 delivery_cfg() {
     local port="$1" peers="$2"
     printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true%s}' \
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-rln_cfg_json() {
-    printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
-        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
-}
 
 bc_port_of() { printf '%s' "$(( BASE_PORT + $1 ))"; }
+
+# Both instances share one presets file: they must share the scope, and the
+# app reads the path from its own environment at launch. Staged before either
+# launches, because createNode is what resolves it.
+RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
+delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
 
 # ---------- per-instance bring-up ------------------------------------------
 # Everything up to "has a membership and is not yet on the network". The two
@@ -133,7 +135,8 @@ bring_up() {
 
     section "$label: basecamp up (own user-dir, own wallet)"
     basecamp_wallet_home "$home"
-    basecamp_launch_as "$label" "$ud" "$home" ""
+    basecamp_launch_as "$label" "$ud" "$home" "" \
+        "$(delivery_rln_presets_env "$RLN_PRESETS_FILE")"
     basecamp_load_modules_on "$label" liblogos_lez_rln_module liblogos_rln_module delivery_module
 
     section "$label: wallet + payer"
@@ -191,29 +194,13 @@ This scenario deliberately registers nothing — if this times out, provisioning
     say "$label: membership $state at leaf $(gv LEAF "$label") — provisioned, not registered by this test"
 }
 
-# configureRln installs the plugin, brings the in-process bridge up and starts
-# the backend; it MUST precede createNode. A lost reply falls back to the log,
-# because the call can outlive the inspector's transport deadline.
-configure_rln_on() {
-    local label="$1" res cfg_args
-    cfg_args=$(jq -cn --arg c "$(rln_cfg_json)" '[$c]')
-    res=$(bc_call_on "$label" delivery_module configureRln "$cfg_args") || res=""
-    case "$res" in
-        *'"servedInProcess":true'*) say "$label: configureRln — rln served in-process" ;;
-        *'"servedInProcess":false'*) die "$label: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
-        *) bc_log_wait_on "$label" "rln served in-process" "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" \
-               || die "$label: configureRln never reported 'rln served in-process' (reply: ${res:-<empty>})"
-           say "$label: configureRln — rln served in-process (via log)" ;;
-    esac
-}
-
 # createNode + start + subscribe. Prints the instance's multiaddr.
 delivery_up_on() {
     local label="$1" idx="$2" peers="$3" port conf peerid
     port=$(bc_port_of "$idx")
-    configure_rln_on "$label"
     conf=$(delivery_cfg "$port" "$peers")
     bc_must_on "$label" createNode "createNode" "$(jq -cn --arg c "$conf" '[$c]')" >/dev/null
+    delivery_wait_rln_ready_bc "$label"
     bc_must_on "$label" start "start" >/dev/null
     peerid=""
     local _t
@@ -284,8 +271,9 @@ for ATTEMPT in $(seq 1 "$SEND_ATTEMPTS"); do
 done
 [ "$RECEIVED" = 1 ] || die "b never received a's message in $SEND_ATTEMPTS attempts"
 
-# b's bridge is what validated it. With rln served in-process there is no
-# external responder, so the library's own line is the evidence that the proof
+# b's bridge is what validated it. The preset brings the bridge up in-process
+# and there is no external responder, so the library's own line is the evidence
+# that the proof
 # went through a validator rather than being relayed unchecked.
 # Match the MODULE side of the call — `ModuleProxy: callRemoteMethod
 # "validate_proof"` in liblogos_rln_module's own lines — not merely

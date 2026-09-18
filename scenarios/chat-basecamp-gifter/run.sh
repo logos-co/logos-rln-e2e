@@ -33,7 +33,7 @@
 #      RegistryOptions -> RLN module -> co-loaded gifter client -> libp2p ->
 #      the service, all inside Basecamp's embedded core. The leg from a
 #      delivery conf is NOT covered any more and cannot be: upstream
-#      logos-delivery dropped every LEZ conf key and configureRln carries
+#      logos-delivery dropped every LEZ conf key and the RLN preset carries
 #      only registry-id / rln-identifier / epoch-size-sec, so there is no
 #      route from a node conf to the allocation protocol to test.
 #   2. a fundless Basecamp registers: its accounts' native balances are
@@ -54,7 +54,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx daemon wallet chain basecamp; do
+for _lib in compat json lgx daemon wallet chain basecamp delivery; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -143,20 +143,21 @@ say "registry: $REGISTRY_ID (scope rate $RATE_LIMIT)"
 # what survives in api/conf/messaging_conf.nim is the ETHEREUM RLN surface, so
 # that flag makes the conf builder demand a chain id and a contract address —
 # "RLN Relay Conf building failed: RLN Relay Chain Id is not specified". The
-# LEZ backend is mounted by the plugin configureRln installs, not by a conf
+# LEZ backend is mounted by the plugin createNode installs from the preset,
+# not by a conf
 # flag. The rate limit is a register_membership option and the epoch size is a
-# configureRln field, so nothing is lost with them.
+# preset field, so nothing is lost with them.
 chat_delivery_cfg() {
     local port="$1" peers="$2"
     printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true%s}' \
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-# The scope, as configureRln takes it.
-rln_cfg_json() {
-    printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
-        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
-}
+# The scope, as the RLN preset carries it. Staged before the daemon starts and
+# before the app launches: each reads the path from its own environment, and
+# createNode is what resolves it.
+RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
+delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
 
 CHAIN_HEAD=$(chain_head) || die "cannot probe chain head at $E2E_SEQUENCER"
 say "chain head: $CHAIN_HEAD"
@@ -215,7 +216,7 @@ V_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 1 ))" "")
 # anything, so it gets a wallet of its own rather than the deployment's
 # shared payer.
 daemon_self_paying n1 "$E2E_RUN_DIR/wallet-n1"
-E2E_DAEMON_ENV="CHAT_DELIVERY_CONF_OVERRIDE=$V_CONF" daemon_start n1 \
+E2E_DAEMON_ENV="CHAT_DELIVERY_CONF_OVERRIDE=$V_CONF $(delivery_rln_presets_env "$RLN_PRESETS_FILE")" daemon_start n1 \
     || die "daemon_start n1 failed"
 NODES_UP="n1 n2"
 daemon_load_modules n1 liblogos_lez_rln_module liblogos_rln_module \
@@ -234,27 +235,18 @@ case "$PREWARM" in
 esac
 node_watch_start n1 delivery_module
 node_watch_start n1 chat_module
-# configureRln, not rlnBridgeEnable: it installs the plugin, brings the
-# in-process bridge up AND carries the scope the conf can no longer hold.
-ATTACH=$(node_call n1 delivery_module configureRln \
-    "$(argfile rlncfg_n1 "$(rln_cfg_json)")" | jres) || ATTACH=""
-case "$ATTACH" in
-    *'"servedInProcess":true'*) say "n1: configureRln — rln served in-process" ;;
-    *'"servedInProcess":false'*) die "n1: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
-    *) say "n1: configureRln gave no usable reply (${ATTACH:-<empty>}) — waiting on the module's log line"
-       for _t in $(seq 1 "$(polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
-           grep -q "rln served in-process" "$(node_log_path n1)" && break
-           sleep 5
-       done
-       grep -q "rln served in-process" "$(node_log_path n1)" \
-           || die "n1: configureRln never reported 'rln served in-process'"
-       say "n1: configureRln — rln served in-process (via log)" ;;
-esac
 INIT=$(node_call n1 chat_module init "str:" | jres) || INIT=""
 case "$INIT" in
     *'"success":true'*) say "n1: chat init accepted (conf via CHAT_DELIVERY_CONF_OVERRIDE)" ;;
     *) die "n1: chat init failed: ${INIT:-<empty>}" ;;
 esac
+# chat owns the delivery bootstrap: its init calls createNode AND start
+# back-to-back, so unlike delivery-rln there is no window to wait in between.
+# The wait here is therefore an ASSERTION, not a gate — by the time it runs
+# start has already happened, and if the backend had not been ready for it the
+# nodeStarted wait below is what fails. What this still buys is the scope
+# check: that the preset the node resolved is the one this scenario staged.
+delivery_wait_rln_ready n1
 node_wait_event n1 delivery_module nodeStarted "$(( EVT_TIMEOUT * 4 ))" >/dev/null \
     || die "n1: no nodeStarted within $(( EVT_TIMEOUT * 4 ))s (chat bootstrap wedged?)"
 B_ADDR=""
@@ -279,7 +271,8 @@ BHOME="$E2E_RUN_DIR/wallet-basecamp"
 # gifter having derived a different account.
 basecamp_wallet_home "$BHOME"
 BC_CONF=$(chat_delivery_cfg "$(( BASE_PORT + 2 ))" "$N1_MADDR")
-basecamp_launch "$UD" "$BHOME" "$BC_CONF"
+basecamp_launch "$UD" "$BHOME" "$BC_CONF" \
+    "$(delivery_rln_presets_env "$RLN_PRESETS_FILE")"
 
 section "basecamp: load the module stack (gifter client half before the RLN module)"
 basecamp_load_modules liblogos_lez_rln_module libp2p_module rln_gifter_module \
@@ -327,19 +320,12 @@ case "$RSTART" in
     *'"started":true'*) say "basecamp: rln module started" ;;
     *) die "basecamp: rln module start failed: ${RSTART:-<empty>}" ;;
 esac
-BATTACH=$(bc_call delivery_module configureRln "$(jq -cn --arg c "$(rln_cfg_json)" '[$c]')") || BATTACH=""
-case "$BATTACH" in
-    *'"servedInProcess":true'*) say "basecamp: configureRln — rln served in-process" ;;
-    *'"servedInProcess":false'*) die "basecamp: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
-    *) bc_log_wait "rln served in-process" "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" \
-           || die "basecamp: configureRln never reported 'rln served in-process' (reply: ${BATTACH:-<empty>})"
-       say "basecamp: configureRln — rln served in-process (via log)" ;;
-esac
 BINIT=$(bc_call chat_module init '[""]') || BINIT=""
 case "$BINIT" in
     *'"success":true'*) say "basecamp: chat init accepted (conf via CHAT_DELIVERY_CONF_OVERRIDE; the delegated options are NOT in it — see the registration section)" ;;
     *) die "basecamp: chat init failed: ${BINIT:-<empty>}" ;;
 esac
+delivery_wait_rln_ready_bc
 ONLINE=""
 for _t in $(seq 1 60); do
     ST=$(bc_call chat_module status) || ST=""
@@ -356,7 +342,7 @@ say "basecamp: chat online — addr ${A_ADDR:-<none>}"
 # ---------- registration asserts (the gifter pays) ---------------------------
 # The delegated options used to ride the delivery conf as
 # rln-relay-registry-options, and chat's bootstrap folded them into the
-# registration. Upstream has no such key any more and configureRln takes only
+# registration. Upstream has no such key any more and the preset takes only
 # registry-id / rln-identifier / epoch-size-sec (delivery_module_plugin.cpp:964),
 # so there is no path from a delivery conf to the allocation protocol at all.
 #
@@ -507,7 +493,7 @@ echo
 echo "e2e: PASS — chat-basecamp-gifter (target $E2E_TARGET)"
 echo "e2e:   service   n2 = logoscore + libp2p_module + rln_gifter_module (open gifter paying from its funded payer $GPAYER)"
 echo "e2e:   product   chat_module -> delivery_module -> RLN module -> gifter client -> libp2p -> the service, all INSIDE Basecamp"
-echo "e2e:   config    scope via configureRln; delegated options {delegated:true, gifter_peer_id, gifter_multiaddr} via register_membership — no delivery conf carries them any more"
+echo "e2e:   config    scope via the RLN preset; delegated options {delegated:true, gifter_peer_id, gifter_multiaddr} via register_membership — no delivery conf carries them any more"
 echo "e2e:   register  delegated, asked for directly: state=$STATE, on-chain registered:true at leaf $E2E_ACTUAL_LEAF (oracle: $ORACLE)"
 echo "e2e:   payer     the gifter paid $PAID native from $GPAYER; basecamp's own payer ($BC_PAYER) is a different account and still holds $BCBAL1"
 echo "e2e:   message   basecamp send_message -> proof attached -> gossipsub -> n1 validate -> chat message_received (attempt $ATTEMPT/$SEND_ATTEMPTS)"

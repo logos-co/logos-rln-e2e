@@ -13,7 +13,7 @@
 #              the inspector's result-returning `evaluate` ->
 #              backend.callCoreModuleMethod(...) — see harness/lib/basecamp.sh.
 #   n1         an ordinary logoscore daemon: same 3 modules, in-process
-#              bridge installed by configureRln, NO membership of its own
+#              bridge installed at createNode from the preset, NO membership of its own
 #              (the start-time membership check is non-fatal since
 #              logos-delivery abc53a6f — a receiver only logs a notice);
 #              it receives basecamp's message only after its own module
@@ -27,11 +27,11 @@
 #      membership wizard's identifier (rln_membership_ui DEFAULT_RLN_ID = 32
 #      zero bytes) and the chain confirms it active — the scope a Basecamp
 #      user's delivery conf has to carry.
-#   3. RUN: configureRln installs the in-process bridge, then createNode on
-#      the upstream conf (no rln-* key — logos-delivery refuses them now),
-#      start lands ("RLN module started" — fatal if
-#      not, since abc53a6f) and the start-time membership check passes
-#      ("RLN membership verified": the membership registered above).
+#   3. RUN: createNode on the upstream conf (no rln-* key — logos-delivery
+#      refuses them now) resolves the RLN preset and installs the in-process
+#      bridge, rlnState reaches Ready, start lands ("RLN module started" —
+#      fatal if not, since abc53a6f) and the start-time membership check
+#      passes ("RLN membership verified": the membership registered above).
 #   4. SEND: basecamp send (the cached pass skips the registry read) ->
 #      generate_proof -> gossipsub -> n1 validate_proof (in-process bridge)
 #      -> messageReceived on n1.
@@ -55,7 +55,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx daemon wallet chain basecamp; do
+for _lib in compat json lgx daemon wallet chain basecamp delivery; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -150,8 +150,8 @@ say "registry: $REGISTRY_ID (scope rate $RATE_LIMIT, identifier = the wizard's z
 # The node conf carries NO rln-* key. It used to carry rln-lez /
 # rln-registry-id / rln-identifier, and upstream logos-delivery now refuses
 # them outright — "Unrecognized configuration option(s) found" — because the
-# scope moved to configureRln, which delivery-rln has proved since. The rate
-# limit is a register_membership option and the epoch size is a configureRln
+# scope moved to the RLN preset, which delivery-rln has proved since. The rate
+# limit is a register_membership option and the epoch size is a preset
 # field. COMPACT.
 delivery_cfg() {
     local port="$1" peers="$2"
@@ -159,50 +159,25 @@ delivery_cfg() {
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-# The scope for both sides, as configureRln takes it.
-rln_cfg_json() {
-    printf '{"registry-id":"%s","rln-identifier":"%s","epoch-size-sec":%s}' \
-        "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
-}
+# The scope for both sides, as the RLN preset carries it. Staged here because
+# it has to exist before the daemon starts AND before the app launches: each
+# reads the path from its own environment, and createNode is what resolves it.
+RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
+delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
 
-# configureRln installs the RLN plugin, brings up the in-process bridge and
-# starts the backend — an installed plugin is what makes the library mount
-# RLN, so no conf key enables it. It MUST precede createNode. The call can
-# outlive logosctl's fixed 20s transport deadline, so a lost reply falls back
-# to the module's own log line rather than failing the run.
-configure_rln() {
-    local node="$1" res
-    res=$(node_call "$node" delivery_module configureRln \
-        "$(argfile "rlncfg_$node" "$(rln_cfg_json)")" | jres) || res=""
-    case "$res" in
-        *'"servedInProcess":true'*) say "$node: configureRln — rln served in-process" ; return 0 ;;
-        *'"servedInProcess":false'*) die "$node: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
-    esac
-    say "$node: configureRln gave no usable reply (${res:-<empty>}) — waiting on the module's log line"
-    local _t
-    for _t in $(seq 1 "$(polls "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" 5)"); do
-        grep -q "rln served in-process" "$(node_log_path "$node")" && {
-            say "$node: configureRln — rln served in-process (via log)" ; return 0 ; }
-        grep -q "rln bridge unavailable" "$(node_log_path "$node")" \
-            && die "$node: configureRln reported the bridge unavailable"
-        sleep 5
-    done
-    die "$node: configureRln never reported 'rln served in-process'"
-}
-
-# ---------- n1: verifier daemon (chain oracle + receiver) -------------------
 section "n1: logoscore daemon (RLN stack + delivery_module)"
 # n1 gets a wallet of its own that is never funded, rather than the
 # deployment's shared payer. Two reasons, and the second is the load-bearing
 # one. It must not race basecamp on an account's nonce; and `provision: false`
-# on its explicit start below cannot hold, because createNode's configureRln
-# calls the module's start AGAIN — delivery_module builds that config itself
-# (`{registries, epoch_size_sec}`, delivery_module_plugin.cpp) and has no way
-# to say otherwise, so provisioning comes back on. An empty payer is what
+# on its explicit start below cannot hold, because createNode resolves the RLN
+# preset and calls the module's start AGAIN — delivery_module builds that
+# config itself (`{registries, epoch_size_sec}`, delivery_module_plugin.cpp)
+# and has no way to say otherwise, so provisioning comes back on. An empty payer is what
 # actually keeps this node the membership-less verifier the topology claims:
 # provisioning parks in awaiting_funding and never registers.
 daemon_self_paying n1 "$E2E_RUN_DIR/wallet-n1"
-daemon_start n1 || die "daemon_start n1 failed"
+E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} $(delivery_rln_presets_env "$RLN_PRESETS_FILE")" \
+    daemon_start n1 || die "daemon_start n1 failed"
 NODES_UP=1
 daemon_load_modules n1 liblogos_lez_rln_module liblogos_rln_module delivery_module \
     || die "n1: load-module failed"
@@ -226,9 +201,9 @@ esac
 
 section "n1 delivery up (receiver, no membership of its own)"
 node_watch_start n1 delivery_module
-configure_rln n1
 N1_CONF=$(delivery_cfg "$(( BASE_PORT + 1 ))" "")
 must_call n1 createNode "createNode" "$(argfile cfg_n1 "$N1_CONF")" >/dev/null
+delivery_wait_rln_ready n1
 must_call n1 start "start (dispatch)" >/dev/null
 node_wait_event n1 delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
     || die "n1: no nodeStarted within ${EVT_TIMEOUT}s"
@@ -236,7 +211,7 @@ PEERID=$(must_call n1 getNodeInfo "getNodeInfo MyPeerId" MyPeerId)
 [ -n "$PEERID" ] || die "n1: empty MyPeerId"
 N1_MADDR="/ip4/127.0.0.1/tcp/$(( BASE_PORT + 1 ))/p2p/$PEERID"
 must_call n1 subscribe "subscribe" "$TOPIC" >/dev/null
-say "n1: delivery up, bridge installed by configureRln, subscribed to $TOPIC — maddr $N1_MADDR"
+say "n1: delivery up, bridge installed from the preset at createNode, subscribed to $TOPIC — maddr $N1_MADDR"
 
 # ---------- basecamp ---------------------------------------------------------
 section "basecamp up (headless, side-loaded modules)"
@@ -249,7 +224,8 @@ section "basecamp up (headless, side-loaded modules)"
 # That signs, but the harness signs as the same account, so two processes
 # advance one nonce — and the registration below is a transaction, not a read.
 basecamp_wallet_home "$E2E_RUN_DIR/wallet-basecamp"
-basecamp_launch "$UD" "$E2E_RUN_DIR/wallet-basecamp" ""
+basecamp_launch "$UD" "$E2E_RUN_DIR/wallet-basecamp" "" \
+    "$(delivery_rln_presets_env "$RLN_PRESETS_FILE")"
 
 section "basecamp: load the 0.9 module stack (the claim under test)"
 basecamp_load_modules liblogos_lez_rln_module liblogos_rln_module delivery_module
@@ -320,17 +296,10 @@ MHASH=$(printf '%s' "$GMS" | grep -oE '"membership_hash":"[0-9a-fx]+"' | head -1
 say "basecamp: membership $STATE at leaf ${LEAF:-?} (${MHASH:-?})"
 
 # ---------- basecamp: run the node on the real conf -------------------------
-section "basecamp: configureRln + delivery createNode + start"
-BCFG=$(bc_call delivery_module configureRln "$(jq -cn --arg c "$(rln_cfg_json)" '[$c]')") || BCFG=""
-case "$BCFG" in
-    *'"servedInProcess":true'*) say "basecamp: configureRln — rln served in-process" ;;
-    *'"servedInProcess":false'*) die "basecamp: configureRln came up WITHOUT the bridge — answering would fall to rlnRespond" ;;
-    *) bc_log_wait "rln served in-process" "${E2E_CONFIGURE_RLN_TIMEOUT_S:-180}" \
-           || die "basecamp: configureRln never reported 'rln served in-process' (reply: ${BCFG:-<empty>})"
-       say "basecamp: configureRln — rln served in-process (via log)" ;;
-esac
+section "basecamp: delivery createNode + rln ready + start"
 BC_CONF=$(delivery_cfg "$(( BASE_PORT + 2 ))" "$N1_MADDR")
 bc_must createNode "createNode" "$(jq -cn --arg c "$BC_CONF" '[$c]')" >/dev/null
+delivery_wait_rln_ready_bc
 bc_must start "start (dispatch)" >/dev/null
 BC_PEER=""
 for _t in $(seq 1 "$EVT_TIMEOUT"); do
@@ -423,5 +392,5 @@ echo "e2e:   load      liblogos_lez_rln_module + liblogos_rln_module + delivery_
 echo "e2e:   driving   inspector evaluate -> backend.callCoreModuleMethod (no consumer app; delivery_module called directly)"
 echo "e2e:   register  basecamp register_membership under the wizard's zero identifier -> $STATE at leaf ${LEAF:-?}, and it is the ONLY registration: start ran with provision:false on both the app and n1"
 echo "e2e:   payer     paid by $BC_PAYER, derived by the module in its own wallet home and holding nothing until this run funded it"
-echo "e2e:   run       configureRln installed the in-process bridge, then createNode on the upstream conf + start; peer $BC_PEER"
+echo "e2e:   run       createNode resolved the RLN preset and installed the in-process bridge, then start; peer $BC_PEER"
 echo "e2e:   message   basecamp send -> first-send membership gate + generate_proof -> gossipsub -> n1 validate_proof -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
