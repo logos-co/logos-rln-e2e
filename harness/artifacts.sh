@@ -109,8 +109,17 @@ _chat_lgx() {
     # An explicit path: ref — the staged copy sits inside THIS repo's git
     # worktree (runs/ is ignored), and a bare `.` there would resolve as a
     # git+file flake and refuse the untracked files.
-    out=$(nix build --no-link --print-out-paths --accept-flake-config \
-        "path:$src#lgx" "${overrides[@]}") || die "nix build chat-module path:#lgx failed"
+    # bash 3.2 expands an EMPTY array under `set -u` as an unbound variable, so
+    # the no-override case — which is now the ordinary one, since the delivery
+    # pin carries what chat needs — has to skip the expansion rather than pass
+    # an empty list. _delivery_lgx above guards the same way.
+    if [ ${#overrides[@]} -eq 0 ]; then
+        out=$(nix build --no-link --print-out-paths --accept-flake-config \
+            "path:$src#lgx") || die "nix build chat-module path:#lgx failed"
+    else
+        out=$(nix build --no-link --print-out-paths --accept-flake-config \
+            "path:$src#lgx" "${overrides[@]}") || die "nix build chat-module path:#lgx (checkout override) failed"
+    fi
     lgx_of "$out"
 }
 
