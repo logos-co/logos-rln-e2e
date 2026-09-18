@@ -89,7 +89,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx daemon wallet chain; do
+for _lib in compat json lgx daemon wallet chain delivery; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -433,15 +433,9 @@ EOF
 # the file is read at createNode, and a file that cannot be parsed fails that
 # call rather than quietly leaving RLN off.
 RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
-cat >"$RLN_PRESETS_FILE" <<JSON
-{"": {"enabled": true,
-      "registry-id": "$REGISTRY_ID",
-      "rln-identifier": "$RLN_ID",
-      "epoch-size-sec": $E2E_EPOCH_SIZE_SEC}}
-JSON
-E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_DELIVERY_RLN_PRESETS=$RLN_PRESETS_FILE"
+delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
+E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} $(delivery_rln_presets_env "$RLN_PRESETS_FILE")"
 export E2E_DAEMON_ENV
-say "rln presets: $RLN_PRESETS_FILE"
 section "daemons: RLN stack + delivery_module on both nodes"
 # Each node gets a wallet of its OWN before its daemon starts: only the staged
 # wallet_config.json is copied, so the module creates a fresh wallet there and
@@ -580,35 +574,12 @@ delivery_cfg() {
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-# createNode installs the library's RLN plugin synchronously and then brings
-# the backend up on its own thread, so a node is not ready the moment the call
-# returns. start fires the library's get_membership_state gate, and a backend
-# still initializing has nothing to answer it with — so wait in between.
-#
-# rlnState is polled rather than the log grepped: it reads a field instead of
-# waiting on a chain round trip, so it answers well inside logosctl's fixed 20s
-# deadline. Disabled means the preset carried no RLN, which for this scenario
-# is a misconfigured run, not a slow one.
-rln_wait_ready() {
-    local node="$1" st _t
-    for _t in $(seq 1 "$(polls "${E2E_RLN_READY_TIMEOUT_S:-180}" 5)"); do
-        st=$(node_call "$node" delivery_module rlnState | jres | jval) || st=""
-        case "$st" in
-            *Ready*)        say "$node: rlnState Ready"; return 0 ;;
-            *Failed*)       die "$node: rlnState Failed — $st" ;;
-            *Disabled*)     die "$node: rlnState Disabled — the preset carries no RLN. Is LOGOS_DELIVERY_RLN_PRESETS reaching the daemon?" ;;
-        esac
-        sleep 5
-    done
-    die "$node: rlnState never reached Ready within ${E2E_RLN_READY_TIMEOUT_S:-180}s (last: ${st:-<empty>})"
-}
-
 delivery_up() {
     local node="$1" peers="$2" port cfg peerid
     port=$(( BASE_PORT + ${node#n} ))
     cfg=$(delivery_cfg "$port" "$peers")
     must_call "$node" createNode "createNode" "$(argfile "cfg_$node" "$cfg")" >/dev/null
-    rln_wait_ready "$node"
+    delivery_wait_rln_ready "$node"
     must_call "$node" start "start (dispatch)" >/dev/null
     node_wait_event "$node" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
         || die "$node: no nodeStarted within ${EVT_TIMEOUT}s (RLN legs unanswered? see responder log)"
