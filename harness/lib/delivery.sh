@@ -206,6 +206,15 @@ print(n.to_bytes(32, "big").hex())
 # validatorRes=Reject — which reads exactly like a product fault.
 delivery_rln_identifier() { openssl rand -hex 32; }
 
+# Usage: delivery_rln_evt <plainName>   -> ERE matching both spellings
+# The rln request family arrives as dispatchRlnFooRequestEvent on the wire
+# while every other delivery event keeps its plain name. Match either until
+# that settles, so a rename upstream does not read as a missing proof.
+delivery_rln_evt() {
+    local n="$1"
+    printf '(%s|dispatch%s%sEvent)' "$n" "$(printf '%s' "${n%"${n#?}"}" | tr '[:lower:]' '[:upper:]')" "${n#?}"
+}
+
 # Usage: delivery_must_call <node> <method> <label> [args…]
 # node_call delivery_module + insist on StdLogosResult success; prints the value.
 delivery_must_call() {

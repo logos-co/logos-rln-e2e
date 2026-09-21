@@ -78,6 +78,12 @@
         }
         // lib.optionalAttrs (delivery-module.packages ? ${system}) {
           delivery-lgx = delivery-module.packages.${system}.lgx;
+          # The same rev built PORTABLE: variants/<platform> rather than
+          # <platform>-dev. A released logosctl loads portable modules and
+          # the catalogs publish nothing else, so delivery-cli — which runs
+          # one node on a released logosctl — needs this flavour and not the
+          # one every other scenario uses.
+          delivery-lgx-portable = delivery-module.packages.${system}.lgx-portable;
         }
         // lib.optionalAttrs (logoscore-cli.packages ? ${system}) {
           logoscore = logoscore-cli.packages.${system}.default;

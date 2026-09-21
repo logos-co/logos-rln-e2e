@@ -22,8 +22,11 @@ channel.
 | `LOGOSCORE` | logoscore binary |
 | `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX` | module bundles (each overridable by pre-setting the env) |
 | `DELIVERY_LGX` | delivery bundle — resolved only when the scenario's `NEEDS_MODULES` includes `delivery_module`; `DELIVERY_MODULE_CHECKOUT` / `LOGOS_DELIVERY_CHECKOUT` build it from working trees (see `harness/artifacts.sh`) |
+| `DELIVERY_LGX_PORTABLE` | the same delivery pin built PORTABLE (`variants/<platform>`, not `-dev`) — resolved only when the scenario sets `NEEDS_DELIVERY_PORTABLE=1`. Never installed into `E2E_MODULES_DIR`: it exists for a node that installs it through a released `logosctl`, which takes portable modules only (`delivery-cli`) |
 | `LIBP2P_LGX` / `GIFTER_LGX` | libp2p_module / rln_gifter_module bundles (the gifter path) — env override, else built from `LIBP2P_MODULE_CHECKOUT` / `GIFTER_CHECKOUT` (`nix build <checkout>#lgx`). Not pinned in this flake yet: the gifter needs its register-target fix branch (post-rename `register_member` lives on liblogos_lez_rln_module) |
 | `E2E_MODULES_DIR` | flattened module dir daemons load from |
+
+A scenario may also put one node on a released `logosctl` with `daemon_stack_ctl <node> <logosctl>` (see `harness/lib/daemon.sh`); its modules are installed after `daemon_start` through its own package commands into its session dir. `node_call`, module loading and `watch` then follow that binary. `harness/lib/usertools.sh` fetches the released `logosctl` and drives its catalog and package commands, cached under `E2E_USERTOOLS_DIR` (default `.cache/usertools`), pinned by `E2E_LOGOSCTL_RELEASE` and resolving from `E2E_RLN_CATALOG`.
 
 The `none` target exports nothing below — it stands up no chain. Scenarios
 that preflight chain vars fail fast under it by design.

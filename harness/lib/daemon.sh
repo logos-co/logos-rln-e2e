@@ -21,6 +21,10 @@
 # CONTAINER instead, and node_call/node_logs/daemon_load_modules/daemon_stop
 # dispatch on that — which is the seam docs/contract.md already promises:
 # "identical whether the node is a host process or a container".
+#
+# A host node runs the resolved artifacts unless daemon_stack_ctl puts it on a
+# released logosctl, which is how delivery-cli runs one node the way an
+# operator does while the rest of the run stays on the pins.
 
 . "$(dirname "${BASH_SOURCE[0]}")/json.sh"
 
@@ -41,6 +45,17 @@ node_wallet_home() { local h; h=$(gv NODEWALL "$1"); printf '%s' "${h:-${E2E_WAL
 
 # Whether <node> runs its own wallet and pays from an account it derived.
 node_self_paying() { local v; v=$(gv NODESELFPAY "$1"); printf '%s' "${v:-0}"; }
+
+# The CLI a node runs. Unset falls back to the resolved logoscore, which is
+# what every scenario but delivery-cli wants; daemon_stack_ctl puts a SECOND
+# stack in one run — a released logosctl beside the pinned one — so a scenario
+# can drive the operator's install without the other nodes changing.
+node_binary()      { local b; b=$(gv NODEBIN "$1"); printf '%s' "${b:-${LOGOSCORE:-}}"; }
+
+# Which CLI a node runs: "core" (logoscore, the default) or "ctl" (logosctl).
+# call and watch are spelled the same by both; starting the daemon, loading a
+# module and listing modules are not, and those dispatch on this.
+node_flavor()      { local f; f=$(gv NODEFLAVOR "$1"); printf '%s' "${f:-core}"; }
 
 # Usage: wallet_home_fresh <dir>
 # Build a wallet home carrying the staged wallet_config.json and nothing else,
@@ -87,6 +102,37 @@ daemon_wallet_home() {
     sv NODEWALL "$node" "$dir"
 }
 
+# Usage: daemon_stack_ctl <node> <logosctl-binary>
+# Run <node> on a released logosctl. It has no modules dir to hand over:
+# packages install into the session dir (<config>/modules) through the
+# daemon's own package manager, so this node's modules arrive AFTER
+# daemon_start (see usertools.sh). Must precede daemon_start; node_call,
+# module loading and watch then follow the binary so the client speaks to its
+# own daemon's build.
+daemon_stack_ctl() {
+    local node="${1:?daemon_stack_ctl <node> <logosctl-binary>}" bin="${2:?logosctl binary}"
+    [ -z "$(gv NODEPID "$node")" ] \
+        || die "daemon_stack_ctl: $node is already running — set its stack before daemon_start"
+    [ -x "$bin" ] || die "daemon_stack_ctl: $bin is not executable"
+    sv NODEBIN "$node" "$bin"
+    sv NODEFLAVOR "$node" ctl
+}
+
+# Usage: [NODE_CLI_TIMEOUT_S=<s>] node_cli <node> <args…>
+# The node's own CLI, pointed at its daemon, capped at NODE_CLI_TIMEOUT_S
+# (default 60) — the cap lives here because timeout(1) cannot run a shell
+# function. Both config vars are set so one spelling serves logoscore and
+# logosctl alike (each ignores the other's). env -u TMPDIR: daemon and client
+# must agree on the effective TMPDIR (QLocalSocket path); the daemon runs
+# under env -i, i.e. without one.
+node_cli() {
+    local node="${1:?node_cli <node> <args…>}" cfg; shift
+    cfg=$(node_cfg_dir "$node")
+    [ -n "$cfg" ] || die "node_cli: unknown node '$node'"
+    _with_timeout "${NODE_CLI_TIMEOUT_S:-60}" env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" \
+        LOGOSCTL_CONFIG_DIR="$cfg" "$(node_binary "$node")" "$@"
+}
+
 # Usage: daemon_register_container <node> <container> <config-dir>
 # Adopt an already-running container as <node>. The caller owns its lifetime
 # up to daemon_stop; everything else addresses it exactly like a host node.
@@ -117,12 +163,20 @@ die_node() { local node="$1"; shift; E2E_DIE_NODE="$node"; die "$@"; }
 
 # Usage: daemon_start <node>
 daemon_start() {
-    local node="${1:?daemon_start <node>}" dir cfg log pid _t
-    [ -n "${LOGOSCORE:-}" ] || die "daemon_start: LOGOSCORE unset (resolve_artifacts first)"
-    [ -n "${E2E_MODULES_DIR:-}" ] || die "daemon_start: E2E_MODULES_DIR unset (resolve_artifacts first)"
+    local node="${1:?daemon_start <node>}" dir cfg log pid _t flavor
+    flavor=$(node_flavor "$node")
+    if [ "$flavor" = core ]; then
+        [ -n "${LOGOSCORE:-}" ] || die "daemon_start: LOGOSCORE unset (resolve_artifacts first)"
+        [ -n "${E2E_MODULES_DIR:-}" ] || die "daemon_start: E2E_MODULES_DIR unset (resolve_artifacts first)"
+    fi
     dir="${E2E_RUN_DIR:?daemon_start: E2E_RUN_DIR unset}/nodes/$node"
     cfg="$dir/config"
     log="$dir/daemon.log"
+    # logosctl logs to <session>/logs/daemon.log (a symlink to the current
+    # rotated file) and captures module-process output there too. Pointing
+    # logging.file elsewhere is no help: 0.3.0 still writes the file under
+    # logs/ and leaves a dangling symlink at the configured path.
+    [ "$flavor" = ctl ] && log="$cfg/logs/daemon.log"
     mkdir -p "$cfg"
     sv NODECFG "$node" "$cfg"
     sv NODELOG "$node" "$log"
@@ -133,7 +187,7 @@ daemon_start() {
     # effective TMPDIR (QLocalSocket path). LEZ_RLN_TREE_ID_HEX must survive
     # into the daemon: rln_core derives PDAs from it.
     local -a envv
-    envv=(HOME="$HOME" PATH="$PATH" LOGOSCORE_CONFIG_DIR="$cfg"
+    envv=(HOME="$HOME" PATH="$PATH" LOGOSCORE_CONFIG_DIR="$cfg" LOGOSCTL_CONFIG_DIR="$cfg"
           RUST_BACKTRACE=full QT_QPA_PLATFORM=offscreen)
     local home
     home=$(node_wallet_home "$node")
@@ -160,9 +214,29 @@ daemon_start() {
     local kv
     for kv in ${E2E_DAEMON_ENV:-}; do envv=("${envv[@]}" "$kv"); done
 
+    local bin
+    bin=$(node_binary "$node")
+
+    if [ "$flavor" = ctl ]; then
+        say "$node: starting logosctl daemon"
+        # --detach returns once the daemon has bound its transports and
+        # published daemon/state.json, so there is nothing to poll for. The
+        # detached daemon inherits this environment, which is how the wallet
+        # home and the RLN presets reach it.
+        (cd "$dir" && env -i "${envv[@]}" "$bin" daemon start --detach </dev/null >>"$dir/start.log" 2>&1) \
+            || die_node "$node" "logosctl daemon start failed: $(tail -3 "$dir/start.log" 2>/dev/null; \
+tail -3 "$cfg/daemon/startup.err" 2>/dev/null)"
+        pid=$(node_cli "$node" daemon status --json 2>/dev/null \
+            | python3 -c 'import json,sys; d=json.load(sys.stdin).get("daemon",{}); print(d.get("pid","") if d.get("status")=="running" else "")' \
+            2>/dev/null) || pid=""
+        [ -n "$pid" ] || die_node "$node" "logosctl daemon is not running after start"
+        sv NODEPID "$node" "$pid"
+        return 0
+    fi
+
     say "$node: starting logoscore daemon"
     # exec: $! must be the daemon itself so daemon_stop can kill just this node.
-    (cd "$dir" && exec env -i "${envv[@]}" "$LOGOSCORE" -m "$E2E_MODULES_DIR" -D </dev/null >>"$log" 2>&1) &
+    (cd "$dir" && exec env -i "${envv[@]}" "$bin" -m "$E2E_MODULES_DIR" -D </dev/null >>"$log" 2>&1) &
     pid=$!
     sv NODEPID "$node" "$pid"
     disown "$pid" 2>/dev/null || true
@@ -173,7 +247,7 @@ daemon_start() {
     done
     [ -f "$cfg/client/config.json" ] || die_node "$node" "daemon produced no client config"
     for _t in $(seq 1 60); do
-        _with_timeout 5 env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" "$LOGOSCORE" --quiet --json list-modules 2>/dev/null \
+        _with_timeout 5 env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" "$bin" --quiet --json list-modules 2>/dev/null \
             | grep -q '"capability_module".*"loaded"' && break
         sleep 1
     done
@@ -194,8 +268,13 @@ daemon_load_modules() {
             _with_timeout 60 docker exec -e LOGOSCORE_CONFIG_DIR="$cfg" \
                 "$(node_container "$node")" logoscore --json load-module "$mod" \
                 >/dev/null 2>&1 || die_node "$node" "load-module $mod failed"
+        elif [ "$(node_flavor "$node")" = ctl ]; then
+            # Not appended to $log: for a logosctl node that is the daemon's
+            # own rotated log, which it writes itself.
+            node_cli "$node" --json module load "$mod" >/dev/null 2>&1 \
+                || die_node "$node" "module load $mod failed"
         else
-            _with_timeout 30 env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" "$LOGOSCORE" --json load-module "$mod" \
+            _with_timeout 30 env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" "$(node_binary "$node")" --json load-module "$mod" \
                 >>"$log" 2>&1 || die_node "$node" "load-module $mod failed"
         fi
     done
@@ -217,6 +296,7 @@ node_call() {
         return
     fi
     export E2E_CFG_DIR="$cfg"
+    export E2E_NODE_BIN="$(node_binary "$node")"
     call_json "$@"
 }
 
@@ -242,11 +322,17 @@ node_watch_start() {
     gen=$(gv NODEEVTGEN "${node}_${mod}"); [ -n "$gen" ] || gen=0
     gen=$(( gen + 1 ))
     sv NODEEVTGEN "${node}_${mod}" "$gen"
-    evt="$(dirname "$(node_log_path "$node")")/events-$mod.$gen.jsonl"
+    # Beside the node's log, except on logosctl, whose log lives in the
+    # daemon's own logs/ dir.
+    if [ "$(node_flavor "$node")" = ctl ]; then
+        evt="$E2E_RUN_DIR/nodes/$node/events-$mod.$gen.jsonl"
+    else
+        evt="$(dirname "$(node_log_path "$node")")/events-$mod.$gen.jsonl"
+    fi
     : > "$evt"
     sv NODEEVT "${node}_${mod}" "$evt"
-    ( exec env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" \
-        "$LOGOSCORE" --json watch "$mod" >>"$evt" 2>&1 ) &
+    ( exec env -u TMPDIR LOGOSCORE_CONFIG_DIR="$cfg" LOGOSCTL_CONFIG_DIR="$cfg" \
+        "$(node_binary "$node")" --json watch "$mod" >>"$evt" 2>&1 ) &
     pid=$!
     disown "$pid" 2>/dev/null || true
     E2E_WATCHERS="$E2E_WATCHERS $node:$mod:$pid"
@@ -417,7 +503,8 @@ daemon_stop_all() {
     fi
     for node in $E2E_NODES; do daemon_stop "$node"; done
     # The run's modules dir is unique per run, so this cannot reach another
-    # run's daemons.
+    # run's daemons. A logosctl node has no -m on its command line; the kill
+    # of its recorded pid in daemon_stop is the whole of stopping it.
     [ -n "${E2E_MODULES_DIR:-}" ] && pkill -f "logoscore -m $E2E_MODULES_DIR" 2>/dev/null
     return 0
 }
