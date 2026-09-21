@@ -88,7 +88,7 @@ wallet_native_balance() {
     printf '%s' "$reply" | jfield balance
 }
 
-# Fund a node's payer, then wait for the balance to land.
+# Transfer native balance into an account, named by id.
 #
 # No program can mint native balance, so this is the one step the module stack
 # cannot do for itself — it waits for exactly this transfer before it
@@ -96,6 +96,25 @@ wallet_native_balance() {
 # the transaction carries chain-read nonces and a v0.2.5 FeeDeclaration, and
 # rebuilding that in bash would be reimplementing a format that changes with
 # the chain.
+#
+# It takes an account rather than a node because not everything that derives a
+# payer is a harness node: Basecamp embeds logos-core and is driven through the
+# QML inspector, so node_call cannot reach it — see basecamp_fund.
+# Usage: wallet_fund_account <account> <amount>
+wallet_fund_account() {
+    local to="${1:?wallet_fund_account <account> <amount>}"
+    local amount="${2:?wallet_fund_account <account> <amount>}"
+    local lez="${LEZ_RLN_CHECKOUT:-$E2E_ROOT/../logos-lez-rln}"
+    local bin="$lez/lez-rln/target/release/fund_account"
+    [ -x "$bin" ] || die "no fund_account at $bin — build it:
+    (cd $lez/lez-rln && cargo build --release --bin fund_account)"
+    ( cd "$lez/lez-rln" && LEE_WALLET_HOME_DIR="$E2E_WALLET_HOME" \
+        NSSA_WALLET_HOME_DIR="$E2E_WALLET_HOME" LEZ_RLN_PAYER="$E2E_PAYER" \
+        "$bin" --to "$to" --amount "$amount" ) >/dev/null \
+        || die "fund_account failed (from $E2E_PAYER to $to)"
+}
+
+# Fund a node's payer, then wait for the balance to land.
 #
 # Amount defaults to E2E_FUND_AMOUNT, sized for several registrations: the fee
 # RESERVE (~6.5e8 per transaction) dominates the registry price (~1e6), so an
@@ -109,10 +128,6 @@ wallet_fund() {
     # a hang with no cause in the log. Refuse instead of doing nothing slowly.
     [ "$(node_self_paying "$node")" = 1 ] \
         || die_node "$node" "wallet_fund needs a node with its own payer — call daemon_self_paying before daemon_start"
-    local lez="${LEZ_RLN_CHECKOUT:-$E2E_ROOT/../logos-lez-rln}"
-    local bin="$lez/lez-rln/target/release/fund_account"
-    [ -x "$bin" ] || die "no fund_account at $bin — build it:
-    (cd $lez/lez-rln && cargo build --release --bin fund_account)"
 
     # wallet_payer dies on an empty answer, but this call is a command
     # substitution: the die runs in the subshell, prints, and leaves the parent
@@ -123,10 +138,7 @@ wallet_fund() {
     payer=$(wallet_payer "$node") || exit 1
     [ -n "$payer" ] || die_node "$node" "no payer to fund"
     say "$node: funding its payer $payer with $amount native"
-    ( cd "$lez/lez-rln" && LEE_WALLET_HOME_DIR="$E2E_WALLET_HOME" \
-        NSSA_WALLET_HOME_DIR="$E2E_WALLET_HOME" LEZ_RLN_PAYER="$E2E_PAYER" \
-        "$bin" --to "$payer" --amount "$amount" ) >/dev/null \
-        || die_node "$node" "fund_account failed (from $E2E_PAYER to $payer)"
+    wallet_fund_account "$payer" "$amount"
 
     wallet_wait_native "$node" "$amount"
 }

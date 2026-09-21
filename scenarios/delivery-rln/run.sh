@@ -37,8 +37,11 @@
 #   3. keystore custody default: NO unlock call anywhere — the module
 #      self-provisions its own secret (the headless deployment shape;
 #      contract: docs/delivery-integration.md §1).
-#   4. registration is REAL, and it is the APP's job, not bring-up's: since
-#      logos-delivery 131fc9b1 the library no longer registers at startup.
+#   4. registration is REAL, and it is NOBODY's job here — not the app's,
+#      not bring-up's, not this test's. logos-delivery 131fc9b1 stopped the
+#      library registering at startup; liblogos_rln_module 0.8.0 made a
+#      membership something `start` provisions from the registries its config
+#      names. So this scenario funds a node and asserts a membership arrives.
 #      Since abc53a6f startNode starts the module BEFORE the switch listens
 #      (a start failure is fatal), then verifies the node's own membership
 #      NON-fatally: a usable state is cached on the handle so sends skip the
@@ -85,11 +88,15 @@
 #   E2E_MESH_WAIT_S=12            gossipsub mesh stabilization pause
 #   E2E_SEND_ATTEMPTS=3           send-leg attempts (fresh-root window)
 #   E2E_RECV_WAIT_S=12            per-attempt receive wait on n2
+#   E2E_FUND_LATE=<node>          withhold that node's funding until AFTER its
+#                                 start(), to exercise provisioning's park-and-
+#                                 recover path; unset = the ordinary order
+#   E2E_AWAIT_FUNDING_S=90        budget for seeing it parked at awaiting_funding
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx daemon wallet chain; do
+for _lib in compat json lgx daemon wallet chain delivery; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -433,15 +440,9 @@ EOF
 # the file is read at createNode, and a file that cannot be parsed fails that
 # call rather than quietly leaving RLN off.
 RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
-cat >"$RLN_PRESETS_FILE" <<JSON
-{"": {"enabled": true,
-      "registry-id": "$REGISTRY_ID",
-      "rln-identifier": "$RLN_ID",
-      "epoch-size-sec": $E2E_EPOCH_SIZE_SEC}}
-JSON
-E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_DELIVERY_RLN_PRESETS=$RLN_PRESETS_FILE"
+delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
+E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} $(delivery_rln_presets_env "$RLN_PRESETS_FILE")"
 export E2E_DAEMON_ENV
-say "rln presets: $RLN_PRESETS_FILE"
 section "daemons: RLN stack + delivery_module on both nodes"
 # Each node gets a wallet of its OWN before its daemon starts: only the staged
 # wallet_config.json is copied, so the module creates a fresh wallet there and
@@ -483,7 +484,16 @@ done
 # Each node pays for its own membership out of its own wallet, and the module
 # derived that account itself — so the one thing the harness still does is put
 # native balance in it. Nothing else can: no program mints native.
+#
+# E2E_FUND_LATE=<node> withholds ONE node's transfer until after its start(),
+# so the run exercises the path a real deployment hits when the operator funds
+# the wallet second. The other node keeps the normal order and is the control
+# in the same run. See the late-funding section below.
 for n in $NODES_ALL; do
+    if [ "$n" = "${E2E_FUND_LATE:-}" ]; then
+        say "$n: funding deliberately withheld until after start (E2E_FUND_LATE)"
+        continue
+    fi
     wallet_fund "$n" >/dev/null || die_node "$n" "funding its payer failed"
     say "$n: payer $(wallet_payer "$n") holds $(wallet_native_balance "$n") native"
 done
@@ -499,6 +509,43 @@ for n in $NODES_ALL; do
         *) die "$n: rln module start (pre-warm) failed: ${PREWARM:-<empty>}" ;;
     esac
 done
+
+# ---------- late funding (only when E2E_FUND_LATE names a node) --------------
+# The claim under test: a module started with an EMPTY payer parks rather than
+# fails, and recovers on its own when the money arrives. `ensure.rs` polls the
+# balance every 5s against a 900s deadline and deliberately does not read a
+# failed balance read as a zero balance — but until this ran, every scenario
+# either funded before start (so the loop broke on its first poll) or never
+# funded at all (so it parked until teardown). The transition between the two
+# had never executed.
+#
+# Two assertions, and the first is what makes the second mean anything: the
+# task must be SEEN parked at awaiting_funding before the transfer, otherwise a
+# pass would only show that funding-then-waiting works, which is the ordinary
+# path.
+if [ -n "${E2E_FUND_LATE:-}" ]; then
+    section "late funding (${E2E_FUND_LATE} was started with an empty payer)"
+    PARKED=""
+    PROV=""
+    for _t in $(seq 1 "$(polls "${E2E_AWAIT_FUNDING_S:-90}" "$E2E_POLL_INTERVAL_S")"); do
+        PROV=$(node_call "$E2E_FUND_LATE" liblogos_rln_module get_membership_state \
+            "$REGISTRY_ID" "$(argfile "late_$E2E_FUND_LATE" "$RLN_ID")" | jres \
+            | jfield provisioning) || PROV=""
+        say "  $E2E_FUND_LATE provisioning poll $_t: ${PROV:-<none>}"
+        case "$PROV" in
+            *awaiting_funding*) PARKED=1; break ;;
+            *refused*) die "$E2E_FUND_LATE: provisioning REFUSED rather than waiting for funds: $PROV" ;;
+        esac
+        sleep "$E2E_POLL_INTERVAL_S"
+    done
+    [ -n "$PARKED" ] \
+        || die "$E2E_FUND_LATE: provisioning never reported awaiting_funding (last: ${PROV:-<none>}) — \
+it should wait for a payer it cannot fill itself, and name the account to send to"
+    say "$E2E_FUND_LATE: parked at awaiting_funding with an empty payer, as it should"
+    wallet_fund "$E2E_FUND_LATE" >/dev/null \
+        || die_node "$E2E_FUND_LATE" "late funding failed"
+    say "$E2E_FUND_LATE: funded AFTER start — from here the module has to recover unaided"
+fi
 
 # ---------- provisioning (the MODULE's job — the harness does not register) --
 # This section performs no registration. The library's bring-up gate requires
@@ -580,35 +627,12 @@ delivery_cfg() {
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-# createNode installs the library's RLN plugin synchronously and then brings
-# the backend up on its own thread, so a node is not ready the moment the call
-# returns. start fires the library's get_membership_state gate, and a backend
-# still initializing has nothing to answer it with — so wait in between.
-#
-# rlnState is polled rather than the log grepped: it reads a field instead of
-# waiting on a chain round trip, so it answers well inside logosctl's fixed 20s
-# deadline. Disabled means the preset carried no RLN, which for this scenario
-# is a misconfigured run, not a slow one.
-rln_wait_ready() {
-    local node="$1" st _t
-    for _t in $(seq 1 "$(polls "${E2E_RLN_READY_TIMEOUT_S:-180}" 5)"); do
-        st=$(node_call "$node" delivery_module rlnState | jres | jval) || st=""
-        case "$st" in
-            *Ready*)        say "$node: rlnState Ready"; return 0 ;;
-            *Failed*)       die "$node: rlnState Failed — $st" ;;
-            *Disabled*)     die "$node: rlnState Disabled — the preset carries no RLN. Is LOGOS_DELIVERY_RLN_PRESETS reaching the daemon?" ;;
-        esac
-        sleep 5
-    done
-    die "$node: rlnState never reached Ready within ${E2E_RLN_READY_TIMEOUT_S:-180}s (last: ${st:-<empty>})"
-}
-
 delivery_up() {
     local node="$1" peers="$2" port cfg peerid
     port=$(( BASE_PORT + ${node#n} ))
     cfg=$(delivery_cfg "$port" "$peers")
     must_call "$node" createNode "createNode" "$(argfile "cfg_$node" "$cfg")" >/dev/null
-    rln_wait_ready "$node"
+    delivery_wait_rln_ready "$node"
     must_call "$node" start "start (dispatch)" >/dev/null
     node_wait_event "$node" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
         || die "$node: no nodeStarted within ${EVT_TIMEOUT}s (RLN legs unanswered? see responder log)"
@@ -861,7 +885,7 @@ echo "e2e: PASS — delivery-rln (target $E2E_TARGET)"
 echo "e2e:   config    an RLN preset (registry-id/rln-identifier/epoch-size-sec) + a conf with NO rln-* key — upstream delivery, no fork"
 echo "e2e:   seam      start carries the module config; module replies forwarded VERBATIM (ok/err envelope retired)"
 echo "e2e:   keystore  module-owned custody — zero unlock calls anywhere"
-echo "e2e:   bring-up  app-side register via the module on BOTH nodes (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership check verified on both (non-fatal since abc53a6f)"
+echo "e2e:   bring-up  the MODULE provisioned on BOTH nodes — this test registered nothing (n1 ACTIVE at leaf $LEAF, $MEMBERSHIP_HASH; n2 leaf $(gv LEAF n2)), then start + the library's membership check verified on both (non-fatal since abc53a6f)"
 echo "e2e:   gate      n1's scope was read exactly once — at start, before its first generate — and the cached pass covered every send"
 echo "e2e:   message   n1 generate_proof (proof_canonical) -> gossipsub -> n2 validate_proof -> \"valid\" -> messageReceived (attempt $ATTEMPT/$SEND_ATTEMPTS)"
 echo "e2e:   topology  IN-PROCESS bridge installed at createNode on BOTH nodes; n2's witness rejected on every hot-path answer (guard is first-wins)"

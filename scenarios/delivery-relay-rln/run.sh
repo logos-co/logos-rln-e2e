@@ -35,7 +35,7 @@ set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
-for _lib in compat json lgx daemon wallet chain relay; do
+for _lib in compat json lgx daemon wallet chain relay delivery; do
     # shellcheck source=/dev/null
     . "$ROOT/harness/lib/$_lib.sh"
 done
@@ -101,16 +101,10 @@ RLN_ID=$(openssl rand -hex 32)
 # relay.sh hands the same path to the container, which sees it through the
 # run-dir mount.
 E2E_RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
-cat >"$E2E_RLN_PRESETS_FILE" <<JSON
-{"": {"enabled": true,
-      "registry-id": "$REGISTRY_ID",
-      "rln-identifier": "$RLN_ID",
-      "epoch-size-sec": $E2E_EPOCH_SIZE_SEC}}
-JSON
+delivery_stage_rln_presets "$E2E_RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
 export E2E_RLN_PRESETS_FILE
-E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_DELIVERY_RLN_PRESETS=$E2E_RLN_PRESETS_FILE"
+E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} $(delivery_rln_presets_env "$E2E_RLN_PRESETS_FILE")"
 export E2E_DAEMON_ENV
-say "rln presets: $E2E_RLN_PRESETS_FILE"
 say "registry: $REGISTRY_ID (rate $RATE_LIMIT, relay-rln=${E2E_RELAY_RLN:-1})"
 
 # ---------- host peers -------------------------------------------------------
@@ -203,24 +197,6 @@ fi
 # any node is created. Keyed "" because delivery_cfg passes no preset.
 section "delivery bring-up"
 
-# createNode installs the plugin synchronously and brings the backend up on its
-# own thread, so start — which fires the library's get_membership_state gate —
-# has to wait for it. rlnState is a field read, not a chain round trip, so it
-# answers inside logosctl's fixed 20s deadline.
-rln_wait_ready() {
-    local node="$1" st _t
-    for _t in $(seq 1 "$(polls "${E2E_RLN_READY_TIMEOUT_S:-180}" 5)"); do
-        st=$(node_call "$node" delivery_module rlnState | jres | jval) || st=""
-        case "$st" in
-            *Ready*)    say "$node: rlnState Ready"; return 0 ;;
-            *Failed*)   die_node "$node" "rlnState Failed — $st" ;;
-            *Disabled*) die_node "$node" "rlnState Disabled — is LOGOS_DELIVERY_RLN_PRESETS reaching the daemon?" ;;
-        esac
-        sleep 5
-    done
-    die_node "$node" "rlnState never reached Ready (last: ${st:-<empty>})"
-}
-
 # listenAddress 0.0.0.0, not loopback: the relay must be able to dial a peer
 # back after a drop, and from a container 127.0.0.1 is the container.
 delivery_cfg() {
@@ -231,7 +207,7 @@ delivery_cfg() {
 
 must_call r1 createNode "r1 createNode" \
     "$(argfile cfg_r1 "$(delivery_cfg "$E2E_RELAY_PORT" "")")" >/dev/null
-[ "${E2E_RELAY_RLN:-1}" = 1 ] && rln_wait_ready r1
+[ "${E2E_RELAY_RLN:-1}" = 1 ] && delivery_wait_rln_ready r1
 must_call r1 start "r1 start" >/dev/null
 RELAY_MADDR=$(relay_maddr r1)
 say "relay listening at $RELAY_MADDR"
@@ -244,7 +220,7 @@ for n in $PEERS; do
     # other's address, which is what makes the hop structural.
     must_call "$n" createNode "$n createNode" \
         "$(argfile "cfg_$n" "$(delivery_cfg "$(( PEER_PORT + i ))" "$RELAY_MADDR")")" >/dev/null
-    rln_wait_ready "$n"
+    delivery_wait_rln_ready "$n"
     must_call "$n" start "$n start" >/dev/null
     node_wait_event "$n" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
         || die_node "$n" "no nodeStarted within ${EVT_TIMEOUT}s"

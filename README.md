@@ -19,10 +19,12 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 | `live-registry` | planned | the registry-provider module's live-chain cargo tests against a provisioned deployment |
 | `delivery` | scaffold | 3-daemon co-residency (RLN module stack + delivery_module in one process) and 3-node static-peer relay propagation, chainless (`--target none`); grows RLN-gated delivery once logos-core wires RLN-on-LEZ into it |
 | `delivery-rln` | **active** | the real logos-delivery RLN integration end to end: bring-up via delivery's config surface, real registration on chain, proof-gated relay n1→n2, negative control (tampered message NOT delivered). **Delivery devs start at [docs/delivery-integration.md]** |
+| `delivery-rln-soak` | **active** | the same two nodes under sustained load: both send across several RLN epochs, each deliberately past its per-epoch budget. Asserts exact slot accounting and lossless delivery; reports send→peer-validated and send→propagated latency, proof-attempt amplification, and what becomes of an over-quota message |
 | `keystore` | active | the RLN module's keystore custody modes (module-owned default, opt-out) |
 | `consumer-selftest` / `consumer-register` / `consumer-gifter` | active | the nim-rln-consumer mock of delivery's RLN seam: layer liveness (chainless), full register→prove→validate through the mirrored seam, delegated registration via the open gifter |
 | `delivery-relay-rln` | **active** | the shipping topology: two RLN-gated peers that never dial each other, meeting at a containerised relay that holds its own membership and validates what it forwards |
 | `chat-basecamp-rln` / `chat-basecamp-gifter` / `delivery-basecamp-rln` | active | the stack inside Basecamp's embedded core, where it actually ships: proof-gated chat, gifted membership through the allocation protocol, and the delivery plugin loaded with no consumer app |
+| `delivery-basecamp-pair` | **active** | two Basecamp instances and no daemon at all: both halves of the RLN path inside an embedded core, each app provisioning its own membership and paying from its own derived account. `--keep` leaves both up for hands-on work |
 | `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
 
 ```sh
@@ -100,12 +102,14 @@ run.sh                  entrypoint: ./run.sh <scenario> --target <t>
 flake.nix flake.lock    the pins (lez-rln, rln-modules, delivery-module, logoscore)
 harness/
   artifacts.sh          binary/bundle resolution
-  lib/                  shared primitives (json, lgx, daemon, wallet, chain)
+  lib/                  shared primitives (json, lgx, daemon, wallet, chain,
+                        delivery: the RLN-enabled delivery bring-up)
   targets/              local (sequencer lifecycle + provisioning) / testnet
   container/            Dockerfile.relay (the bootstrap relay image)
   lib/relay.sh          the relay container's lifecycle
 scenarios/
-  register/ keystore/ delivery/ delivery-rln/ delivery-relay-rln/
+  register/ keystore/ delivery/ delivery-rln/ delivery-rln-soak/
+  delivery-relay-rln/
   consumer-*/ *-basecamp-*/ live-registry/ mix/
 deployments/            committed testnet descriptors (local is per-run)
 profiles/               committed local provision inputs (pinned tree + wallet)
