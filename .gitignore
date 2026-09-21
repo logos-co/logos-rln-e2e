@@ -5,6 +5,9 @@ result-*
 # per-run harness scratch
 runs/
 
+# released CLI tarballs the operator-path scenario caches (see harness/lib/usertools.sh)
+.cache/
+
 # local scratch
 *.log
 

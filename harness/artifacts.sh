@@ -3,7 +3,7 @@
 #
 # Resolution order per artifact:
 #   1. explicit env override: LOGOSCORE, WALLET_LGX, LEZ_RLN_LGX, RLN_LGX,
-#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX
+#      DELIVERY_LGX, DELIVERY_LGX_PORTABLE, LIBP2P_LGX, GIFTER_LGX
 #   2. checkout overrides — the dev loop for changing a repo and running a
 #      scenario against it (filtered copy + --override-input):
 #        RLN_MODULES_CHECKOUT=<dir>      the three RLN-stack bundles
@@ -204,6 +204,18 @@ resolve_artifacts() {
         *" delivery_module "*)
             [ -n "${DELIVERY_LGX:-}" ] || DELIVERY_LGX=$(_delivery_lgx)
             export DELIVERY_LGX
+            # The portable flavour of the SAME pin, for a scenario that
+            # installs through a released logosctl instead of
+            # install_lgx. Never installed into E2E_MODULES_DIR — the
+            # scenario owns where it goes, since the point is that a
+            # different daemon loads it. Checkout overrides do not reach it:
+            # this bundle exists to be the published shape of the pin.
+            if [ "${NEEDS_DELIVERY_PORTABLE:-0}" = 1 ]; then
+                [ -n "${DELIVERY_LGX_PORTABLE:-}" ] \
+                    || DELIVERY_LGX_PORTABLE=$(lgx_of "$(_nix_out delivery-lgx-portable)")
+                export DELIVERY_LGX_PORTABLE
+                say "delivery (portable): $(basename "$DELIVERY_LGX_PORTABLE")"
+            fi
             ;;
     esac
 
