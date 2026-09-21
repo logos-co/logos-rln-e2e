@@ -109,8 +109,17 @@ _chat_lgx() {
     # An explicit path: ref — the staged copy sits inside THIS repo's git
     # worktree (runs/ is ignored), and a bare `.` there would resolve as a
     # git+file flake and refuse the untracked files.
-    out=$(nix build --no-link --print-out-paths --accept-flake-config \
-        "path:$src#lgx" "${overrides[@]}") || die "nix build chat-module path:#lgx failed"
+    # bash 3.2 expands an EMPTY array under `set -u` as an unbound variable, so
+    # the no-override case — which is now the ordinary one, since the delivery
+    # pin carries what chat needs — has to skip the expansion rather than pass
+    # an empty list. _delivery_lgx above guards the same way.
+    if [ ${#overrides[@]} -eq 0 ]; then
+        out=$(nix build --no-link --print-out-paths --accept-flake-config \
+            "path:$src#lgx") || die "nix build chat-module path:#lgx failed"
+    else
+        out=$(nix build --no-link --print-out-paths --accept-flake-config \
+            "path:$src#lgx" "${overrides[@]}") || die "nix build chat-module path:#lgx (checkout override) failed"
+    fi
     lgx_of "$out"
 }
 
@@ -161,9 +170,11 @@ resolve_artifacts() {
     export LEZ_RLN_LGX RLN_LGX
 
     # lez_core, like every other optional module: only when the scenario loads
-    # it. Since liblogos_lez_rln_module 3.0.0 owns its wallet in-process the
-    # RLN path never calls lez_core, and only the Basecamp scenarios still do
-    # — for Basecamp's OWN wallet. The rest must not pay for the build.
+    # it. Since liblogos_lez_rln_module 3.0.0 owns its wallet in-process,
+    # nothing in this repo asks for lez_core any more — the Basecamp scenarios
+    # were the last, and they read the app's balance off the chain instead.
+    # The branch stays because a scenario may still want a wallet of its own;
+    # nothing else must pay for the build.
     case " ${NEEDS_MODULES:-} " in
         *" lez_core "*)
             [ -n "${WALLET_LGX:-}" ] || WALLET_LGX=$(_bundle_lgx wallet-lgx)

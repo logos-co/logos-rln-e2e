@@ -293,7 +293,10 @@ target_down() {
         [ -n "$_LOCAL_DEVNET_PID" ] \
             && say "E2E_KEEP=1: devnet pid $_LOCAL_DEVNET_PID up at $E2E_SEQUENCER (log $E2E_RUN_DIR/devnet.log)"
         say "E2E_KEEP=1: deployment ${E2E_DEPLOYMENT_DIR:-<none>}, wallet home ${E2E_WALLET_HOME:-<none>}"
-        say "E2E_KEEP=1: reattach with E2E_DEVNET=external E2E_DEPLOYMENT_DIR=${E2E_DEPLOYMENT_DIR:-<none>}"
+        # E2E_PAYER belongs in this line: external mode does not mint one (it
+        # does not control genesis), so a reattach without it dies on an
+        # unbound variable before the scenario starts.
+        say "E2E_KEEP=1: reattach with E2E_DEVNET=external E2E_DEPLOYMENT_DIR=${E2E_DEPLOYMENT_DIR:-<none>} E2E_PAYER=${E2E_PAYER:-<none>}"
         return 0
     fi
     [ -n "$_LOCAL_DEVNET_PID" ] || return 0
