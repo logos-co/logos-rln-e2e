@@ -2299,11 +2299,11 @@
     "lez-rln": {
       "flake": false,
       "locked": {
-        "lastModified": 1789592266,
-        "narHash": "sha256-Yjv48xo6m6MUc3a1lhx+U1DyG9N3L9VspqHEDpXe9EY=",
+        "lastModified": 1789786939,
+        "narHash": "sha256-0ltWyg5u5gxEOpLsL2076xQvKmL09mfZFO5ZLDWLLSY=",
         "owner": "logos-co",
         "repo": "logos-lez-rln",
-        "rev": "7ea94fc8c42c9a50a49bb291eea17962f88ff0dc",
+        "rev": "bce76e0b0d85d2801dda90a37432bef4d81b2474",
         "type": "github"
       },
       "original": {
@@ -376460,11 +376460,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1789593167,
-        "narHash": "sha256-frhyHLPsbWECZxVgnP562lbrPK2j/snNBIOQjo10Lpw=",
+        "lastModified": 1790007566,
+        "narHash": "sha256-EkZizFJwelhBYzpNLynVwUnX7RcRTfUdEaoHIxsv9Yk=",
         "owner": "logos-co",
         "repo": "logos-rln-modules",
-        "rev": "6e3c6c47d4d1ae7efa635a61a171891c23967fd8",
+        "rev": "2ea5222de47aa30c7b8538ad408b9e30a3e33437",
         "type": "github"
       },
       "original": {
