@@ -3,7 +3,7 @@
 #
 # Resolution order per artifact:
 #   1. explicit env override: LOGOSCORE, WALLET_LGX, LEZ_RLN_LGX, RLN_LGX,
-#      DELIVERY_LGX, CONSUMER_LGX, LIBP2P_LGX, GIFTER_LGX
+#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX
 #   2. checkout overrides — the dev loop for changing a repo and running a
 #      scenario against it (filtered copy + --override-input):
 #        RLN_MODULES_CHECKOUT=<dir>      the three RLN-stack bundles
@@ -193,16 +193,6 @@ resolve_artifacts() {
             ;;
     esac
 
-    # The in-repo consumer module (Nim mock of logos-delivery), only when the
-    # scenario loads it. A path subflake of THIS repo: the working tree is the
-    # pin, so there is no checkout-override knob — edit and re-run.
-    case " ${NEEDS_MODULES:-} " in
-        *" nim_rln_consumer "*)
-            [ -n "${CONSUMER_LGX:-}" ] || CONSUMER_LGX=$(lgx_of "$(_nix_out consumer-lgx)")
-            export CONSUMER_LGX
-            ;;
-    esac
-
     # chat_module (chat-basecamp-rln): checkout-or-env only, see _chat_lgx.
     case " ${NEEDS_MODULES:-} " in
         *" chat_module "*)
@@ -211,7 +201,7 @@ resolve_artifacts() {
             ;;
     esac
 
-    # Gifter-path artifacts (consumer-gifter): not pinned in this repo's flake
+    # Gifter-path artifacts: not pinned in this repo's flake
     # yet — the gifter needs a register-target fix that hasn't merged (its
     # lp.rs still calls the pre-rename module name), so these resolve from an
     # env override or a checkout build only. Pin them once upstream is fixed.
@@ -266,7 +256,6 @@ resolve_artifacts() {
     [ -n "${WALLET_LGX:-}" ] && install_lgx "$WALLET_LGX"
     [ -n "${DELIVERY_LGX:-}" ] && install_lgx "$DELIVERY_LGX"
     [ -n "${CHAT_LGX:-}" ] && install_lgx "$CHAT_LGX"
-    [ -n "${CONSUMER_LGX:-}" ] && install_lgx "$CONSUMER_LGX"
     [ -n "${LIBP2P_LGX:-}" ] && install_lgx "$LIBP2P_LGX"
     [ -n "${GIFTER_LGX:-}" ] && install_lgx "$GIFTER_LGX"
     say "modules dir: $E2E_MODULES_DIR ($(lgx_platform))"
