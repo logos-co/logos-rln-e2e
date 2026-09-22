@@ -10,8 +10,12 @@
 # Env beyond docs/contract.md:
 #   E2E_RELAY_IMAGE   image to run (default logos-rln-e2e:relay; build it with
 #                     tools/build-e2e-image.sh)
-#   E2E_RELAY_NAME    container name (default e2e-relay)
-#   E2E_RELAY_PORT    libp2p tcp port, published on 127.0.0.1 (default 61890)
+#   E2E_RELAY_NAME    container name for a SINGLE relay (default e2e-relay).
+#                     With more than one, each takes <name>-<node> — see
+#                     relay_name.
+#   E2E_RELAY_PORT    libp2p tcp port of the first relay, published on
+#                     127.0.0.1 (default 61890). Further relays take the next
+#                     ports up, assigned in relay_up order.
 #   E2E_RELAY_RLN     1 (default) the relay holds a membership and validates
 #                     what it forwards; 0 it relays blind. This is a SCENARIO
 #                     switch, not an image one — delivery_module depends on
@@ -26,6 +30,21 @@ E2E_RELAY_NAME="${E2E_RELAY_NAME:-e2e-relay}"
 E2E_RELAY_PORT="${E2E_RELAY_PORT:-61890}"
 E2E_RELAY_RLN="${E2E_RELAY_RLN:-1}"
 RELAY_CFG_DIR=/var/lib/logos/config
+# How many relays relay_up has started, which is what gives the next one its
+# port and, with more than one in play, its container name.
+E2E_RELAY_COUNT="${E2E_RELAY_COUNT:-0}"
+
+# Usage: relay_name <node> / relay_port <node>
+# A relay's container name and published port. Both are recorded at relay_up
+# and read back by everything else, so a scenario never has to track which
+# relay got which port — it names the node, exactly as it does for a host
+# daemon.
+#
+# One relay keeps the bare $E2E_RELAY_NAME, so a single-relay scenario (and
+# anyone reading `docker ps`) sees the name it always had; the second and
+# later ones are suffixed. Ports are handed out from $E2E_RELAY_PORT upward.
+relay_name() { local v; v=$(gv RELAYNAME "$1"); printf '%s' "${v:-$E2E_RELAY_NAME}"; }
+relay_port() { local v; v=$(gv RELAYPORT "$1"); printf '%s' "${v:-$E2E_RELAY_PORT}"; }
 
 # Print $E2E_SEQUENCER as the CONTAINER must address it. A local target serves
 # on 127.0.0.1, which inside a container is the container itself;
@@ -90,11 +109,28 @@ org.logos.$m-module.version label, so what it holds is unknown.
 }
 
 relay_up() {
-    local node="${1:?relay_up <node>}" seq home _t
+    local node="${1:?relay_up <node>}" seq home name port cfg _t
     docker image inspect "$E2E_RELAY_IMAGE" >/dev/null 2>&1 \
         || die "relay: no image $E2E_RELAY_IMAGE — build it: bash tools/build-e2e-image.sh"
     [ "$E2E_RELAY_RLN" = 1 ] && _relay_check_image_pins
-    docker rm -f "$E2E_RELAY_NAME" >/dev/null 2>&1 || true
+
+    # Claim this relay's identity first: everything below addresses it by node.
+    # The first relay keeps the bare name and base port; each further one is
+    # suffixed and takes the next port, so a fleet needs no port bookkeeping in
+    # the scenario. Config dirs differ too — one per container, or the second
+    # daemon writes its client config over the first's and node_call reaches
+    # the wrong relay.
+    name="$E2E_RELAY_NAME"
+    port="$E2E_RELAY_PORT"
+    cfg="$RELAY_CFG_DIR"
+    if [ "$E2E_RELAY_COUNT" -gt 0 ]; then
+        name="$E2E_RELAY_NAME-$node"
+        port=$(( E2E_RELAY_PORT + E2E_RELAY_COUNT ))
+    fi
+    E2E_RELAY_COUNT=$(( E2E_RELAY_COUNT + 1 ))
+    sv RELAYNAME "$node" "$name"
+    sv RELAYPORT "$node" "$port"
+    docker rm -f "$name" >/dev/null 2>&1 || true
 
     # ${a[@]+"${a[@]}"}: bash 3.2 treats an empty array as unset under set -u
     # (see compat.sh — stock macOS bash is the floor here).
@@ -159,19 +195,19 @@ EOF
     # The run dir is mounted at the SAME absolute path so argfile's @/abs/path
     # arguments resolve identically on both sides of the seam.
     mkdir -p "${E2E_RUN_DIR:?relay: E2E_RUN_DIR unset}/args"
-    docker run -d --name "$E2E_RELAY_NAME" \
+    docker run -d --name "$name" \
         --add-host=host.docker.internal:host-gateway \
-        -p "127.0.0.1:$E2E_RELAY_PORT:$E2E_RELAY_PORT" \
+        -p "127.0.0.1:$port:$port" \
         -v "$E2E_RUN_DIR:$E2E_RUN_DIR" \
-        -e "LOGOSCORE_CONFIG_DIR=$RELAY_CFG_DIR" \
+        -e "LOGOSCORE_CONFIG_DIR=$cfg" \
         ${env_args[@]+"${env_args[@]}"} \
         "$E2E_RELAY_IMAGE" >/dev/null \
         || die "relay: docker run failed"
-    daemon_register_container "$node" "$E2E_RELAY_NAME" "$RELAY_CFG_DIR"
+    daemon_register_container "$node" "$name" "$cfg"
 
     for _t in $(seq 1 30); do
-        if docker exec "$E2E_RELAY_NAME" logoscore --json list-modules >/dev/null 2>&1; then
-            say "$node: relay daemon up (image $E2E_RELAY_IMAGE, port $E2E_RELAY_PORT)"
+        if docker exec "$name" logoscore --json list-modules >/dev/null 2>&1; then
+            say "$node: relay daemon up (image $E2E_RELAY_IMAGE, container $name, port $port)"
             [ "$E2E_RELAY_RLN" = 1 ] && relay_check_chain "$node"
             return 0
         fi
@@ -204,7 +240,7 @@ relay_maddr() {
     local node="${1:?relay_maddr <node>}" peerid
     peerid=$(node_call "$node" delivery_module getNodeInfo MyPeerId | jres | jval)
     [ -n "$peerid" ] || die_node "$node" "relay: empty MyPeerId"
-    printf '/ip4/127.0.0.1/tcp/%s/p2p/%s' "$E2E_RELAY_PORT" "$peerid"
+    printf '/ip4/127.0.0.1/tcp/%s/p2p/%s' "$(relay_port "$node")" "$peerid"
 }
 
 relay_down() { daemon_stop "${1:?relay_down <node>}"; }
