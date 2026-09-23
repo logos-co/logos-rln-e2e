@@ -234,6 +234,13 @@ node_watch_start() {
     local cfg evt pid gen live
     cfg=$(node_cfg_dir "$node")
     [ -n "$cfg" ] || die "node_watch_start: unknown node '$node'"
+    # A container node's daemon is not reachable from the host binary, and its
+    # config dir is a path inside the container: watching it produces an empty
+    # stream and every wait on it times out looking like a missing event.
+    # Refuse instead — watch the host peers, and read the container's own log
+    # (node_logs) for what it did.
+    [ "$(node_kind "$node")" != docker ] \
+        || die "node_watch_start: $node is a container — events are only watchable on host nodes"
     # A second watcher on one node:module would append to the same stream and
     # double every line. daemon_stop clears the bookkeeping, so a re-attach
     # after a restart is fine; this only catches a genuine double-start.
@@ -271,6 +278,12 @@ node_watch_start() {
 # still matches — that race is deliberate.
 node_wait_event() {
     local node="$1" mod="$2" ev="$3" timeout="${4:-30}" match="${5:-}" evt key pos out _t
+    # An empty pattern matches NOTHING, so the wait burns its whole budget and
+    # reports the event as missing — which reads as a product fault. The usual
+    # cause is a helper that produced the pattern not being sourced: a command
+    # substitution for a missing function is empty, and nothing else complains.
+    [ -n "$ev" ] || die "node_wait_event: empty event pattern for $node/$mod \
+(a helper that builds it is probably not sourced)"
     evt=$(gv NODEEVT "${node}_${mod}")
     [ -n "$evt" ] || die "node_wait_event: no watcher for $node/$mod (node_watch_start first)"
     key="${node}_${mod}_$(gv NODEEVTGEN "${node}_${mod}")_$(printf '%s' "$ev" | tr -c '[:alnum:]' '_')"

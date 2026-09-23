@@ -16,6 +16,14 @@
 #   E2E_RELAY_PORT    libp2p tcp port of the first relay, published on
 #                     127.0.0.1 (default 61890). Further relays take the next
 #                     ports up, assigned in relay_up order.
+#   E2E_RELAY_NETWORK a docker network to attach every relay to. Unset (the
+#                     default) leaves them on the default bridge, which is all
+#                     a single relay needs. Set it when relays must reach EACH
+#                     OTHER: published ports live on the host's loopback, so a
+#                     container cannot dial another through them, and
+#                     127.0.0.1 inside a container is that container. On a
+#                     shared network they resolve each other by container name
+#                     — see relay_maddr_internal.
 #   E2E_RELAY_RLN     1 (default) the relay holds a membership and validates
 #                     what it forwards; 0 it relays blind. This is a SCENARIO
 #                     switch, not an image one — delivery_module depends on
@@ -29,6 +37,7 @@ E2E_RELAY_IMAGE="${E2E_RELAY_IMAGE:-logos-rln-e2e:relay}"
 E2E_RELAY_NAME="${E2E_RELAY_NAME:-e2e-relay}"
 E2E_RELAY_PORT="${E2E_RELAY_PORT:-61890}"
 E2E_RELAY_RLN="${E2E_RELAY_RLN:-1}"
+E2E_RELAY_NETWORK="${E2E_RELAY_NETWORK:-}"
 RELAY_CFG_DIR=/var/lib/logos/config
 # How many relays relay_up has started, which is what gives the next one its
 # port and, with more than one in play, its container name.
@@ -195,7 +204,15 @@ EOF
     # The run dir is mounted at the SAME absolute path so argfile's @/abs/path
     # arguments resolve identically on both sides of the seam.
     mkdir -p "${E2E_RUN_DIR:?relay: E2E_RUN_DIR unset}/args"
+    local -a net_args=()
+    if [ -n "$E2E_RELAY_NETWORK" ]; then
+        docker network inspect "$E2E_RELAY_NETWORK" >/dev/null 2>&1 \
+            || docker network create "$E2E_RELAY_NETWORK" >/dev/null \
+            || die "relay: cannot create network $E2E_RELAY_NETWORK"
+        net_args=(--network "$E2E_RELAY_NETWORK")
+    fi
     docker run -d --name "$name" \
+        ${net_args[@]+"${net_args[@]}"} \
         --add-host=host.docker.internal:host-gateway \
         -p "127.0.0.1:$port:$port" \
         -v "$E2E_RUN_DIR:$E2E_RUN_DIR" \
@@ -230,6 +247,37 @@ relay_check_chain() {
         *result*) say "$node: sequencer reachable from the container ($seq)" ;;
         *) die_node "$node" "relay cannot reach the sequencer at $seq — got: ${body:-<nothing>}" ;;
     esac
+}
+
+# Usage: relay_ip <node>
+# The relay's address ON THE SHARED NETWORK, which is the only one its peers
+# can use.
+relay_ip() {
+    local node="${1:?relay_ip <node>}" ip
+    ip=$(docker inspect -f \
+        "{{(index .NetworkSettings.Networks \"$E2E_RELAY_NETWORK\").IPAddress}}" \
+        "$(relay_name "$node")" 2>/dev/null) || ip=""
+    [ -n "$ip" ] || die_node "$node" "no address on network $E2E_RELAY_NETWORK"
+    printf '%s' "$ip"
+}
+
+# Usage: relay_maddr_internal <node>
+# The multiaddr ANOTHER CONTAINER dials. Not relay_maddr's: that one is the
+# host's view (127.0.0.1 plus a published port), and inside a container
+# 127.0.0.1 is that container.
+#
+# An /ip4 address, NOT /dns4 of the container name: docker's embedded DNS
+# answers getent inside the container, but nim-libp2p resolves names itself
+# rather than through libc, and a container name means nothing to the
+# resolvers it asks. The symptom is silent — `resolvedAddresses=[]` and
+# `successfulConns=0`, with no error naming DNS.
+relay_maddr_internal() {
+    local node="${1:?relay_maddr_internal <node>}" peerid
+    [ -n "$E2E_RELAY_NETWORK" ] \
+        || die "relay_maddr_internal: relays share no network — set E2E_RELAY_NETWORK before relay_up"
+    peerid=$(node_call "$node" delivery_module getNodeInfo MyPeerId | jres | jval)
+    [ -n "$peerid" ] || die_node "$node" "empty MyPeerId"
+    printf '/ip4/%s/tcp/%s/p2p/%s' "$(relay_ip "$node")" "$(relay_port "$node")" "$peerid"
 }
 
 # Usage: relay_maddr <node>

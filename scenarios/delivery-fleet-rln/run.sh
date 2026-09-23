@@ -103,7 +103,19 @@ die() {
     fi
     exit 1
 }
+# A container's log dies with the container, and daemon_stop_all removes them
+# — so what the fleet did is gone exactly when a failure makes it interesting.
+# Copy each relay's log into the run dir first; it is the only record of what
+# a relay forwarded, validated or dropped.
+save_relay_logs() {
+    local r
+    for r in $FLEET; do
+        docker logs "$(relay_name "$r")" > "$E2E_RUN_DIR/relay-$r.log" 2>&1 || true
+    done
+    say "relay logs saved to $E2E_RUN_DIR/relay-*.log"
+}
 cleanup() {
+    [ "$NODES_UP" = 1 ] && save_relay_logs
     if [ "${E2E_KEEP:-0}" = "1" ]; then
         say "E2E_KEEP=1: leaving the fleet up, state in $E2E_RUN_DIR"
         return
@@ -122,6 +134,13 @@ say "load: one send every ${SEND_INTERVAL_S}s for ${DURATION_S}s (epoch ${E2E_EP
 # each node as an env var on its own command line, and createNode is what reads
 # it. The relay containers see the same file — the run dir is mounted at the
 # same absolute path.
+# The relays dial each other, which the default bridge cannot carry: their
+# ports are published on the host's loopback and 127.0.0.1 inside a container
+# is that container. A shared network gives them name-based addressing
+# (relay_maddr_internal); the host endpoints still reach them the published way.
+E2E_RELAY_NETWORK="${E2E_RELAY_NETWORK:-e2e-fleet}"
+export E2E_RELAY_NETWORK
+
 RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
 delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
 E2E_RLN_PRESETS_FILE="$RLN_PRESETS_FILE"   # relay.sh passes this into the containers
@@ -174,7 +193,11 @@ done
 # the ends of the chain so a message crosses the fleet rather than arriving
 # from the relay it was handed to.
 section "topology: r1 <- fleet, $SENDER -> r1, $RECEIVER -> r$RELAYS"
-for n in $ALL_NODES; do
+# Only the endpoints are watched: events come from the host binary talking to
+# a host daemon, and a relay's daemon lives in a container. What each relay
+# did is read from its own log instead (node_logs), which is where the
+# validate counts below come from.
+for n in $ENDPOINTS; do
     node_watch_start "$n" delivery_module
 done
 
@@ -192,23 +215,29 @@ for r in $FLEET; do
         "$(argfile "cfg_$r" "$(relay_cfg "$(relay_port "$r")" "$HUB")")" >/dev/null
     delivery_wait_rln_ready "$r"
     delivery_must_call "$r" start "$r start" >/dev/null
-    node_wait_event "$r" delivery_module nodeStarted "$EVT_TIMEOUT" >/dev/null \
-        || die_node "$r" "no nodeStarted within ${EVT_TIMEOUT}s"
+    # No nodeStarted wait here: the event stream is a host-daemon facility and
+    # this node is a container. relay_maddr's getNodeInfo is the confirmation
+    # — it answers only once the node is up, and its peer id is needed anyway.
+    # Two addresses per relay, and they are not interchangeable: MADDR is the
+    # host's view, for the endpoints; HUB is what the next relay dials.
     sv MADDR "$r" "$(relay_maddr "$r")"
-    say "$r: $(gv MADDR "$r")"
-    [ -n "$HUB" ] || HUB=$(gv MADDR "$r")   # every later relay dials the first
+    say "$r: $(gv MADDR "$r") (peers reach it at $(relay_maddr_internal "$r"))"
+    [ -n "$HUB" ] || HUB=$(relay_maddr_internal "$r")
 done
 
 LAST_RELAY=$(printf '%s\n' $FLEET | tail -1)
 delivery_node_up "$SENDER"   "$(( BASE_PORT + 1 ))" "$CLUSTER_ID" "$(gv MADDR r1)" "$EVT_TIMEOUT"
 delivery_node_up "$RECEIVER" "$(( BASE_PORT + 2 ))" "$CLUSTER_ID" "$(gv MADDR "$LAST_RELAY")" "$EVT_TIMEOUT"
 
-say "mesh stabilization: ${MESH_WAIT_S}s"
-sleep "$MESH_WAIT_S"
 for n in $ALL_NODES; do
     delivery_must_call "$n" subscribe "$n subscribe" "$TOPIC" >/dev/null
 done
 say "all $((RELAYS + 2)) nodes subscribed to $TOPIC"
+# AFTER subscribing, not before: a peer joins the topic's mesh only once it has
+# subscribed, and a message published into a mesh with no peer in it goes
+# nowhere — with RLN that also means no proof is ever requested for it.
+say "mesh stabilization: ${MESH_WAIT_S}s"
+sleep "$MESH_WAIT_S"
 
 # Every relay validates, so every relay's read path must be warm before the
 # first send — a cold window answers not_ready and the message is dropped
@@ -277,6 +306,7 @@ done
 
 # ---------- verdict ----------------------------------------------------------
 section "results"
+save_relay_logs
 [ "$SENT" -gt 0 ] || die "no sends were made — check E2E_FLEET_DURATION_S"
 PCT=$(( DELIVERED * 100 / SENT ))
 EPOCH_COUNT=$(printf '%s\n' $EPOCHS_SEEN | wc -w | tr -d ' ')
@@ -304,9 +334,14 @@ for epoch in sorted(by_epoch):
     print(f"e2e:     epoch {epoch}  n={len(v):3d}  p50 {v[len(v)//2]:.1f} ms")
 PY
 
+# What each relay carried. Not a validation count: at the relay's log level a
+# proof check leaves no per-message line, and this scenario does not assert
+# that a relay validates — delivery-relay-rln does, with a witness responder
+# that proves an external answer cannot hijack the verdict. What these numbers
+# show is that every relay was on the path rather than one carrying it all.
 for r in $FLEET; do
-    N=$(node_logs "$r" 100000 2>/dev/null | grep -c 'validate_proof' || true)
-    say "  $r: $N validate_proof mentions in its log"
+    N=$(grep -c 'Message received' "$E2E_RUN_DIR/relay-$r.log" 2>/dev/null || true)
+    say "  $r: saw ${N:-0} messages"
 done
 
 [ "$PROVEN" -eq "$SENT" ] \
