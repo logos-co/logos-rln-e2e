@@ -63,7 +63,7 @@ UD_ROOT="$E2E_RUN_DIR/basecamp"
 # and feeds the external nullifier each side derives. Peers that do not share
 # it can never validate each other's proofs — which reads exactly like a broken
 # prover, and cost a day the first time.
-RLN_ID="${E2E_RLN_IDENTIFIER:-$(openssl rand -hex 32)}"
+RLN_ID=$(delivery_rln_identifier)
 
 DYING=0
 die() {

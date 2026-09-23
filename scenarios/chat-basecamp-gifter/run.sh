@@ -132,7 +132,7 @@ print(n.to_bytes(32, "big").hex())
 EOF
 ) || die "cannot decode config account '$E2E_CONFIG_ACCOUNT'"
 REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
-RLN_ID=$(openssl rand -hex 32)
+RLN_ID=$(delivery_rln_identifier)
 say "registry: $REGISTRY_ID (scope rate $RATE_LIMIT)"
 
 # The conf carries NO rln key at all — the same conf delivery-rln passes.

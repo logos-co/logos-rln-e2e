@@ -204,7 +204,22 @@ print(n.to_bytes(32, "big").hex())
 # scopes the APPLICATION, not the member. It feeds the external nullifier both
 # sides derive, so a per-node value makes every message reject with
 # validatorRes=Reject — which reads exactly like a product fault.
-delivery_rln_identifier() { openssl rand -hex 32; }
+#
+# The value is DELIVERY'S OWN: kLogosDeliveryRlnIdentifier in
+# logos-delivery-module's src/rln_presets.h, which is
+# sha256("rln/logos-delivery/v0.0.1"). A preset that omits `rln-identifier`
+# gets exactly this, so an operator following the docs runs under it and so
+# does every node that validates their messages. A scenario inventing a random
+# one tested a scope nobody else uses — proofs still validated, because both
+# ends of the test agreed, which is precisely what made the difference
+# invisible.
+#
+# E2E_RLN_IDENTIFIER overrides it. That is for a SHARED registry, where the
+# nullifier log is scoped by (registry, identifier, epoch) and two runs inside
+# one epoch would collide on it; a local target provisions its own registry
+# per run, so nothing collides there.
+E2E_RLN_IDENTIFIER="${E2E_RLN_IDENTIFIER:-5e269b6a19fce081f5808b13442dcbc3522197638dd38df5a28bc4e55236b977}"
+delivery_rln_identifier() { printf '%s' "$E2E_RLN_IDENTIFIER"; }
 
 # Usage: delivery_must_call <node> <method> <label> [args…]
 # node_call delivery_module + insist on StdLogosResult success; prints the value.

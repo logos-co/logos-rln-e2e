@@ -223,7 +223,7 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 # scopes the APPLICATION, not the member. It feeds the external nullifier both
 # sides derive, so a per-node value makes every message reject with
 # validatorRes=Reject — which reads exactly like a product fault.
-RLN_ID=$(openssl rand -hex 32)
+RLN_ID=$(delivery_rln_identifier)
 say "registry: $REGISTRY_ID (bring-up scope, rate $RATE_LIMIT)"
 
 # ---------- the witness responder --------------------------------------------

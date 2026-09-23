@@ -94,7 +94,7 @@ REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 # ONE identifier for every node, relay included: rln_identifier scopes the
 # APPLICATION, not the member (docs/contract.md). A per-node value rejects
 # every message in a way that reads like a product fault.
-RLN_ID=$(openssl rand -hex 32)
+RLN_ID=$(delivery_rln_identifier)
 
 # delivery_module resolves RLN from the node's preset, so this deployment has
 # to arrive as one. Keyed "" — the preset delivery_cfg passes. Exported because
