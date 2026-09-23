@@ -2027,11 +2027,11 @@
     "lez-rln": {
       "flake": false,
       "locked": {
-        "lastModified": 1789786939,
-        "narHash": "sha256-0ltWyg5u5gxEOpLsL2076xQvKmL09mfZFO5ZLDWLLSY=",
+        "lastModified": 1790101358,
+        "narHash": "sha256-yrvS3Xl5jMIZ40Z6xa70R45wzwWPSRTt4FgjH+hINNM=",
         "owner": "logos-co",
         "repo": "logos-lez-rln",
-        "rev": "bce76e0b0d85d2801dda90a37432bef4d81b2474",
+        "rev": "387d9c1f6b353fa3d44cd10e459ec7729d9318a7",
         "type": "github"
       },
       "original": {
@@ -2096,17 +2096,17 @@
       },
       "locked": {
         "dir": "logos-lez-rln-module",
-        "lastModified": 1789176294,
-        "narHash": "sha256-JiVzu/tmInuTvOrBVQjXC18tJ7rHV0fFuoqik8A9Sng=",
-        "ref": "feat/lez-module-owns-wallet",
-        "rev": "b02b5666bc48bd59eb005e5447d90325e3ae98c2",
-        "revCount": 84,
+        "lastModified": 1790021674,
+        "narHash": "sha256-Ez5OuH1w3ro+FGMpeDGi/dHUSOgmLzm9hvJ1E3eAHm4=",
+        "ref": "main",
+        "rev": "9583801fae795b6d5fd5bfe8d4f407d14d859b9f",
+        "revCount": 62,
         "type": "git",
         "url": "https://github.com/logos-co/logos-rln-modules"
       },
       "original": {
         "dir": "logos-lez-rln-module",
-        "ref": "feat/lez-module-owns-wallet",
+        "ref": "main",
         "type": "git",
         "url": "https://github.com/logos-co/logos-rln-modules"
       }
@@ -327300,11 +327300,11 @@
         ]
       },
       "locked": {
-        "lastModified": 1790007566,
-        "narHash": "sha256-EkZizFJwelhBYzpNLynVwUnX7RcRTfUdEaoHIxsv9Yk=",
+        "lastModified": 1790178747,
+        "narHash": "sha256-tFM5YtymURXertbLZECFP7pyS+EKlgBuaR7FsBXw3ZM=",
         "owner": "logos-co",
         "repo": "logos-rln-modules",
-        "rev": "2ea5222de47aa30c7b8538ad408b9e30a3e33437",
+        "rev": "a29c4005118ba360ab61d3b1701b4122562ce685",
         "type": "github"
       },
       "original": {
