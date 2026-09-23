@@ -22,6 +22,10 @@
 # phantom chain bugs. Assert equality, fail loudly with both revs.
 #
 # Exports beyond docs/contract.md:
+#   E2E_LEZ_RLN_REV     the lez-rln rev the pin builds against (derived)
+#   E2E_LEZ_RLN_MODULE_VERSION / E2E_RLN_MODULE_VERSION
+#                       module versions this run builds (derived), which the
+#                       relay image build uses instead of hardcoded ARGs
 #   E2E_LEZ_RLN_SRC     pinned logos-lez-rln source (read-only /nix/store)
 #   E2E_RLN_MODULES_SRC pinned logos-rln-modules source
 #   LEZ_RLN_CHECKOUT    passthrough override for the lez-rln SOURCE
@@ -125,20 +129,30 @@ _chat_lgx() {
 
 # rln-layouts is the on-chain wire: the module stack decodes chain state with
 # it, so its pinned lez-rln rev must be the rev whose programs are deployed.
+# The matrix comes from harness/resolve.py: logos-rln-modules is the pin, and
+# the lez-rln rev and the two module versions are READ OUT of it rather than
+# maintained beside it. This runs the resolver for its verdict and exports what
+# it derived, so a scenario or the relay image build can use the versions this
+# run actually builds instead of a number someone typed.
 _check_pins() {
-    local pins layouts_rev lock_rev
+    local pins out
     pins=$(_nix_out pins)
     # shellcheck source=/dev/null
     . "$pins"
     export E2E_LEZ_RLN_SRC E2E_RLN_MODULES_SRC
-    layouts_rev=$(grep -E '^rln-layouts' \
-        "$E2E_RLN_MODULES_SRC/logos-lez-rln-module/rust-lib/Cargo.toml" \
-        | grep -oE '[0-9a-f]{40}' | head -1)
-    lock_rev=$(jq -r '.nodes["lez-rln"].locked.rev' "$E2E_ROOT/flake.lock")
-    [ -n "$layouts_rev" ] || die "cannot read the rln-layouts rev from the rln-modules pin"
-    [ -n "$lock_rev" ] || die "cannot read the lez-rln rev from flake.lock"
-    [ "$layouts_rev" = "$lock_rev" ] || die "pin skew: rln-modules pins rln-layouts to lez-rln $layouts_rev, flake.lock pins lez-rln $lock_rev — the module stack would decode chain state with the wrong layouts. Bump one of the two."
-    say "pins consistent: lez-rln ${lock_rev:0:12} (rln-layouts + flake.lock)"
+
+    out=$(python3 "$E2E_ROOT/harness/resolve.py" --json \
+            --modules-src "$E2E_RLN_MODULES_SRC" \
+            --flake-lock "$E2E_ROOT/flake.lock") \
+        || die "pin matrix refused — see above. Relock lez-rln to the rev the \
+rln-modules pin builds against, or bump rln-layouts in logos-rln-modules."
+
+    E2E_LEZ_RLN_REV=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lez_rln"]["value"])')
+    E2E_LEZ_RLN_MODULE_VERSION=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["lez_rln_module"]["value"])')
+    E2E_RLN_MODULE_VERSION=$(printf '%s' "$out" | python3 -c 'import json,sys; print(json.load(sys.stdin)["rln_module"]["value"])')
+    export E2E_LEZ_RLN_REV E2E_LEZ_RLN_MODULE_VERSION E2E_RLN_MODULE_VERSION
+    say "pin matrix: rln-modules decides lez-rln ${E2E_LEZ_RLN_REV:0:12}, \
+liblogos_lez_rln_module $E2E_LEZ_RLN_MODULE_VERSION, liblogos_rln_module $E2E_RLN_MODULE_VERSION"
 }
 
 resolve_artifacts() {
