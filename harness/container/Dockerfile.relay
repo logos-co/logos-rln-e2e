@@ -30,14 +30,19 @@ RUN apt-get update -qq \
 # time). Building it from the pre-RLN bundle instead would change the binary
 # the topology control exists to hold constant.
 ARG RLN_INDEX=https://github.com/logos-co/logos-rln-modules/releases/download/index
-ARG LEZ_RLN_VERSION=4.0.1
-ARG RLN_VERSION=0.8.2
+# No defaults: tools/build-e2e-image.sh derives these from the repo's pin and
+# passes them in. A default here would be a second, silently stale answer —
+# which is how the image came to ask for 4.0.1 while the pin built 4.0.2 — and
+# it would only ever apply to a bare `docker build`, whose unlabelled image
+# relay_up refuses anyway. Undefined, that path fails at the curl instead.
+ARG LEZ_RLN_VERSION
+ARG RLN_VERSION
 ARG DEV_INDEX=https://github.com/logos-co/logos-modules-dev/releases/download
 ARG DELIVERY_VERSION=0.3.0-146.gfd00701f
 
 COPY harness/lib/compat.sh harness/lib/lgx.sh /harness/lib/
-# lez_core is NOT fetched: liblogos_lez_rln_module 4.0.1 declares
-# dependencies:[] because it owns its wallet in-process.
+# lez_core is NOT fetched: liblogos_lez_rln_module declares dependencies:[]
+# since 3.0.0, because it owns its wallet in-process.
 RUN mkdir -p /bundles /modules \
     && curl -fsSL -o /bundles/delivery_module.lgx \
          "$DEV_INDEX/delivery_module-v$DELIVERY_VERSION/delivery_module-$DELIVERY_VERSION.lgx" \
