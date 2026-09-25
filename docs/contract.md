@@ -125,3 +125,19 @@ skips another's backlog. Watchers are reaped by `node_watch_stop`,
 daemons up but not watch processes); once reaped, a further `node_wait_event`
 on that watcher dies rather than polling a file nobody writes. `node_logs`,
 wallet/chain helpers, JSON plumbing: see each lib file's header.
+
+`harness/lib/fault.sh` degrades **one node's** chain RPC on purpose, for
+scenarios that ask how a node behaves against a hosted testnet's bad days.
+`fault_up` starts `harness/tools/faultproxy.py` between that node's wallet and
+the sequencer; `fault_point_node <node>` rewrites `sequencer_addr` and every
+`sequencers[].sequencer_addr` in its `wallet_config.json` (the only thing that
+re-points the wallet — the module will not honour `LEZ_RLN_SEQUENCER` over an
+existing config, and this must run after `daemon_self_paying` and before
+`daemon_start`); `fault_mode <mode> [method-glob]` switches the fault mid-run
+between `pass`, `refuse`, `blackhole`, `delay:<ms>` and `error5xx`, scoped to
+matching JSON-RPC methods when a glob is given. Only the named node is
+degraded — `chain_head` and the wallet/funding helpers keep dialling
+`$E2E_SEQUENCER` directly, so a scenario can still observe and fund during an
+outage it induced. `fault_trace_count [method]` and `fault_trace_path` read the
+request trace the proxy writes in every mode, which is also how a run reports
+what it cost in chain RPC.
