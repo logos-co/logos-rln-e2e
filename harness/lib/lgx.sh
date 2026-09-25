@@ -53,7 +53,14 @@ module_lgx() {
     local src out
     say "$attr: building from a filtered copy of $tree" >&2
     src=$(staged_tree "$tree" "$input")
+    # --accept-flake-config for the same reason _nix_out passes it: it trusts
+    # OUR OWN flake's nixConfig, which names the logos cache. Without it a
+    # checkout-based build silently loses every substituter and compiles the
+    # whole dependency tree from source — minutes of vendoring per run, and the
+    # only sign is nix's "ignoring untrusted flake configuration setting"
+    # warning scrolling past.
     out=$(cd "$E2E_ROOT" && nix build --no-link --print-out-paths ".#$attr" \
+        --accept-flake-config \
         --override-input "$input" "path:$src") || die "nix build .#$attr failed"
     lgx_of "$out"
 }
