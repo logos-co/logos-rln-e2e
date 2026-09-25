@@ -3,7 +3,7 @@
 #
 # Resolution order per artifact:
 #   1. explicit env override: LOGOSCORE, WALLET_LGX, LEZ_RLN_LGX, RLN_LGX,
-#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX
+#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX, CHAT_LGX, BASECAMP_APP
 #   2. checkout overrides — the dev loop for changing a repo and running a
 #      scenario against it (filtered copy + --override-input):
 #        RLN_MODULES_CHECKOUT=<dir>      the three RLN-stack bundles
@@ -28,6 +28,9 @@
 #                       relay image build uses instead of hardcoded ARGs
 #   E2E_LEZ_RLN_SRC     pinned logos-lez-rln source (read-only /nix/store)
 #   E2E_RLN_MODULES_SRC pinned logos-rln-modules source
+#   E2E_BASECAMP_PIN    logos-basecamp flake ref the Basecamp app builds from
+#                       (default: the 0.3.0 rev). BASECAMP_APP or
+#                       BASECAMP_CHECKOUT still take precedence over it.
 #   LEZ_RLN_CHECKOUT    passthrough override for the lez-rln SOURCE
 #   E2E_LEZ_RLN         the checkout when it exists, else the pinned store
 #                       path. tools/deployments/stage.sh runs fine from the
@@ -35,6 +38,10 @@
 #                       which of the two a target needs is the target's call.
 
 E2E_ROOT="${E2E_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# The Basecamp app the NEEDS_APPS=basecamp scenarios launch. Pinned by rev, and
+# deliberately not a flake input — see the basecamp branch of resolve_artifacts.
+E2E_BASECAMP_PIN="${E2E_BASECAMP_PIN:-github:logos-co/logos-basecamp/bbe5da0e038ef19095690f4164a8ddaab0915821}"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/lgx.sh"
 
 _nix_out() {
@@ -250,10 +257,23 @@ resolve_artifacts() {
     case " ${NEEDS_APPS:-} " in
         *" basecamp "*)
             if [ -z "${BASECAMP_APP:-}" ]; then
-                [ -n "${BASECAMP_CHECKOUT:-}" ] \
-                    || die "basecamp requested: set BASECAMP_APP or BASECAMP_CHECKOUT"
-                say "basecamp: building #app from $BASECAMP_CHECKOUT"
-                out=$(cd "$BASECAMP_CHECKOUT" && nix build .#app --no-link --print-out-paths --accept-flake-config | tail -1)
+                if [ -n "${BASECAMP_CHECKOUT:-}" ]; then
+                    say "basecamp: building #app from $BASECAMP_CHECKOUT"
+                    out=$(cd "$BASECAMP_CHECKOUT" && nix build .#app --no-link --print-out-paths --accept-flake-config | tail -1)
+                else
+                    # The pin, not a flake input: logos-basecamp's own lock is
+                    # ~10k nodes against this repo's ~13k, so adding it as an
+                    # input would about double the lock and make every
+                    # evaluation in the repo drag basecamp's closure —
+                    # including register, keystore and the soak, which never
+                    # launch the app. Resolved by URL here instead, the same way
+                    # LIBP2P_MODULE_CHECKOUT and GIFTER_CHECKOUT build theirs.
+                    # Pinned by rev, so `nix flake update` does not move it and
+                    # bumping is a deliberate edit to this one variable.
+                    say "basecamp: building #app from the pin ($E2E_BASECAMP_PIN)"
+                    out=$(nix build "$E2E_BASECAMP_PIN#app" --no-link --print-out-paths --accept-flake-config | tail -1)
+                fi
+                [ -n "$out" ] || die "basecamp: nix build produced no output path"
                 BASECAMP_APP="$out/bin/LogosBasecamp"
             fi
             [ -x "$BASECAMP_APP" ] || die "basecamp binary not executable: $BASECAMP_APP"

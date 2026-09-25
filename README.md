@@ -55,12 +55,17 @@ The target is always a flag, never part of a scenario's name.
   `../logos-lez-rln`, override with `LEZ_RLN_CHECKOUT`) with the host
   binaries and risc0 guest blobs built — the target prints the exact build
   recipe when they are missing.
-- **`delivery-rln` / `delivery-relay-rln`**: checkouts of
-  [logos-delivery-module] and [logos-delivery] at upstream `master`
-  (submodules checked out on the latter). The flake pins delivery-module at a
-  rev that predates its RLN bridge; the rln-modules and lez-rln pins are
-  current, so the module stack needs no checkout. Copy-paste quickstart:
+- **The delivery and Basecamp scenarios**: nothing extra. The delivery bundle
+  builds from the `delivery-module` v0.3.0-rc.2 pin (prebuilt in the logos
+  cache) and the Basecamp app from `E2E_BASECAMP_PIN` (logos-basecamp 0.3.0);
+  the rln-modules and lez-rln pins are current too. Checkouts of
+  [logos-delivery-module], [logos-delivery] (submodules included — a path
+  override carries only what is on disk) or logos-basecamp are for testing an
+  unreleased tree, not a prerequisite. Copy-paste quickstart:
   [docs/delivery-integration.md].
+- **`chat-basecamp-rln` / `chat-basecamp-gifter`**: a chat-module checkout, and
+  for the gifter one also the libp2p-module and gifter checkouts — none of the
+  three is pinned here yet.
 - **docker** — the containerised relay (`delivery-relay-rln`,
   `tools/build-e2e-image.sh`) and the compose-topology scenarios (mix).
 

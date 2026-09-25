@@ -116,19 +116,12 @@ for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
           E2E_POLL_INTERVAL_S E2E_EPOCH_SIZE_SEC; do
     eval "[ -n \"\${$_v:-}\" ]" || die "contract env missing: $_v (see docs/contract.md)"
 done
-# Without the right overrides this runs against stale pins — fail with the
-# pointer instead of a confusing hang or a minutes-later assertion.
-# A prebuilt DELIVERY_LGX carries both halves; otherwise BOTH checkouts are
-# needed (the DM flake pins the pre-fixes logos-delivery, so a shim-only
-# override silently tests the wrong Nim library).
-if [ -z "${DELIVERY_LGX:-}" ]; then
-    [ -n "${DELIVERY_MODULE_CHECKOUT:-}" ] && [ -n "${LOGOS_DELIVERY_CHECKOUT:-}" ] \
-        || die "delivery-rln needs the integration branches: set BOTH DELIVERY_MODULE_CHECKOUT and LOGOS_DELIVERY_CHECKOUT (rln/integration-fixes) or a prebuilt DELIVERY_LGX"
-fi
-# The e2e flake pin predates the 0.6.1 module wire (proof_canonical +
-# RegistryOptions register) this scenario asserts.
-[ -n "${RLN_LGX:-}" ] || [ -n "${RLN_MODULES_CHECKOUT:-}" ] \
-    || die "delivery-rln needs the 0.6.1 module stack — the flake pin predates it; set RLN_MODULES_CHECKOUT (or RLN_LGX)"
+# No override gate any more. Both pins carry what this scenario asserts: the
+# delivery stack from delivery-module v0.3.0-rc.2 (preset-resolved RLN) and the
+# module wire from rln-modules main, which is long past the 0.6.1 proof_canonical
+# + RegistryOptions register this used to demand a checkout for.
+# RLN_MODULES_CHECKOUT / DELIVERY_MODULE_CHECKOUT / LOGOS_DELIVERY_CHECKOUT still
+# override either side when you are testing an unreleased tree.
 
 polls() {
     local n=$(( $1 / $2 ))

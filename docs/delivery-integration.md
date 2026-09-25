@@ -33,13 +33,12 @@ git clone --recurse-submodules https://github.com/logos-messaging/logos-delivery
 git clone https://github.com/logos-co/logos-lez-rln     # --target local only
 ```
 
-`flake.lock` pins logos-rln-modules and logos-lez-rln at their current mains,
-so **the RLN module stack needs no checkout** — it builds from the pin. It
-pins logos-delivery-module at a rev that predates the RLN bridge, which is
-why the two delivery repos are cloned: upstream `master` on both, no fork.
-Note the org — `logos-delivery` lives under **logos-messaging**, the shim under
-logos-co.
-`logos-delivery` must have its submodules, since a path override carries only
+`flake.lock` pins logos-rln-modules and logos-lez-rln at their current mains and
+logos-delivery-module at **v0.3.0-rc.2**, whose bundle is prebuilt in the logos
+cache and carries the preset-resolved RLN — so **nothing here needs a checkout**.
+Clone the delivery repos only to test an unreleased tree. When you do, note the
+org (`logos-delivery` lives under **logos-messaging**, the shim under logos-co)
+and give `logos-delivery` its submodules, since a path override carries only
 what is on disk.
 
 ### 2. Build logos-lez-rln's provisioning binaries (`--target local` only)
@@ -60,9 +59,7 @@ nothing on-chain can mint native into it.
 
 ```sh
 cd logos-rln-e2e
-export DELIVERY_MODULE_CHECKOUT=../logos-delivery-module \
-       LOGOS_DELIVERY_CHECKOUT=../logos-delivery \
-       LEZ_RLN_CHECKOUT=../logos-lez-rln
+export LEZ_RLN_CHECKOUT=../logos-lez-rln   # --target local only
 
 ./run.sh delivery --target none      # fastest smoke: co-residency, no chain
 ./run.sh delivery-rln --target local # the acceptance
@@ -75,9 +72,11 @@ on every public transaction and runs its faucet only in the genesis block, so
 an account created later can never hold native balance — then provisions a
 fresh tree and stages it into the run's wallet home. Nothing to configure.
 
-The first run builds `liblogosdelivery` from source: only pinned revs are
-prebuilt in the logos cache, and the delivery checkouts are newer than the
-pin. Expect a long first build, and keep tens of GB free in `/nix`.
+The delivery bundle comes straight from the logos cache at the pinned rev, so
+there is no long first build. Override with `DELIVERY_MODULE_CHECKOUT` and/or
+`LOGOS_DELIVERY_CHECKOUT` and that changes: a checkout is newer than any pin, so
+`liblogosdelivery` builds from source. Expect a long first build then, and keep
+tens of GB free in `/nix`.
 
 ### The relay topology
 

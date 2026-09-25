@@ -21,8 +21,11 @@ channel.
 |---|---|
 | `LOGOSCORE` | logoscore binary |
 | `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX` | module bundles (each overridable by pre-setting the env) |
-| `DELIVERY_LGX` | delivery bundle — resolved only when the scenario's `NEEDS_MODULES` includes `delivery_module`; `DELIVERY_MODULE_CHECKOUT` / `LOGOS_DELIVERY_CHECKOUT` build it from working trees (see `harness/artifacts.sh`) |
+| `DELIVERY_LGX` | delivery bundle — resolved only when the scenario's `NEEDS_MODULES` includes `delivery_module`. Env override, else `DELIVERY_MODULE_CHECKOUT` / `LOGOS_DELIVERY_CHECKOUT` build it from working trees, else **the flake pin** (`delivery-module` v0.3.0-rc.2, prebuilt in the logos cache) — so no checkout is needed for a released rev |
+| `CHAT_LGX` | chat_module bundle (the chat-basecamp scenarios) — env override, else built from `CHAT_MODULE_CHECKOUT`. **Not pinned in this flake yet**, so one of the two is required |
 | `LIBP2P_LGX` / `GIFTER_LGX` | libp2p_module / rln_gifter_module bundles (the gifter path) — env override, else built from `LIBP2P_MODULE_CHECKOUT` / `GIFTER_CHECKOUT` (`nix build <checkout>#lgx`). Not pinned in this flake yet: the gifter needs its register-target fix branch (post-rename `register_member` lives on liblogos_lez_rln_module) |
+| `BASECAMP_APP` | the Basecamp binary a `NEEDS_APPS=basecamp` scenario launches — env override, else `nix build .#app` from `BASECAMP_CHECKOUT`, else `$E2E_BASECAMP_PIN#app`. It must be the **non-portable dev `#app`** build: the QML inspector is compiled in and only that build appends the `-dev` variant liblogos needs to load harness-built bundles |
+| `E2E_BASECAMP_PIN` | logos-basecamp flake ref `BASECAMP_APP` falls back to (default: the 0.3.0 rev). Deliberately not a flake input — basecamp's own lock is ~10k nodes, which would about double this repo's and slow every evaluation, including scenarios that never launch the app |
 | `E2E_MODULES_DIR` | flattened module dir daemons load from |
 
 The `none` target exports nothing below — it stands up no chain. Scenarios

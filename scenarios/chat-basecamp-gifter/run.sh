@@ -74,10 +74,6 @@ for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
           E2E_POLL_INTERVAL_S E2E_EPOCH_SIZE_SEC BASECAMP_APP; do
     eval "[ -n \"\${$_v:-}\" ]" || die "contract env missing: $_v (see docs/contract.md + scenario.env)"
 done
-if [ -z "${DELIVERY_LGX:-}" ]; then
-    [ -n "${DELIVERY_MODULE_CHECKOUT:-}" ] && [ -n "${LOGOS_DELIVERY_CHECKOUT:-}" ] \
-        || die "chat-basecamp-gifter needs BOTH delivery checkouts (rln/integration-fixes) or a prebuilt DELIVERY_LGX"
-fi
 basecamp_port_check
 
 polls() {
