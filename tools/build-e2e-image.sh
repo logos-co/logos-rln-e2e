@@ -25,7 +25,7 @@
 set -euo pipefail
 
 TAG="${E2E_RELAY_IMAGE:-logos-rln-e2e:relay}"
-DELIVERY_VERSION="${DELIVERY_VERSION:-0.3.0-146.gfd00701f}"
+DELIVERY_VERSION="${DELIVERY_VERSION:-0.3.0-162.gfd585216}"
 # Derived, not hardcoded: ask the resolver what the current pin builds. An
 # explicit env var still wins, which is what a release-candidate image needs.
 if [ -z "${LEZ_RLN_VERSION:-}" ] || [ -z "${RLN_VERSION:-}" ]; then

@@ -71,14 +71,9 @@
 #      authoritative external responder; that topology no longer exists
 #      for lez, so the Reject path now lives only in delivery's own tests.)
 #
-# Required checkouts. The flake pins delivery-module at a rev that predates
-# the RLN bridge, so the delivery stack comes from checkouts of UPSTREAM
-# master (or a prebuilt DELIVERY_LGX). The rln-modules and lez-rln pins are
-# current: the module stack needs no checkout.
-#   DELIVERY_MODULE_CHECKOUT  logos-co/logos-delivery-module @ master
-#   LOGOS_DELIVERY_CHECKOUT   logos-co/logos-delivery @ master, submodules
-#                             checked out (a path override carries only
-#                             what is on disk)
+# No checkouts required: the flake pins delivery-module at master, which
+# carries the RLN bridge. DELIVERY_MODULE_CHECKOUT / LOGOS_DELIVERY_CHECKOUT
+# (or a prebuilt DELIVERY_LGX) override it.
 #
 # Env beyond docs/contract.md:
 #   E2E_RATE_LIMIT=100            registration rate limit (a register_membership
@@ -116,19 +111,6 @@ for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
           E2E_POLL_INTERVAL_S E2E_EPOCH_SIZE_SEC; do
     eval "[ -n \"\${$_v:-}\" ]" || die "contract env missing: $_v (see docs/contract.md)"
 done
-# Without the right overrides this runs against stale pins — fail with the
-# pointer instead of a confusing hang or a minutes-later assertion.
-# A prebuilt DELIVERY_LGX carries both halves; otherwise BOTH checkouts are
-# needed (the DM flake pins the pre-fixes logos-delivery, so a shim-only
-# override silently tests the wrong Nim library).
-if [ -z "${DELIVERY_LGX:-}" ]; then
-    [ -n "${DELIVERY_MODULE_CHECKOUT:-}" ] && [ -n "${LOGOS_DELIVERY_CHECKOUT:-}" ] \
-        || die "delivery-rln needs the integration branches: set BOTH DELIVERY_MODULE_CHECKOUT and LOGOS_DELIVERY_CHECKOUT (rln/integration-fixes) or a prebuilt DELIVERY_LGX"
-fi
-# The e2e flake pin predates the 0.6.1 module wire (proof_canonical +
-# RegistryOptions register) this scenario asserts.
-[ -n "${RLN_LGX:-}" ] || [ -n "${RLN_MODULES_CHECKOUT:-}" ] \
-    || die "delivery-rln needs the 0.6.1 module stack — the flake pin predates it; set RLN_MODULES_CHECKOUT (or RLN_LGX)"
 
 polls() {
     local n=$(( $1 / $2 ))

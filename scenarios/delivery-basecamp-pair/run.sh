@@ -23,8 +23,6 @@
 #   3. a's message reaches b only after b's own module validated the proof.
 #
 # Required (beyond docs/contract.md):
-#   DELIVERY_MODULE_CHECKOUT  logos-delivery-module @ master
-#   LOGOS_DELIVERY_CHECKOUT   logos-delivery @ master (submodules checked out)
 #   BASECAMP_CHECKOUT         logos-basecamp (or BASECAMP_APP binary)
 #
 # Env knobs:

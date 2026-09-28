@@ -1,0 +1,20 @@
+{
+  "author": "Logos Core Team",
+  "category": "system",
+  "dependencies": [],
+  "description": "Read-only registry of module lifecycle state",
+  "display_name": "Module State",
+  "hashes": {
+    "root": "c0827e5ed82aa080003747ec57a4f25468c84d2dfc7d946740d8f049316f9b73",
+    "variants": "0ff623361e77d868a95e97d539c4e4047055d020aa7a3c2fdf3212b4cb8e4945",
+    "variants/darwin-arm64": "0a3e820584e308229b9c184cfa83c8bb0578c2f81e769605a47218a34a28e231"
+  },
+  "icon": "",
+  "main": {
+    "darwin-arm64": "modules_state_plugin.dylib"
+  },
+  "manifestVersion": "0.5.0",
+  "name": "modules_state",
+  "type": "core",
+  "version": "0.1.0"
+}

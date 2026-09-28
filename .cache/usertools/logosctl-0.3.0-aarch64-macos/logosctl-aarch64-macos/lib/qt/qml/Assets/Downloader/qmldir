@@ -1,0 +1,7 @@
+module Assets.Downloader
+linktarget Qt6::QmlAssetDownloaderplugin
+optional plugin qmlassetdownloaderplugin
+classname Assets_DownloaderPlugin
+typeinfo plugins.qmltypes
+prefer :/qt-project.org/imports/Assets/Downloader/
+

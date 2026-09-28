@@ -55,12 +55,10 @@ The target is always a flag, never part of a scenario's name.
   `../logos-lez-rln`, override with `LEZ_RLN_CHECKOUT`) with the host
   binaries and risc0 guest blobs built — the target prints the exact build
   recipe when they are missing.
-- **`delivery-rln` / `delivery-relay-rln`**: checkouts of
-  [logos-delivery-module] and [logos-delivery] at upstream `master`
-  (submodules checked out on the latter). The flake pins delivery-module at a
-  rev that predates its RLN bridge; the rln-modules and lez-rln pins are
-  current, so the module stack needs no checkout. Copy-paste quickstart:
-  [docs/delivery-integration.md].
+- **`delivery-rln` / `delivery-rln-soak` / `delivery-relay-rln`**: nothing
+  beyond the pins — the flake pins [logos-delivery-module] at an upstream
+  `master` that carries its RLN bridge (and, through it, [logos-delivery]).
+  Copy-paste quickstart: [docs/delivery-integration.md].
 - **docker** — the containerised relay (`delivery-relay-rln`,
   `tools/build-e2e-image.sh`) and the compose-topology scenarios (mix).
 
