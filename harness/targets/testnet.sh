@@ -1,16 +1,21 @@
 # shellcheck shell=bash
-# harness/targets/testnet.sh — the hosted-testnet target.
+# harness/targets/testnet.sh — the hosted-testnet target, and the hosted-network
+# machinery devnet.sh reuses (_hosted_up).
 #
 # No chain lifecycle: the descriptor is committed under this repo's
 # deployments/<name> (see deployments/README.md). target_up asserts the
 # descriptor's sequencer answers getLastBlockId, stages the deployment into
 # E2E_WALLET_HOME and exports the contract env (docs/contract.md) with the
-# testnet poll budgets.
+# testnet poll budgets. A network is funded and provisioned by
+# tools/network/provision.sh networks/<network>.env (docs/networks.md).
 #
 # Inputs beyond the contract:
-#   E2E_DEPLOYMENT=<name>    descriptor dir under deployments/ — required, no
-#                            default: a testnet run always names the tree it
-#                            spends against.
+#   E2E_DEPLOYMENT=<name>    descriptor dir under deployments/; defaults to
+#                            DEPLOYMENT in networks/<network>.env
+#   E2E_PAYER_WALLET=<file>  the payer's storage.json when the descriptor has
+#                            none committed (default ~/.local/share/
+#                            logos-rln-e2e/<network>/deployments/<name>/
+#                            storage.json)
 #   LEZ_RLN_CHECKOUT=<dir>   logos-lez-rln source providing
 #                            tools/deployments/stage.sh. Resolution: this var,
 #                            then E2E_LEZ_RLN_SRC (harness/artifacts.sh), then
@@ -70,20 +75,48 @@ _testnet_deployments() {
     printf '%s' "${names# }"
 }
 
-target_up() {
-    section "target: testnet"
+target_up() { _hosted_up testnet; }
+
+# Usage: _hosted_up <network>
+# The target for a hosted network, shared by testnet and devnet. The
+# deployment defaults to DEPLOYMENT from networks/<network>.env (written by
+# tools/network/provision.sh). Its wallet is the committed
+# deployments/<name>/storage.json when there is one, otherwise the payer
+# wallet provision.sh left outside the repo: a payer funded by a bridge
+# deposit holds real funds, so its key is never committed.
+_hosted_up() {
+    local network="$1" name desc wallet dep_dir available conf deployment=""
+    section "target: $network"
     for tool in curl jq python3; do
         command -v "$tool" >/dev/null || die "missing tool: $tool"
     done
 
-    local name dep_dir available
+    conf="$_TESTNET_HERE/networks/$network.env"
+    # shellcheck disable=SC1090
+    [ -f "$conf" ] && deployment=$(. "$conf" && printf '%s' "${DEPLOYMENT:-}")
     available=$(_testnet_deployments)
-    name="${E2E_DEPLOYMENT:-}"
+    name="${E2E_DEPLOYMENT:-$deployment}"
     [ -n "$name" ] \
-        || die "--target testnet needs E2E_DEPLOYMENT=<name> (deployments/: ${available:-<none committed>})"
-    dep_dir="$_TESTNET_HERE/deployments/$name"
-    [ -f "$dep_dir/deployment.json" ] && [ -f "$dep_dir/storage.json" ] \
-        || die "no deployment 'deployments/$name' with deployment.json + storage.json (available: ${available:-<none committed>})"
+        || die "--target $network needs E2E_DEPLOYMENT=<name> (deployments/: ${available:-<none committed>}), or networks/$network.env"
+    desc="$_TESTNET_HERE/deployments/$name/deployment.json"
+    [ -f "$desc" ] || die "no deployments/$name/deployment.json (available: ${available:-<none committed>})"
+
+    if [ -f "$_TESTNET_HERE/deployments/$name/storage.json" ]; then
+        dep_dir="$_TESTNET_HERE/deployments/$name"
+    else
+        wallet="${E2E_PAYER_WALLET:-$HOME/.local/share/logos-rln-e2e/$network/deployments/$name/storage.json}"
+        [ -f "$wallet" ] \
+            || die "no payer wallet at $wallet — run tools/network/provision.sh networks/$network.env, or set E2E_PAYER_WALLET to the storage.json holding $(jq -r '.payer_account' "$desc")"
+        dep_dir="$E2E_RUN_DIR/deployment-$name"
+        mkdir -p "$dep_dir"
+        cp "$desc" "$dep_dir/deployment.json"
+        cp "$wallet" "$dep_dir/storage.json"
+        chmod 600 "$dep_dir/storage.json"
+        # One registration reserves ~6.5e8; 1e9 per node keeps a bridged
+        # deposit lasting.
+        E2E_FUND_AMOUNT="${E2E_FUND_AMOUNT:-1000000000}"
+        export E2E_FUND_AMOUNT
+    fi
 
     _testnet_stage "$name" "$dep_dir"
 }
@@ -91,7 +124,7 @@ target_up() {
 # Usage: _testnet_stage <name> <dep_dir>
 # Everything after the descriptor is found: check the sequencer, stage the
 # deployment into E2E_WALLET_HOME and export the contract env. <dep_dir> holds
-# deployment.json + storage.json; harness/targets/devnet.sh assembles one.
+# deployment.json + storage.json.
 _testnet_stage() {
     local name="$1" dep_dir="$2" lez head
     lez=$(_testnet_lez_src) \
