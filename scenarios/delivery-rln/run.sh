@@ -814,9 +814,20 @@ MSGHASH_T=$(printf '%s' "$PROP" | python3 -c \
     'import json,sys; print(json.load(sys.stdin)["data"].get("arg1",""))')
 node_wait_event n2 delivery_module messageReceived "$RECV_WAIT_S" "$MSGHASH_T" >/dev/null \
     || die "NEGATIVE CONTROL FAILED: the probe never delivered — an external 'invalid' overrode the bridge's own verdict?"
-grep -q "TAMPER active" "$E2E_RUN_DIR/responder-n2.log" \
+# The witness answers asynchronously and its own validate_proof runs after the
+# bridge's, so the probe can be delivered before the witness has logged it —
+# against a remote registry by whole seconds. Wait for its lines, don't grep once.
+witness_saw() {
+    local pattern="$1" _t
+    for _t in $(seq 1 "$(polls "$EVT_TIMEOUT" 1)"); do
+        grep -q "$pattern" "$E2E_RUN_DIR/responder-n2.log" && return 0
+        sleep 1
+    done
+    return 1
+}
+witness_saw "TAMPER active" \
     || die "tamper hook never fired on n2 (probe did not reach the witness?)"
-grep -q "verify verdict=invalid" "$E2E_RUN_DIR/responder-n2.log" \
+witness_saw "verify verdict=invalid" \
     || die "n2's module never answered 'invalid' for the corrupted signal — witness tail: $(tail -3 "$E2E_RUN_DIR/responder-n2.log")"
 rm -f "$E2E_RUN_DIR/tamper-n2"
 say "tamper probe: witness answered a contradicting 'invalid', was rejected, and the message delivered — external responders cannot hijack a bridged node"
