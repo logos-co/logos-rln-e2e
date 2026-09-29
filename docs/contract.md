@@ -11,7 +11,7 @@ channel.
 | var | meaning |
 |---|---|
 | `E2E_SCENARIO` | scenario id |
-| `E2E_TARGET` | `local` \| `testnet` \| `none` |
+| `E2E_TARGET` | `local` \| `testnet` \| `devnet` \| `none` |
 | `E2E_RUN_DIR` | per-run scratch dir (`runs/<ts>-<scenario>-<target>`) |
 | `E2E_KEEP` | `1` = leave chain/daemons/state up for debugging |
 
@@ -40,7 +40,7 @@ that preflight chain vars fail fast under it by design.
 | `E2E_WALLET_HOME` | staged wallet-home fixture (lez-rln `stage.sh` output) |
 | `E2E_TREE_ID` | RLN tree id (64 hex) |
 | `E2E_CONFIG_ACCOUNT` | registry config account (base58) |
-| `E2E_PAYER` | the account that signs a registration, pays its price in NATIVE balance and pays its fee — one account does all three. Local mints it before genesis; testnet reads `payer_account` from the descriptor |
+| `E2E_PAYER` | the account that signs a registration, pays its price in NATIVE balance and pays its fee — one account does all three. Local mints it before genesis; testnet and devnet read `payer_account` from the descriptor |
 | `E2E_CONFIRM_TIMEOUT_S` / `E2E_POLL_INTERVAL_S` | on-chain confirmation budget (local 120/5, testnet 600/10) |
 | `E2E_EPOCH_SIZE_SEC` | RLN epoch size passed to `start` (local 60, testnet 600) |
 | `E2E_ROOT_WINDOW_TIMEOUT_S` | `validate_proof` root-window retry budget (local 60, testnet 120) |
@@ -54,7 +54,8 @@ that preflight chain vars fail fast under it by design.
 | `E2E_FUND_AMOUNT` | native balance `wallet_fund` sends a node's own payer (default 5e9). The fee RESERVE (~6.5e8 per transaction) dominates the registry price (~1e6), so size this from the reserve or the account cannot transact |
 | `E2E_DEVNET_TIMEOUT_S` | local/host: devnet readiness budget (default 900 — first boot cargo-builds the sequencer) |
 | `LEZ_RLN_CHECKOUT` | lez-rln working tree for dev.sh + provisioning (default `../logos-lez-rln`; must have host bins + guest blobs built) |
-| `E2E_DEPLOYMENT` | testnet only, required: name of a committed descriptor under `deployments/` |
+| `E2E_DEPLOYMENT` | testnet, required: name of a committed descriptor under `deployments/`. devnet: same, default `devnet-z2` |
+| `E2E_PAYER_WALLET` | devnet only: `storage.json` holding the descriptor's payer, kept outside the repo (default `~/.local/share/logos-rln-e2e/devnet/deployments/<name>/storage.json`). devnet also defaults `E2E_FUND_AMOUNT` to 1e9 |
 | `E2E_DEPLOYMENT_DIR` | local/external only: reuse an existing provisioned deployment (refused under `E2E_DEVNET=host` — dev.sh wipes the chain) |
 
 Scenario-specific knobs (e.g. `register`'s `E2E_RATE_LIMIT`) are documented in

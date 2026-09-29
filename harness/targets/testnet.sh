@@ -76,7 +76,7 @@ target_up() {
         command -v "$tool" >/dev/null || die "missing tool: $tool"
     done
 
-    local name dep_dir lez head available
+    local name dep_dir available
     available=$(_testnet_deployments)
     name="${E2E_DEPLOYMENT:-}"
     [ -n "$name" ] \
@@ -85,6 +85,15 @@ target_up() {
     [ -f "$dep_dir/deployment.json" ] && [ -f "$dep_dir/storage.json" ] \
         || die "no deployment 'deployments/$name' with deployment.json + storage.json (available: ${available:-<none committed>})"
 
+    _testnet_stage "$name" "$dep_dir"
+}
+
+# Usage: _testnet_stage <name> <dep_dir>
+# Everything after the descriptor is found: check the sequencer, stage the
+# deployment into E2E_WALLET_HOME and export the contract env. <dep_dir> holds
+# deployment.json + storage.json; harness/targets/devnet.sh assembles one.
+_testnet_stage() {
+    local name="$1" dep_dir="$2" lez head
     lez=$(_testnet_lez_src) \
         || die "no logos-lez-rln source for tools/deployments/stage.sh (set LEZ_RLN_CHECKOUT)"
     [ -f "$lez/tools/deployments/stage.sh" ] || die "no tools/deployments/stage.sh under $lez"

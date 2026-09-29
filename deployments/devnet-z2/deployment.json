@@ -1,0 +1,10 @@
+{
+  "name": "devnet-z2",
+  "tree_id": "166d398596959b1ff0f2aa99d669f6b2db4da88677dd6a60a8a38267ec4400b9",
+  "sequencer": "http://209.38.241.182:3140/",
+  "registration_program_id": "a908a461bf129a507a927fef446262c2428a082f846a78f88a816ba0153dfab1",
+  "merkle_program_id": "a2eda7e5f8fe44b2d119db89ba16dafb1452fe128ed0d526829095fd7018492c",
+  "config_account": "BbWaV7mqVx3kAk1h8rsjZ3cACzPrT4M2J7RVQSCXrDUU",
+  "payer_account": "7ehgsisHPmraWhcY8peaCxz3xpYKhhivXwGaEWVQP2cB",
+  "treasury_account": "CfQvsyLe65QyJviaLVBP5Vbr4a5uwbVJAQPV1MpbRoHD"
+}
