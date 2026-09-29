@@ -30,6 +30,7 @@ SYNC_STEP="${SYNC_STEP:-3000}"
 wallet_ready() {
     local node="${1:?wallet_ready <node>}" st _t tries
     local iv="${E2E_POLL_INTERVAL_S:-5}"
+    [ "${E2E_WALLET_SOURCE:-staged}" = table ] && wallet_select_network "$node"
     tries=$(( ${E2E_WALLET_READY_S:-300} / iv ))
     [ "$tries" -lt 1 ] && tries=1
     for _t in $(seq 1 "$tries"); do
@@ -44,6 +45,27 @@ wallet_ready() {
         esac
     done
     die_node "$node" "registry wallet never became ready (last: ${st:-<empty>})"
+}
+
+# Usage: wallet_select_network <node>
+# E2E_WALLET_SOURCE=table: the node's home is empty (wallet_home_fresh) and no
+# sequencer is configured, so the lez module waits for a network. Scenarios
+# fund the payer before their liblogos_rln_module.start names a registry, so
+# select it here by the target's CAIP-2 reference — the same call the rln
+# module makes from the registry id — and assert the built-in table served it.
+wallet_select_network() {
+    local node="${1:?wallet_select_network <node>}" reply _t
+    for _t in $(seq 1 30); do
+        reply=$(node_call "$node" liblogos_lez_rln_module use_network "$E2E_TARGET" | jres | jval) || reply=""
+        case "$reply" in
+            *'"retry":true'*|'') sleep 2 ;;
+            *) break ;;
+        esac
+    done
+    printf '%s' "$reply" | jq -e --arg n "$E2E_TARGET" \
+        '.accepted == true and .source == "table" and .network == $n' >/dev/null 2>&1 \
+        || die_node "$node" "use_network($E2E_TARGET) was not served from the built-in table: ${reply:-<empty>}"
+    say "$node: wallet network $E2E_TARGET selected from the lez module's table"
 }
 
 # Kept under their old names so scenarios read unchanged; both now mean "wait

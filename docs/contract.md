@@ -54,8 +54,9 @@ that preflight chain vars fail fast under it by design.
 | `E2E_FUND_AMOUNT` | native balance `wallet_fund` sends a node's own payer (default 5e9). The fee RESERVE (~6.5e8 per transaction) dominates the registry price (~1e6), so size this from the reserve or the account cannot transact |
 | `E2E_DEVNET_TIMEOUT_S` | local/host: devnet readiness budget (default 900 — first boot cargo-builds the sequencer) |
 | `LEZ_RLN_CHECKOUT` | lez-rln working tree for dev.sh + provisioning (default `../logos-lez-rln`; must have host bins + guest blobs built) |
-| `E2E_DEPLOYMENT` | testnet, required: name of a committed descriptor under `deployments/`. devnet: same, default `devnet-z2` |
-| `E2E_PAYER_WALLET` | devnet only: `storage.json` holding the descriptor's payer, kept outside the repo (default `~/.local/share/logos-rln-e2e/devnet/deployments/<name>/storage.json`). devnet also defaults `E2E_FUND_AMOUNT` to 1e9 |
+| `E2E_DEPLOYMENT` | testnet/devnet: descriptor name under `deployments/`; defaults to `DEPLOYMENT` in `networks/<target>.env` |
+| `E2E_PAYER_WALLET` | testnet/devnet, when the descriptor has no committed `storage.json`: the payer's wallet, kept outside the repo (default `~/.local/share/logos-rln-e2e/<target>/deployments/<name>/storage.json`, written by `tools/network/provision.sh` — docs/networks.md). Such a run also defaults `E2E_FUND_AMOUNT` to 1e9 |
+| `E2E_WALLET_SOURCE` | `staged` (default — each self-paying node's home carries the staged `wallet_config.json`) \| `table` (the home starts empty and `wallet_ready` selects the network by `E2E_TARGET` via `liblogos_lez_rln_module.use_network`, asserting the module's built-in table served it; needs lez module ≥ 4.1.0) |
 | `E2E_DEPLOYMENT_DIR` | local/external only: reuse an existing provisioned deployment (refused under `E2E_DEVNET=host` — dev.sh wipes the chain) |
 
 Scenario-specific knobs (e.g. `register`'s `E2E_RATE_LIMIT`) are documented in

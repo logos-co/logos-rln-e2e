@@ -70,11 +70,17 @@ node_flavor()      { local f; f=$(gv NODEFLAVOR "$1"); printf '%s' "${f:-core}";
 # It lives here rather than in wallet.sh because both callers must see it and
 # wallet.sh sources this file, not the other way round. The second caller is
 # Basecamp, which embeds logos-core and has no node to key anything on.
+#
+# E2E_WALLET_SOURCE=table leaves the home empty instead: with no config and no
+# LEZ_RLN_SEQUENCER the lez module waits for liblogos_rln_module.start, whose
+# registry id's network reference picks the sequencer from the module's
+# built-in network table — the path a node on a delivery preset takes.
 wallet_home_fresh() {
     local dir="${1:?wallet_home_fresh <dir>}"
-    [ -n "${E2E_WALLET_HOME:-}" ] || die "wallet_home_fresh: no staged wallet home to copy a config from"
     rm -rf "$dir"
     mkdir -p "$dir" || die "wallet_home_fresh: cannot create $dir"
+    [ "${E2E_WALLET_SOURCE:-staged}" = table ] && return 0
+    [ -n "${E2E_WALLET_HOME:-}" ] || die "wallet_home_fresh: no staged wallet home to copy a config from"
     cp "$E2E_WALLET_HOME/wallet_config.json" "$dir/" \
         || die "wallet_home_fresh: cannot copy wallet_config.json to $dir"
 }
