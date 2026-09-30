@@ -11,7 +11,7 @@ channel.
 | var | meaning |
 |---|---|
 | `E2E_SCENARIO` | scenario id |
-| `E2E_TARGET` | `local` \| `testnet` \| `none` |
+| `E2E_TARGET` | `local` \| `testnet` \| `devnet` \| `none` |
 | `E2E_RUN_DIR` | per-run scratch dir (`runs/<ts>-<scenario>-<target>`) |
 | `E2E_KEEP` | `1` = leave chain/daemons/state up for debugging |
 
@@ -22,8 +22,11 @@ channel.
 | `LOGOSCORE` | logoscore binary |
 | `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX` | module bundles (each overridable by pre-setting the env) |
 | `DELIVERY_LGX` | delivery bundle — resolved only when the scenario's `NEEDS_MODULES` includes `delivery_module`; `DELIVERY_MODULE_CHECKOUT` / `LOGOS_DELIVERY_CHECKOUT` build it from working trees (see `harness/artifacts.sh`) |
+| `DELIVERY_LGX_PORTABLE` | the same delivery pin built PORTABLE (`variants/<platform>`, not `-dev`) — resolved only when the scenario sets `NEEDS_DELIVERY_PORTABLE=1`. Never installed into `E2E_MODULES_DIR`: it exists for a node that installs it through a released `logosctl`, which takes portable modules only (`delivery-cli`) |
 | `LIBP2P_LGX` / `GIFTER_LGX` | libp2p_module / rln_gifter_module bundles (the gifter path) — env override, else built from `LIBP2P_MODULE_CHECKOUT` / `GIFTER_CHECKOUT` (`nix build <checkout>#lgx`). Not pinned in this flake yet: the gifter needs its register-target fix branch (post-rename `register_member` lives on liblogos_lez_rln_module) |
 | `E2E_MODULES_DIR` | flattened module dir daemons load from |
+
+A scenario may also put one node on a released `logosctl` with `daemon_stack_ctl <node> <logosctl>` (see `harness/lib/daemon.sh`); its modules are installed after `daemon_start` through its own package commands into its session dir. `node_call`, module loading and `watch` then follow that binary. `harness/lib/usertools.sh` fetches the released `logosctl` and drives its catalog and package commands, cached under `E2E_USERTOOLS_DIR` (default `.cache/usertools`), pinned by `E2E_LOGOSCTL_RELEASE` and resolving from `E2E_RLN_CATALOG`.
 
 The `none` target exports nothing below — it stands up no chain. Scenarios
 that preflight chain vars fail fast under it by design.
@@ -37,7 +40,7 @@ that preflight chain vars fail fast under it by design.
 | `E2E_WALLET_HOME` | staged wallet-home fixture (lez-rln `stage.sh` output) |
 | `E2E_TREE_ID` | RLN tree id (64 hex) |
 | `E2E_CONFIG_ACCOUNT` | registry config account (base58) |
-| `E2E_PAYER` | the account that signs a registration, pays its price in NATIVE balance and pays its fee — one account does all three. Local mints it before genesis; testnet reads `payer_account` from the descriptor |
+| `E2E_PAYER` | the account that signs a registration, pays its price in NATIVE balance and pays its fee — one account does all three. Local mints it before genesis; testnet and devnet read `payer_account` from the descriptor |
 | `E2E_CONFIRM_TIMEOUT_S` / `E2E_POLL_INTERVAL_S` | on-chain confirmation budget (local 120/5, testnet 600/10) |
 | `E2E_EPOCH_SIZE_SEC` | RLN epoch size passed to `start` (local 60, testnet 600) |
 | `E2E_ROOT_WINDOW_TIMEOUT_S` | `validate_proof` root-window retry budget (local 60, testnet 120) |
@@ -51,7 +54,9 @@ that preflight chain vars fail fast under it by design.
 | `E2E_FUND_AMOUNT` | native balance `wallet_fund` sends a node's own payer (default 5e9). The fee RESERVE (~6.5e8 per transaction) dominates the registry price (~1e6), so size this from the reserve or the account cannot transact |
 | `E2E_DEVNET_TIMEOUT_S` | local/host: devnet readiness budget (default 900 — first boot cargo-builds the sequencer) |
 | `LEZ_RLN_CHECKOUT` | lez-rln working tree for dev.sh + provisioning (default `../logos-lez-rln`; must have host bins + guest blobs built) |
-| `E2E_DEPLOYMENT` | testnet only, required: name of a committed descriptor under `deployments/` |
+| `E2E_DEPLOYMENT` | testnet/devnet: descriptor name under `deployments/`; defaults to `DEPLOYMENT` in `networks/<target>.env` |
+| `E2E_PAYER_WALLET` | testnet/devnet, when the descriptor has no committed `storage.json`: the payer's wallet, kept outside the repo (default `~/.local/share/logos-rln-e2e/<target>/deployments/<name>/storage.json`, written by `tools/network/provision.sh` — docs/networks.md). Such a run also defaults `E2E_FUND_AMOUNT` to 1e9 |
+| `E2E_WALLET_SOURCE` | `staged` (default — each self-paying node's home carries the staged `wallet_config.json`) \| `table` (the home starts empty and `wallet_ready` selects the network by `E2E_TARGET` via `liblogos_lez_rln_module.use_network`, asserting the module's built-in table served it; needs lez module ≥ 4.1.0) |
 | `E2E_DEPLOYMENT_DIR` | local/external only: reuse an existing provisioned deployment (refused under `E2E_DEVNET=host` — dev.sh wipes the chain) |
 
 Scenario-specific knobs (e.g. `register`'s `E2E_RATE_LIMIT`) are documented in

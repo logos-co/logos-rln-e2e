@@ -37,7 +37,7 @@
 #   - the epoch must stay at or under MaxTimeInCache or the overflow dies
 #     before the next epoch arrives and "does it recover" is unobservable.
 #
-# No checkouts required: the flake pins delivery-module at v0.3.0-rc.1 and
+# No checkouts required: the flake pins delivery-module at master and
 # rln-modules/lez-rln at the LEZ v0.2.5-rc3 set, which is the stack this runs
 # against. Override with DELIVERY_MODULE_CHECKOUT / LOGOS_DELIVERY_CHECKOUT to
 # test an unreleased delivery tree.

@@ -33,7 +33,7 @@ ARG RLN_INDEX=https://github.com/logos-co/logos-rln-modules/releases/download/in
 ARG LEZ_RLN_VERSION=4.0.1
 ARG RLN_VERSION=0.8.2
 ARG DEV_INDEX=https://github.com/logos-co/logos-modules-dev/releases/download
-ARG DELIVERY_VERSION=0.3.0-146.gfd00701f
+ARG DELIVERY_VERSION=0.3.0-162.gfd585216
 
 COPY harness/lib/compat.sh harness/lib/lgx.sh /harness/lib/
 # lez_core is NOT fetched: liblogos_lez_rln_module 4.0.1 declares

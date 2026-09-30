@@ -44,7 +44,12 @@ else
     say "materializing pinned source ($(basename "$E2E_RLN_MODULES_SRC"))"
     rsync -a "$E2E_RLN_MODULES_SRC/" "$SRC/" || die "cannot materialize $E2E_RLN_MODULES_SRC"
     chmod -R u+w "$SRC"
-    bash "$SRC/logos-lez-rln-module/stage-sources.sh" >/dev/null || die "stage-sources.sh failed"
+    # The copy sits under runs/, inside this repo's work tree, and
+    # stage-sources.sh picks nix's git fetcher whenever `git rev-parse`
+    # succeeds — which then refuses the untracked copy. Stop git's search at
+    # the run dir so the copy reads as a plain path.
+    GIT_CEILING_DIRECTORIES="$E2E_RUN_DIR" bash "$SRC/logos-lez-rln-module/stage-sources.sh" >/dev/null \
+        || die "stage-sources.sh failed"
     say "staged: $SRC"
 fi
 

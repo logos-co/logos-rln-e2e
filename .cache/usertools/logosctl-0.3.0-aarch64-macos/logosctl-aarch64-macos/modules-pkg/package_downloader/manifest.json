@@ -1,0 +1,20 @@
+{
+  "author": "Logos Core Team",
+  "category": "management",
+  "dependencies": [],
+  "description": "Online package catalog and download service",
+  "display_name": "Package Downloader",
+  "hashes": {
+    "root": "79b88d9fff65da064633f08ce510e2ec88a7c010fdca2c22b380f52c75442e33",
+    "variants": "a3259c82f7e6aa88205cb4e250f5d6d4a417a6fb4d16874ff401e37cb8da989a",
+    "variants/darwin-arm64": "6d0355c2d68f6e75fd1919c03714611ec015da0cddd110163efdb691e63c3eb7"
+  },
+  "icon": "",
+  "main": {
+    "darwin-arm64": "package_downloader_plugin.dylib"
+  },
+  "manifestVersion": "0.5.0",
+  "name": "package_downloader",
+  "type": "core",
+  "version": "1.0.0"
+}

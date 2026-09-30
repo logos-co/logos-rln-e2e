@@ -1,0 +1,20 @@
+{
+  "author": "Logos Core Team",
+  "category": "management",
+  "dependencies": [],
+  "description": "Plugin manager for the Logos system",
+  "display_name": "Package Manager",
+  "hashes": {
+    "root": "ef7864f3307ac8e0a1eb58b7299eaff88d236f8716c24f5c6fd6253498ce458c",
+    "variants": "dc2e46adb3c6a86cf3895698298ab30889f9d42f3b8d3fb632bf8f12064ac4b4",
+    "variants/darwin-arm64": "b0b97d1e2cf9ac804deb6036e043d356c837a268f72b1c051dade6394083ffbb"
+  },
+  "icon": "",
+  "main": {
+    "darwin-arm64": "package_manager_plugin.dylib"
+  },
+  "manifestVersion": "0.5.0",
+  "name": "package_manager",
+  "type": "core",
+  "version": "1.0.0"
+}

@@ -29,7 +29,7 @@
 
     # The delivery scenario's module under test. Same matrix rule: the lock
     # records the revision the scenarios are known to compose.
-    delivery-module.url = "github:logos-co/logos-delivery-module/v0.3.0-rc.1";
+    delivery-module.url = "github:logos-co/logos-delivery-module";
 
     # logoscore is consumed as a flake: its default package is the daemon/CLI
     # every scenario drives. The module-stack e2e used to fetch it unpinned at
@@ -78,6 +78,12 @@
         }
         // lib.optionalAttrs (delivery-module.packages ? ${system}) {
           delivery-lgx = delivery-module.packages.${system}.lgx;
+          # The same rev built PORTABLE: variants/<platform> rather than
+          # <platform>-dev. A released logosctl loads portable modules and
+          # the catalogs publish nothing else, so delivery-cli — which runs
+          # one node on a released logosctl — needs this flavour and not the
+          # one every other scenario uses.
+          delivery-lgx-portable = delivery-module.packages.${system}.lgx-portable;
         }
         // lib.optionalAttrs (logoscore-cli.packages ? ${system}) {
           logoscore = logoscore-cli.packages.${system}.default;

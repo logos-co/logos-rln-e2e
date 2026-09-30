@@ -31,14 +31,20 @@ _with_timeout() {
     fi
 }
 
+# E2E_NODE_BIN is node_call's per-node override; a node on its own stack must
+# be addressed by ITS client, not the resolved one, or the call speaks a
+# different build's protocol to the daemon.
 call_json() {
     local mod="$1" meth="$2"; shift 2
-    [ -n "${LOGOSCORE:-}" ] || die "call_json: LOGOSCORE unset (resolve_artifacts first)"
+    local bin="${E2E_NODE_BIN:-${LOGOSCORE:-}}"
+    [ -n "$bin" ] || die "call_json: LOGOSCORE unset (resolve_artifacts first)"
     [ -n "${E2E_CFG_DIR:-}" ] || die "call_json: no daemon selected (use node_call)"
     # env -u TMPDIR: daemon and client must agree on the effective TMPDIR
     # (QLocalSocket path); the daemon runs under env -i, i.e. without one.
+    # Both config vars: the same call reaches a logoscore or a logosctl
+    # daemon, and each CLI ignores the other's.
     _with_timeout "${CALL_TIMEOUT:-180}" env -u TMPDIR LOGOSCORE_CONFIG_DIR="$E2E_CFG_DIR" \
-        "$LOGOSCORE" --json call "$mod" "$meth" "$@" 2>/dev/null
+        LOGOSCTL_CONFIG_DIR="$E2E_CFG_DIR" "$bin" --json call "$mod" "$meth" "$@" 2>/dev/null
 }
 
 jres() {
