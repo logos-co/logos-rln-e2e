@@ -270,10 +270,25 @@ step_fund() {
 # ---------- deploy --------------------------------------------------------------
 
 step_deploy() {
-    local out="$DEP_OUT/$DEPLOYMENT" payer
+    local out="$DEP_OUT/$DEPLOYMENT" repo_desc="$ROOT/deployments/$DEPLOYMENT/deployment.json" payer
     payer=$(state_get payer)
     if [ -f "$out/deployment.json" ]; then
         say "deployment $DEPLOYMENT already provisioned ($(jq -r .tree_id "$out/deployment.json" | cut -c1-8)…)"
+        # The committed descriptor names whoever provisioned it; an adopted
+        # copy names this machine's payer and must not overwrite it.
+        [ -f "$repo_desc" ] && return 0
+    elif [ -f "$repo_desc" ]; then
+        # Someone already provisioned this registry and committed it: use it
+        # rather than deploying a second one. Only the payer is ours — the
+        # descriptor's payer_account is just the account runs fund nodes from,
+        # and the staged wallet must hold it.
+        [ -n "$payer" ] && [ -f "$PAYER_WS/storage.json" ] || die "no payer — run the payer and fund steps"
+        mkdir -p "$out"
+        jq --arg p "$payer" '.payer_account = $p' "$repo_desc" > "$out/deployment.json"
+        cp "$PAYER_WS/storage.json" "$out/storage.json"
+        chmod 600 "$out/storage.json"
+        say "adopted the committed deployments/$DEPLOYMENT (config $(jq -r .config_account "$repo_desc")) with payer $payer"
+        return 0
     else
         [ -n "$payer" ] || die "no payer — run the payer and fund steps"
         [ -f "$LEZ/tools/deployments/provision.sh" ] || die "no tools/deployments/provision.sh under $LEZ"

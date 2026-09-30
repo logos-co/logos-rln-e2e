@@ -107,6 +107,16 @@ _hosted_up() {
         wallet="${E2E_PAYER_WALLET:-$HOME/.local/share/logos-rln-e2e/$network/deployments/$name/storage.json}"
         [ -f "$wallet" ] \
             || die "no payer wallet at $wallet — run tools/network/provision.sh networks/$network.env, or set E2E_PAYER_WALLET to the storage.json holding $(jq -r '.payer_account' "$desc")"
+        # provision.sh leaves a descriptor beside the wallet naming THIS
+        # machine's payer (the committed one names whoever provisioned). It
+        # must be the same registry.
+        local local_desc
+        local_desc="$(dirname "$wallet")/deployment.json"
+        if [ -f "$local_desc" ]; then
+            [ "$(jq -r .config_account "$local_desc")" = "$(jq -r .config_account "$desc")" ] \
+                || die "$local_desc is a different registry than deployments/$name ($(jq -r .config_account "$local_desc") vs $(jq -r .config_account "$desc"))"
+            desc="$local_desc"
+        fi
         dep_dir="$E2E_RUN_DIR/deployment-$name"
         mkdir -p "$dep_dir"
         cp "$desc" "$dep_dir/deployment.json"

@@ -31,6 +31,7 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 ./run.sh --list
 ./run.sh register --target local     # boots a local sequencer, provisions a fresh RLN tree
 ./run.sh register --target testnet   # runs against a committed testnet deployment
+./run.sh register --target devnet    # LEZ devnet zone 2 — fund a payer first (below)
 ./run.sh delivery --target none      # chainless: 3 daemons, module co-residency, relay mesh
 ./run.sh delivery-rln --target local # the logos-delivery RLN acceptance
 ```
@@ -41,7 +42,7 @@ local and testnet one-liners for the `delivery-rln` acceptance scenario.
 
 A scenario is `scenarios/<id>/{scenario.env,run.sh}` driven through the
 harness contract (`docs/contract.md`); a target
-(`harness/targets/{local,testnet,none}.sh`) stands up and provisions the
+(`harness/targets/{local,testnet,devnet,none}.sh`) stands up and provisions the
 chain (`none` stands up nothing — for module-runtime-only scenarios).
 The target is always a flag, never part of a scenario's name.
 
@@ -60,6 +61,13 @@ The target is always a flag, never part of a scenario's name.
   beyond the pins — the flake pins [logos-delivery-module] at an upstream
   `master` that carries its RLN bridge (and, through it, [logos-delivery]).
   Copy-paste quickstart: [docs/delivery-integration.md].
+- **`--target devnet` / `testnet`**: a payer of your own funded on that
+  network, once per machine — `bash tools/network/provision.sh
+  networks/devnet.env` runs a bedrock node, claims from the faucet and bridges
+  the drip into the zone (about an hour of waiting), then adopts the committed
+  deployment with that payer. Needs the logos-lez-rln host binaries
+  (`cd ../logos-lez-rln/lez-rln && cargo build --release --bin mint_payer
+  --bin fund_account`). Details: [docs/networks.md].
 - **docker** — the containerised relay (`delivery-relay-rln`,
   `tools/build-e2e-image.sh`) and the compose-topology scenarios (mix).
 
@@ -102,17 +110,19 @@ harness/
   artifacts.sh          binary/bundle resolution
   lib/                  shared primitives (json, lgx, daemon, wallet, chain,
                         delivery: the RLN-enabled delivery bring-up)
-  targets/              local (sequencer lifecycle + provisioning) / testnet
+  targets/              local (sequencer lifecycle + provisioning) / testnet +
+                        devnet (hosted networks)
   container/            Dockerfile.relay (the bootstrap relay image)
   lib/relay.sh          the relay container's lifecycle
 scenarios/
   register/ keystore/ delivery/ delivery-rln/ delivery-rln-soak/
   delivery-relay-rln/
   *-basecamp-*/ live-registry/ mix/
-deployments/            committed testnet descriptors (local is per-run)
+deployments/            committed hosted-network descriptors (public ids only)
+networks/               per-network public values (tools/network/provision.sh)
 profiles/               committed local provision inputs (pinned tree + wallet)
-docs/                   contract.md, naming.md
-tools/                  check-naming.sh
+docs/                   contract.md, naming.md, networks.md
+tools/                  check-naming.sh, build-e2e-image.sh, network/provision.sh
 ```
 
 [logos-lez-rln]: https://github.com/logos-co/logos-lez-rln
@@ -127,3 +137,4 @@ tools/                  check-naming.sh
 Dual-licensed under [MIT](./LICENSE-MIT) or
 [Apache 2.0](./LICENSE-APACHE-v2), at your option.
 [docs/delivery-integration.md]: docs/delivery-integration.md
+[docs/networks.md]: docs/networks.md

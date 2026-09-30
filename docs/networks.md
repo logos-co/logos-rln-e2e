@@ -12,6 +12,25 @@ bash tools/network/provision.sh networks/devnet.env          # all steps
 bash tools/network/provision.sh networks/devnet.env status   # where it stands
 ```
 
+## On a new machine
+
+The registry is already provisioned — `deployments/devnet-z2/deployment.json`
+is committed — so a new machine only needs a funded payer of its own:
+
+1. Build the logos-lez-rln host binaries once:
+   `cd ../logos-lez-rln/lez-rln && cargo build --release --bin mint_payer --bin fund_account`.
+2. `bash tools/network/provision.sh networks/devnet.env` — starts a bedrock
+   node, mints your payer, claims from the faucet, deposits into the zone and
+   waits for it to land (~1 h; re-run to resume if interrupted), then
+   **adopts** the committed deployment: it writes a local copy of the
+   descriptor naming your payer beside your wallet, and leaves the committed
+   one alone.
+3. `./run.sh register --target devnet` (or `keystore`, `live-registry`,
+   `delivery-rln`, `delivery-rln-soak`, `delivery-cli`).
+
+Your wallet holds real devnet funds; it never leaves
+`~/.local/share/logos-rln-e2e/devnet/`.
+
 ## A network is a config file
 
 `networks/<network>.env` holds the public values and nothing else — see
@@ -47,11 +66,13 @@ Each step checks before it acts, so a re-run resumes rather than repeats.
    credits it once the deposit is final on bedrock — about an hour — and does
    so even while the zone is not inscribing. An interrupted wait resumes on
    re-run; it never deposits twice.
-4. **deploy** — once per network: `provision.sh` from logos-lez-rln on a fresh
-   tree (deploys both programs, the treasury and the registry config), then
-   copies the public `deployment.json` into this repo's `deployments/`.
-   Commit that file. Never re-run provisioning on a tree: `run_setup` fails on
-   an initialized one.
+4. **deploy** — if `deployments/<DEPLOYMENT>/deployment.json` is committed,
+   adopts it with this machine's payer. Otherwise, once per network:
+   `provision.sh` from logos-lez-rln on a fresh tree (deploys both programs,
+   the treasury and the registry config — needs the guest binaries and
+   `run_setup`/`derive_accounts` too), then copies the public `deployment.json`
+   into this repo's `deployments/`. Commit that file. Never re-run
+   provisioning on a tree: `run_setup` fails on an initialized one.
 5. **presets** — prints the values a node needs to join this network's RLN:
    registry id, epoch size, sequencer, config account, tree id, and the entry
    a `LOGOS_DELIVERY_RLN_PRESETS` file (or a delivery preset) would carry.
