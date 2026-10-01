@@ -31,9 +31,9 @@
 # Env:
 #   E2E_USERTOOLS_DIR        cache root (default <repo>/.cache/usertools)
 #   E2E_LOGOSCTL_RELEASE     logosctl tag (default 0.3.0)
-#   E2E_RLN_CATALOG          repo descriptor added as a catalog (default the
-#                            logos-rln-modules rolling `index` release, which
-#                            is where our published bundles live)
+#   E2E_EXTRA_CATALOG        repo descriptor added on top of the built-in
+#                            official catalog (default none: the official
+#                            catalog carries delivery and the RLN pair)
 #   E2E_USERTOOLS_TIMEOUT_S  budget per logosctl package command (default 900)
 
 . "$(dirname "${BASH_SOURCE[0]}")/compat.sh"
@@ -42,7 +42,7 @@ _UT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 UT_CACHE="${E2E_USERTOOLS_DIR:-$_UT_ROOT/.cache/usertools}"
 
 UT_LOGOSCTL_RELEASE="${E2E_LOGOSCTL_RELEASE:-0.3.0}"
-UT_RLN_CATALOG="${E2E_RLN_CATALOG:-https://github.com/logos-co/logos-rln-modules/releases/download/index/logos-repo.json}"
+UT_EXTRA_CATALOG="${E2E_EXTRA_CATALOG:-}"
 
 # The platform string the release assets are named with — NOT lgx_platform's
 # (that one names bundle variants and carries a -dev suffix these do not).
@@ -113,11 +113,11 @@ _ut_ctl() {
     NODE_CLI_TIMEOUT_S="${E2E_USERTOOLS_TIMEOUT_S:-900}" node_cli "$@"
 }
 
-# Usage: ut_catalog_add <node> [descriptor-url]
+# Usage: ut_catalog_add <node> <descriptor-url>
 # Add a catalog on top of the built-in official one and refresh the index, so
 # the next install resolves from both.
 ut_catalog_add() {
-    local node="${1:?ut_catalog_add <node> [url]}" url="${2:-$UT_RLN_CATALOG}"
+    local node="${1:?ut_catalog_add <node> <url>}" url="${2:?ut_catalog_add <node> <url>}"
     _ut_ctl "$node" catalog add "$url" >/dev/null \
         || die_node "$node" "usertools: catalog add failed ($url)"
     _ut_ctl "$node" catalog refresh >/dev/null \
@@ -133,16 +133,6 @@ ut_package_install() {
     [ $# -gt 0 ] || die "ut_package_install: no packages given"
     _ut_ctl "$node" package install "$@" -y >/dev/null \
         || die_node "$node" "usertools: package install $* failed"
-}
-
-# Usage: ut_install_file <node> <bundle.lgx>
-# Install a local bundle, bypassing the catalogs. It must be a PORTABLE build
-# (variants/<platform>, not -dev): a released logosctl takes nothing else.
-ut_install_file() {
-    local node="${1:?ut_install_file <node> <bundle.lgx>}" lgx="${2:?bundle}"
-    [ -f "$lgx" ] || die "usertools: no bundle at $lgx"
-    _ut_ctl "$node" package install --file "$lgx" -y >/dev/null \
-        || die_node "$node" "usertools: package install --file $lgx failed"
 }
 
 # Usage: ut_installed_version <node> <package>
