@@ -12,19 +12,25 @@
 #
 # So n1 here is built by the operator's toolchain and nothing else: a released
 # logosctl (harness/lib/usertools.sh) is its daemon, its client, and — through
-# the package modules it bundles — its catalog and installer. Installing
-# liblogos_rln_module from the logos-rln-modules catalog pulls
+# the package modules it bundles — its catalog and installer. Everything n1
+# runs comes from the official catalog (logos-modules-release) by name:
+# delivery_module, and liblogos_rln_module, which pulls
 # liblogos_lez_rln_module in as a dependency.
 #
 # n2 is an ordinary harness node on the flake pins. That asymmetry is
 # deliberate: the send crosses the PUBLISHED stack into the stack main builds,
 # so this doubles as an interop check. A regression on either side fails it.
 #
-# The one thing the operator cannot get from a catalog yet is delivery_module
-# at an RLN-capable version — the official catalog stops at 0.2.1, which
-# predates the RLN bridge. n1 therefore installs the same rev the peer runs
-# from a local bundle, built PORTABLE (variants/<platform>, not
-# <platform>-dev) because a released logosctl loads nothing else.
+# On testnet both nodes take the operator's journey (docs/journeys/
+# delivery-cli.md) as written: createNode on the shipped logos.test preset,
+# before funding, joining the public fleet. Both run that preset exactly as
+# delivery_module ships it — no presets file, the module's own RLN
+# identifier — so the rlnState scope check asserts the shipped preset names
+# the testnet deployment, on the published build and the pinned one alike.
+# Registration is kicked off by createNode alone. Elsewhere (local, devnet)
+# no shipped preset names the deployment: the pair runs a private flat-config
+# mesh on its own cluster with a staged scope, and the harness starts the RLN
+# module itself.
 #
 # What it asserts:
 #   - the package manager's own inventory reports all three modules
@@ -55,14 +61,17 @@
 # operator's path.
 #
 # Env beyond docs/contract.md:
-#   E2E_CLI_PORT=61990        tcp ports are PORT+1 (operator), PORT+2 (peer)
+#   E2E_CLI_PORT=61990        tcp ports are PORT+1 (operator), PORT+2 (peer);
+#                             on testnet discv5 udp is PORT+11, PORT+12
 #   E2E_CLI_RECV_WAIT_S=20    how long the peer is given to show a receipt
 #                             (reported, never asserted)
 #   E2E_EVENT_TIMEOUT_S=30    per-event wait budget
-#   E2E_MESH_WAIT_S=12        gossipsub mesh stabilization pause
+#   E2E_MESH_WAIT_S=12        gossipsub mesh stabilization pause (30 on
+#                             testnet, where the mesh is the public fleet)
 #   E2E_USERTOOLS_DIR         release cache (see harness/lib/usertools.sh)
 #   E2E_LOGOSCTL_RELEASE      the logosctl release n1 runs
-#   E2E_RLN_CATALOG           the catalog the RLN modules resolve from
+#   E2E_EXTRA_CATALOG         a catalog added on top of the official one
+#                             (default none)
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -75,16 +84,26 @@ done
 BASE_PORT="${E2E_CLI_PORT:-61990}"
 RECV_WAIT_S="${E2E_CLI_RECV_WAIT_S:-20}"
 EVT_TIMEOUT="${E2E_EVENT_TIMEOUT_S:-30}"
-MESH_WAIT_S="${E2E_MESH_WAIT_S:-12}"
 TOPIC="/logos-rln-e2e/1/delivery-cli/proto"
 CLUSTER_ID="198"
+# The shipped preset this flow joins on testnet, and the RLN identifier
+# delivery_module ships with it (kLogosDeliveryRlnIdentifier).
+PRESET=logos.test
+PRESET_RLN_ID=5e269b6a19fce081f5808b13442dcbc3522197638dd38df5a28bc4e55236b977
+PUBLIC=0
+[ "${E2E_TARGET:-}" = testnet ] && PUBLIC=1
+if [ "$PUBLIC" = 1 ]; then
+    MESH_WAIT_S="${E2E_MESH_WAIT_S:-30}"
+else
+    MESH_WAIT_S="${E2E_MESH_WAIT_S:-12}"
+fi
 OPERATOR=n1
 PEER=n2
 NODES_ALL="$OPERATOR $PEER"
 
 for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
           E2E_CONFIG_ACCOUNT E2E_TREE_ID E2E_PAYER E2E_CONFIRM_TIMEOUT_S \
-          E2E_POLL_INTERVAL_S E2E_EPOCH_SIZE_SEC DELIVERY_LGX_PORTABLE; do
+          E2E_POLL_INTERVAL_S E2E_EPOCH_SIZE_SEC; do
     eval "[ -n \"\${$_v:-}\" ]" || die "contract env missing: $_v (see docs/contract.md)"
 done
 
@@ -113,17 +132,32 @@ cleanup() {
 trap cleanup EXIT
 
 REGISTRY_ID=$(delivery_registry_id)
-RLN_ID=$(delivery_rln_identifier)
 say "registry: $REGISTRY_ID"
 
-# The presets file is how RLN reaches a node: createNode resolves it, and it
-# is read from the daemon's own environment, so it must exist before any
-# daemon starts. Both stacks get the same file and therefore the same scope —
-# two nodes that disagree here reject each other's proofs.
+# The presets file is how RLN reaches a node that has no shipped preset for
+# this deployment: createNode resolves it, and it is read from the daemon's
+# own environment, so it must exist before any daemon starts. Every node
+# resolves the same scope — two nodes that disagree here reject each other's
+# proofs. On testnet no node reads the file; the scope is staged anyway,
+# because delivery_wait_rln_ready checks each node's resolved scope against it.
 RLN_PRESETS_FILE="$E2E_RUN_DIR/rln-presets.json"
-delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
-E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} $(delivery_rln_presets_env "$RLN_PRESETS_FILE")"
-export E2E_DAEMON_ENV
+if [ "$PUBLIC" = 1 ]; then
+    RLN_ID="$PRESET_RLN_ID"
+    delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC" "$PRESET"
+else
+    RLN_ID=$(delivery_rln_identifier)
+    delivery_stage_rln_presets "$RLN_PRESETS_FILE" "$REGISTRY_ID" "$RLN_ID" "$E2E_EPOCH_SIZE_SEC"
+    E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} $(delivery_rln_presets_env "$RLN_PRESETS_FILE")"
+    export E2E_DAEMON_ENV
+fi
+
+# Usage: preset_conf <tcp_port> <discv5_udp_port>
+# The journey's createNode config. Only the ports are pinned, so two nodes can
+# share a host; everything else is the preset's.
+preset_conf() {
+    printf '{"mode":"Core","preset":"%s","messagingOverrides":{"tcp-port":%s,"discv5-udp-port":%s}}' \
+        "$PRESET" "$1" "$2"
+}
 
 # ---------- daemons ----------------------------------------------------------
 section "daemons: operator on a released logosctl, peer on the pins"
@@ -146,12 +180,11 @@ NODES_UP=1
 # Through the operator's running daemon: logosctl's package commands are its
 # bundled package_manager / package_downloader modules.
 section "operator install: published catalog, by name"
-ut_catalog_add "$OPERATOR"
+[ -z "$UT_EXTRA_CATALOG" ] || ut_catalog_add "$OPERATOR" "$UT_EXTRA_CATALOG"
 # One name for the RLN pair: liblogos_rln_module declares
 # liblogos_lez_rln_module as a dependency, and the installer is expected to
 # follow it — asserting the version below is asserting that it did.
-ut_package_install "$OPERATOR" liblogos_rln_module
-ut_install_file "$OPERATOR" "$DELIVERY_LGX_PORTABLE"
+ut_package_install "$OPERATOR" delivery_module liblogos_rln_module
 
 # Read the inventory back from the package manager rather than from the
 # files: what it believes is installed is the thing under test.
@@ -161,7 +194,7 @@ CLI_DELIVERY_V=$(ut_installed_version "$OPERATOR" delivery_module)
 [ -n "$CLI_RLN_V" ] || die_node "$OPERATOR" "logosctl does not report liblogos_rln_module installed"
 [ -n "$CLI_LEZ_V" ] || die_node "$OPERATOR" "logosctl does not report liblogos_lez_rln_module installed — the catalog dependency was not followed"
 [ -n "$CLI_DELIVERY_V" ] || die_node "$OPERATOR" "logosctl does not report delivery_module installed"
-say "installed: liblogos_rln_module $CLI_RLN_V, liblogos_lez_rln_module $CLI_LEZ_V (catalog), delivery_module $CLI_DELIVERY_V (pin, portable)"
+say "installed from the catalog: delivery_module $CLI_DELIVERY_V, liblogos_rln_module $CLI_RLN_V, liblogos_lez_rln_module $CLI_LEZ_V"
 
 # One load, not three: the operator installed a dependency chain and the
 # daemon is expected to resolve it. Asserting that here is asserting the
@@ -177,6 +210,21 @@ metadata did not survive the round trip. loaded: ${LOADED:-<empty>}" ;;
 done
 say "$OPERATOR: delivery_module pulled its RLN dependency chain in on load"
 daemon_load_modules "$PEER" liblogos_lez_rln_module liblogos_rln_module delivery_module
+
+# ---------- nodes created on the preset (testnet) -----------------------------
+# The journey creates the node before anything is funded: createNode starts
+# the RLN module on the preset's registry, which selects the wallet's network
+# and brings up the payer the operator then funds. Watch first — the watcher
+# only sees events emitted after it attaches.
+if [ "$PUBLIC" = 1 ]; then
+    section "createNode on $PRESET (before funding)"
+    for n in $NODES_ALL; do
+        node_watch_start "$n" delivery_module
+    done
+    delivery_node_create "$OPERATOR" "$(preset_conf "$(( BASE_PORT + 1 ))" "$(( BASE_PORT + 11 ))")"
+    delivery_node_create "$PEER" "$(preset_conf "$(( BASE_PORT + 2 ))" "$(( BASE_PORT + 12 ))")"
+    say "both: $PRESET as shipped resolves the deployment's registry, RLN Ready"
+fi
 
 # ---------- the account an operator has to fund ------------------------------
 section "wallets: the node names the account, the operator funds it"
@@ -194,12 +242,15 @@ for n in $NODES_ALL; do
 done
 
 # ---------- registration -----------------------------------------------------
-# The module registers itself once funded; the harness only paid. start() both
-# kicks that off and pre-warms the root window.
+# The module registers itself once funded; the harness only paid. On testnet
+# createNode already started it on the preset's registry. Elsewhere start()
+# both kicks that off and pre-warms the root window.
 section "registration (the node registers itself)"
-for n in $NODES_ALL; do
-    delivery_prewarm "$n" "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"]}"
-done
+if [ "$PUBLIC" = 0 ]; then
+    for n in $NODES_ALL; do
+        delivery_prewarm "$n" "{\"epoch_size_sec\":$E2E_EPOCH_SIZE_SEC,\"registries\":[\"$REGISTRY_ID\"]}"
+    done
+fi
 for n in $NODES_ALL; do
     delivery_await_provisioned "$n" "$REGISTRY_ID" "$RLN_ID"
     say "$n: membership $(gv MHASH "$n") at leaf $(gv LEAF "$n")"
@@ -216,13 +267,22 @@ esac
 
 # ---------- nodes up ---------------------------------------------------------
 section "delivery nodes"
-for n in $NODES_ALL; do
-    node_watch_start "$n" delivery_module
-done
-# The peer comes up first and the operator dials IT — the fleet is already
-# there when an operator joins, never the other way round.
-delivery_node_up "$PEER" "$(( BASE_PORT + 2 ))" "$CLUSTER_ID" "" "$EVT_TIMEOUT"
-delivery_node_up "$OPERATOR" "$(( BASE_PORT + 1 ))" "$CLUSTER_ID" "$(gv MADDR "$PEER")" "$EVT_TIMEOUT"
+if [ "$PUBLIC" = 1 ]; then
+    # Both join the public fleet through the preset's entry nodes; neither
+    # dials the other.
+    for n in $PEER $OPERATOR; do
+        PEERID=$(delivery_node_start "$n" "$EVT_TIMEOUT") || exit 1
+        say "$n: delivery up on $PRESET (peer $PEERID)"
+    done
+else
+    for n in $NODES_ALL; do
+        node_watch_start "$n" delivery_module
+    done
+    # The peer comes up first and the operator dials IT — the fleet is already
+    # there when an operator joins, never the other way round.
+    delivery_node_up "$PEER" "$(( BASE_PORT + 2 ))" "$CLUSTER_ID" "" "$EVT_TIMEOUT"
+    delivery_node_up "$OPERATOR" "$(( BASE_PORT + 1 ))" "$CLUSTER_ID" "$(gv MADDR "$PEER")" "$EVT_TIMEOUT"
+fi
 
 say "mesh stabilization: ${MESH_WAIT_S}s"
 sleep "$MESH_WAIT_S"
@@ -273,8 +333,8 @@ sender's path. delivery-rln is the one that asserts delivery."
 fi
 
 say ""
-say "delivery-cli PASS — installed liblogos_rln_module $CLI_RLN_V + liblogos_lez_rln_module $CLI_LEZ_V \
-from the catalog and delivery_module $CLI_DELIVERY_V from the pin, with a released logosctl"
+say "delivery-cli PASS — installed delivery_module $CLI_DELIVERY_V, liblogos_rln_module $CLI_RLN_V and \
+liblogos_lez_rln_module $CLI_LEZ_V from the official catalog, with a released logosctl"
 say "  membership     $(gv MHASH "$OPERATOR") at leaf $(gv LEAF "$OPERATOR")"
 say "  paid by        $(wallet_payer "$OPERATOR") (funded by the operator, registered by the node)"
 say "  send           $REQID proved and propagated to the pinned-stack peer"

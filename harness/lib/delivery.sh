@@ -30,14 +30,15 @@ _delivery_polls() {
     printf '%s' "$n"
 }
 
-# Usage: delivery_stage_rln_presets <file> <registry> <rlnid> <epoch_size_sec>
+# Usage: delivery_stage_rln_presets <file> <registry> <rlnid> <epoch_size_sec> [preset]
 # Writes the presets file and remembers the scope, so the readiness check can
 # assert the node resolved the preset we actually wrote.
 #
-# Neither deployment these scenarios run against is a shipped preset — all of
-# which ship RLN off — so each stages its own. The entry is keyed "" because
-# delivery_cfg passes no preset and a flat WakuNodeConf defaults `preset` to
-# the empty string. Names are matched exactly: a variant spelling is an error,
+# A local or devnet deployment is no shipped preset, so each scenario stages
+# its own. The entry is keyed "" by default because delivery_cfg passes no
+# preset and a flat WakuNodeConf defaults `preset` to the empty string; pass
+# [preset] to override a named one instead (a pinned build whose logos.test
+# predates RLN). Names are matched exactly: a variant spelling is an error,
 # not a miss, which is deliberate upstream so a node cannot come up on the
 # right network with RLN silently off.
 #
@@ -45,10 +46,11 @@ _delivery_polls() {
 # createNode, and one that cannot be parsed fails that call rather than quietly
 # leaving RLN off.
 delivery_stage_rln_presets() {
-    local file="${1:?delivery_stage_rln_presets <file> <registry> <rlnid> <epoch>}"
+    local file="${1:?delivery_stage_rln_presets <file> <registry> <rlnid> <epoch> [preset]}"
     local registry="${2:?registry}" rlnid="${3:?rln identifier}" epoch="${4:?epoch size}"
+    local preset="${5:-}"
     cat >"$file" <<JSON || die "cannot write rln presets to $file"
-{"": {"enabled": true,
+{"$preset": {"enabled": true,
       "registry-id": "$registry",
       "rln-identifier": "$rlnid",
       "epoch-size-sec": $epoch}}
@@ -316,20 +318,35 @@ delivery_node_conf() {
         "$port" "$cluster" "${peers:+,\"staticnodes\":[\"$peers\"]}"
 }
 
-# Usage: delivery_node_up <node> <tcp_port> <cluster_id> [static_peer_maddr] [evt_timeout_s]
-# createNode -> wait for RLN -> start. The wait sits between them because
-# createNode brings the backend up off its own thread and start fires the
-# library's membership gate. Records the dial address under sv MADDR.
-delivery_node_up() {
-    local node="$1" port="$2" cluster="$3" peers="${4:-}" evt_timeout="${5:-30}" peerid
-    delivery_must_call "$node" createNode "createNode" \
-        "$(argfile "cfg_$node" "$(delivery_node_conf "$port" "$cluster" "$peers")")" >/dev/null
+# Usage: delivery_node_create <node> <config-json>
+# createNode -> wait for RLN. createNode brings the backend up off its own
+# thread, so the node is not ready the moment the call returns.
+delivery_node_create() {
+    local node="$1" conf="$2"
+    delivery_must_call "$node" createNode "createNode" "$(argfile "cfg_$node" "$conf")" >/dev/null
     delivery_wait_rln_ready "$node"
+}
+
+# Usage: delivery_node_start <node> [evt_timeout_s]
+# start -> nodeStarted. start fires the library's membership gate, so it
+# follows delivery_node_create. Prints the node's peer id.
+delivery_node_start() {
+    local node="$1" evt_timeout="${2:-30}" peerid
     delivery_must_call "$node" start "start (dispatch)" >/dev/null
     node_wait_event "$node" delivery_module nodeStarted "$evt_timeout" >/dev/null \
         || die_node "$node" "no nodeStarted within ${evt_timeout}s"
     peerid=$(delivery_must_call "$node" getNodeInfo "getNodeInfo MyPeerId" MyPeerId)
     [ -n "$peerid" ] || die_node "$node" "empty MyPeerId"
+    printf '%s' "$peerid"
+}
+
+# Usage: delivery_node_up <node> <tcp_port> <cluster_id> [static_peer_maddr] [evt_timeout_s]
+# delivery_node_create + delivery_node_start on a flat config. Records the
+# dial address under sv MADDR.
+delivery_node_up() {
+    local node="$1" port="$2" cluster="$3" peers="${4:-}" evt_timeout="${5:-30}" peerid
+    delivery_node_create "$node" "$(delivery_node_conf "$port" "$cluster" "$peers")"
+    peerid=$(delivery_node_start "$node" "$evt_timeout") || exit 1
     sv MADDR "$node" "/ip4/127.0.0.1/tcp/$port/p2p/$peerid"
     say "$node: delivery up on 127.0.0.1:$port (peer $peerid)"
 }
