@@ -31,6 +31,11 @@
     # records the revision the scenarios are known to compose.
     delivery-module.url = "github:logos-co/logos-delivery-module";
 
+    # mix-delivery-rln's standalone Mix intermediate. The Delivery revision
+    # that scenario needs is not an input here: see DELIVERY_FLAKE in its
+    # scenario.env.
+    mix-rln-module.url = "github:logos-co/logos-libp2p-mix-rln";
+
     # logoscore is consumed as a flake: its default package is the daemon/CLI
     # every scenario drives. The module-stack e2e used to fetch it unpinned at
     # run time; locking it here makes it part of the matrix.
@@ -44,6 +49,7 @@
       lez-rln,
       rln-modules,
       delivery-module,
+      mix-rln-module,
       logoscore-cli,
       ...
     }:
@@ -75,9 +81,15 @@
           lez-rln-module-lgx = rln-modules.packages.${system}.logos-lez-rln-module-lgx;
           rln-module-lgx = rln-modules.packages.${system}.logos-rln-module-lgx;
           wallet-lgx = rln-modules.packages.${system}.wallet-module;
+          # The portable build a released logosctl installs from file.
+          rln-module-lgx-portable = rln-modules.inputs.logos-rln-module.packages.${system}.lgx-portable;
         }
         // lib.optionalAttrs (delivery-module.packages ? ${system}) {
           delivery-lgx = delivery-module.packages.${system}.lgx;
+        }
+        // lib.optionalAttrs (mix-rln-module.packages ? ${system}) {
+          mix-rln-lgx = mix-rln-module.packages.${system}.lgx;
+          mix-rln-lgx-portable = mix-rln-module.packages.${system}.lgx-portable;
         }
         // lib.optionalAttrs (logoscore-cli.packages ? ${system}) {
           logoscore = logoscore-cli.packages.${system}.default;
