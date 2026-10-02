@@ -30,7 +30,7 @@ _delivery_polls() {
     printf '%s' "$n"
 }
 
-# Usage: delivery_stage_rln_presets <file> <registry> <rlnid> <epoch_size_sec> [preset]
+# Usage: delivery_stage_rln_presets <file> <registry> <rlnid> <epoch_size_sec> [preset] [extra]
 # Writes the presets file and remembers the scope, so the readiness check can
 # assert the node resolved the preset we actually wrote.
 #
@@ -45,15 +45,19 @@ _delivery_polls() {
 # MUST run before the daemon (or app) that reads it starts: the file is read at
 # createNode, and one that cannot be parsed fails that call rather than quietly
 # leaving RLN off.
+#
+# [extra] is more JSON members for the entry, verbatim, e.g.
+# '"manage-backend": false, "max-epoch-gap": 3' for a node sharing a backend
+# the host started (mix-delivery-rln).
 delivery_stage_rln_presets() {
-    local file="${1:?delivery_stage_rln_presets <file> <registry> <rlnid> <epoch> [preset]}"
+    local file="${1:?delivery_stage_rln_presets <file> <registry> <rlnid> <epoch> [preset] [extra]}"
     local registry="${2:?registry}" rlnid="${3:?rln identifier}" epoch="${4:?epoch size}"
-    local preset="${5:-}"
+    local preset="${5:-}" extra="${6:+, $6}"
     cat >"$file" <<JSON || die "cannot write rln presets to $file"
 {"$preset": {"enabled": true,
       "registry-id": "$registry",
       "rln-identifier": "$rlnid",
-      "epoch-size-sec": $epoch}}
+      "epoch-size-sec": $epoch$extra}}
 JSON
     sv RLNSCOPE registry "$registry"
     sv RLNSCOPE rlnid "$rlnid"

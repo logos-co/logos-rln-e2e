@@ -9,15 +9,13 @@ On 2026-08-10 the RLN module stack was extracted from logos-lez-rln into
 | membership management (credentials, keystore, proofs) | repo dir `logos-rln-membership-module`, lib `liblogos_rln_membership_module` | repo dir `logos-rln-module`, lib `liblogos_rln_module` |
 
 So `liblogos_rln_module` in anything written **before** 2026-08-10 means the
-registry provider; in anything written after, the membership module. The
-quarantined `scenarios/mix/` tree is entirely pre-rename.
+registry provider; in anything written after, the membership module.
 
 Rules for this repo:
 
 - Scripts and docs always use the **runtime library names**
   (`liblogos_lez_rln_module`, `liblogos_rln_module`), never repo-dir
   shorthands.
-- `tools/check-naming.sh` fails the tree on pre-rename identifiers outside
-  the quarantined mix scenario.
+- `tools/check-naming.sh` fails the tree on pre-rename identifiers.
 
 [logos-rln-modules]: https://github.com/logos-co/logos-rln-modules
