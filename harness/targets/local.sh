@@ -52,6 +52,9 @@
 #
 # target_down kills the dev.sh process tree unless E2E_KEEP=1.
 
+# shellcheck source=harness/lib/registry.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/registry.sh"
+
 _LOCAL_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 _LOCAL_DEVNET_PID=""
 _LOCAL_PAYER_WS=""
@@ -249,6 +252,9 @@ target_up() {
     if [ "$devnet" = "external" ] && [ -n "$dep_dir" ]; then
         [ -f "$dep_dir/deployment.json" ] && [ -f "$dep_dir/storage.json" ] \
             || die "E2E_DEPLOYMENT_DIR=$dep_dir has no deployment.json + storage.json"
+        # The attached chain may have been restarted since the deployment was
+        # made, taking every account with it.
+        require_registry "$E2E_SEQUENCER" "$dep_dir/deployment.json" "deployment $dep_dir"
         say "reusing deployment $dep_dir"
     else
         [ -z "$dep_dir" ] || die "E2E_DEPLOYMENT_DIR is only honoured with E2E_DEVNET=external (a fresh devnet knows no earlier tree)"

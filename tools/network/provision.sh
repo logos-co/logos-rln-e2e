@@ -78,7 +78,9 @@ lez_rpc() {
     curl -sS -m 30 -X POST -H 'Content-Type: application/json' \
         -d "{\"jsonrpc\":\"2.0\",\"id\":1,\"method\":\"$1\",\"params\":$2}" "$LEZ_SEQUENCER"
 }
-lez_balance() { lez_rpc getAccount "[\"$1\"]" | jq -r '.result.balance // empty'; }
+# getAccountBalance: rc3 and v0.3.0 sequencers both answer it; v0.3.0's
+# getAccount carries no balance field (the native balance is a shard).
+lez_balance() { lez_rpc getAccountBalance "[\"$1\"]" | jq -r '.result // empty'; }
 bedrock() { curl -sS -m 60 "$@"; }
 bedrock_balance_json() { bedrock "http://$HTTP/wallet/$(state_get funding_key)/balance"; }
 

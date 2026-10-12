@@ -27,6 +27,9 @@
 # Descriptors are staged, never verified here: verify.sh re-derives program ids
 # from built guest binaries, which a testnet run must not require.
 
+# shellcheck source=harness/lib/registry.sh
+. "$(dirname "${BASH_SOURCE[0]}")/../lib/registry.sh"
+
 _TESTNET_HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 _testnet_chain_head() {
@@ -146,6 +149,8 @@ _testnet_stage() {
     head=$(_testnet_chain_head "$E2E_SEQUENCER") \
         || die "sequencer $E2E_SEQUENCER does not answer getLastBlockId (deployment '$name')"
     say "sequencer $E2E_SEQUENCER at block $head"
+
+    require_registry "$E2E_SEQUENCER" "$dep_dir/deployment.json" "deployment $name"
 
     E2E_DEPLOYMENT_DIR="$dep_dir"
     E2E_WALLET_HOME="$E2E_RUN_DIR/wallet-home"

@@ -17,13 +17,12 @@
 #
 # E2E_LOCAL_PROFILE=fresh: profiles/local-default holds an rc3 tree and wallet.
 #
-# E2E_V030_TARGET (default local) picks the target; testnet-v03 is the live
-# LEZ 0.3 zone, and also needs E2E_DEPLOYMENT and E2E_PAYER_WALLET (see
-# harness/targets/testnet-v03.sh).
+# E2E_V030_TARGET (default local) picks the target; testnet is the live
+# LEZ 0.3 zone, and also needs E2E_PAYER_WALLET (see harness/targets/testnet.sh).
 #
 # Usage: tools/lez-v030-local.sh <scenario> [run.sh args...]
 # Last green (lez-rln e54598d): local 2026-10-01 — live-registry, register,
-# keystore, delivery-rln, delivery-rln-soak; testnet-v03 2026-10-02 —
+# keystore, delivery-rln, delivery-rln-soak; testnet 2026-10-02 —
 # live-registry, register, delivery-rln.
 set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
