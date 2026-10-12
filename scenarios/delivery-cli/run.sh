@@ -71,6 +71,12 @@
 #   E2E_USERTOOLS_DIR         release cache (see harness/lib/usertools.sh)
 #   E2E_LOGOSCTL_RELEASE      the logosctl release n1 runs
 #   E2E_EXTRA_CATALOG         a catalog added on top of the official one
+#   E2E_CLI_BUNDLES=<dir>     pre-release: n1 installs every .lgx in <dir> from
+#                             file (logosctl package install --dir) instead of
+#                             by name from the catalog — portable builds of
+#                             delivery_module and the RLN pair that are not
+#                             published yet. Everything after the install is
+#                             unchanged.
 #                             (default none)
 set -uo pipefail
 
@@ -179,12 +185,20 @@ NODES_UP=1
 # ---------- the operator's install ------------------------------------------
 # Through the operator's running daemon: logosctl's package commands are its
 # bundled package_manager / package_downloader modules.
-section "operator install: published catalog, by name"
-[ -z "$UT_EXTRA_CATALOG" ] || ut_catalog_add "$OPERATOR" "$UT_EXTRA_CATALOG"
-# One name for the RLN pair: liblogos_rln_module declares
-# liblogos_lez_rln_module as a dependency, and the installer is expected to
-# follow it — asserting the version below is asserting that it did.
-ut_package_install "$OPERATOR" delivery_module liblogos_rln_module
+if [ -n "${E2E_CLI_BUNDLES:-}" ]; then
+    section "operator install: pre-release bundles from file ($E2E_CLI_BUNDLES)"
+    ls "$E2E_CLI_BUNDLES"/*.lgx >/dev/null 2>&1 || die "E2E_CLI_BUNDLES: no .lgx in $E2E_CLI_BUNDLES"
+    NODE_CLI_TIMEOUT_S="${E2E_USERTOOLS_TIMEOUT_S:-900}" node_cli "$OPERATOR" package install \
+        --dir "$E2E_CLI_BUNDLES" -y >/dev/null \
+        || die_node "$OPERATOR" "package install --dir $E2E_CLI_BUNDLES failed"
+else
+    section "operator install: published catalog, by name"
+    [ -z "$UT_EXTRA_CATALOG" ] || ut_catalog_add "$OPERATOR" "$UT_EXTRA_CATALOG"
+    # One name for the RLN pair: liblogos_rln_module declares
+    # liblogos_lez_rln_module as a dependency, and the installer is expected to
+    # follow it — asserting the version below is asserting that it did.
+    ut_package_install "$OPERATOR" delivery_module liblogos_rln_module
+fi
 
 # Read the inventory back from the package manager rather than from the
 # files: what it believes is installed is the thing under test.
@@ -194,7 +208,7 @@ CLI_DELIVERY_V=$(ut_installed_version "$OPERATOR" delivery_module)
 [ -n "$CLI_RLN_V" ] || die_node "$OPERATOR" "logosctl does not report liblogos_rln_module installed"
 [ -n "$CLI_LEZ_V" ] || die_node "$OPERATOR" "logosctl does not report liblogos_lez_rln_module installed — the catalog dependency was not followed"
 [ -n "$CLI_DELIVERY_V" ] || die_node "$OPERATOR" "logosctl does not report delivery_module installed"
-say "installed from the catalog: delivery_module $CLI_DELIVERY_V, liblogos_rln_module $CLI_RLN_V, liblogos_lez_rln_module $CLI_LEZ_V"
+say "installed${E2E_CLI_BUNDLES:+ from file}: delivery_module $CLI_DELIVERY_V, liblogos_rln_module $CLI_RLN_V, liblogos_lez_rln_module $CLI_LEZ_V"
 
 # One load, not three: the operator installed a dependency chain and the
 # daemon is expected to resolve it. Asserting that here is asserting the
@@ -332,9 +346,11 @@ freshly published root is ignored while the receiver's window catches up, and th
 sender's path. delivery-rln is the one that asserts delivery."
 fi
 
+CLI_SOURCE="from the official catalog"
+[ -n "${E2E_CLI_BUNDLES:-}" ] && CLI_SOURCE="from pre-release files"
 say ""
 say "delivery-cli PASS — installed delivery_module $CLI_DELIVERY_V, liblogos_rln_module $CLI_RLN_V and \
-liblogos_lez_rln_module $CLI_LEZ_V from the official catalog, with a released logosctl"
+liblogos_lez_rln_module $CLI_LEZ_V $CLI_SOURCE, with a released logosctl"
 say "  membership     $(gv MHASH "$OPERATOR") at leaf $(gv LEAF "$OPERATOR")"
 say "  paid by        $(wallet_payer "$OPERATOR") (funded by the operator, registered by the node)"
 say "  send           $REQID proved and propagated to the pinned-stack peer"
