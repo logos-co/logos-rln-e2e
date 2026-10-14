@@ -1,0 +1,10 @@
+{
+  "name": "testnet-v03-z3",
+  "tree_id": "4f3e8ef1b38ae86eb1e8180f6b864b10f0e5ff45b1a2e5ff84d8562b40fa0fc9",
+  "sequencer": "https://testnet.lez.logos.co/",
+  "registration_program_id": "eb53eb29132ef2a4ae1073ee206ac584a7aeea560146c3a600f5f4034703ca68",
+  "merkle_program_id": "0a69f1b28291d32dc2d3442c2f333c22e5cfae891eb9a7e184b31c32156a8cee",
+  "config_account": "J3NXPWUspX2zqJU3tUbR6MHmm83aJc5AzvidEaBBKnat",
+  "payer_account": "56vby4CqqVzYgqPA8yHy1ZrYq62uBxgmXakEvZRyFVNo",
+  "treasury_account": "8MdMJPyADGQvaPVYc489dSFNJqTuTiLzZ8JNLHQr7KJq"
+}

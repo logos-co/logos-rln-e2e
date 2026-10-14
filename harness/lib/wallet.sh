@@ -130,10 +130,30 @@ wallet_fund_account() {
     local bin="$lez/lez-rln/target/release/fund_account"
     [ -x "$bin" ] || die "no fund_account at $bin — build it:
     (cd $lez/lez-rln && cargo build --release --bin fund_account)"
+    # The transfer declares the wallet config's gas_limit and reserves it at
+    # the base fee up front; a payer that cannot cover amount + reserve still
+    # gets the tx included and charged in full (testnet, 2026-10-14: 8e7 for a
+    # 2e8 transfer that never arrived). Declare a transfer-sized limit, and
+    # refuse before sending when the payer is short.
+    local gas="${E2E_TRANSFER_GAS_LIMIT:-1000000}" cfg="$E2E_WALLET_HOME/wallet_config.json" have saved
+    if [ -n "${E2E_SEQUENCER:-}" ]; then
+        have=$(curl -sS -m 15 -X POST -H 'Content-Type: application/json' \
+            --data "{\"jsonrpc\":\"2.0\",\"method\":\"getAccountBalance\",\"params\":[\"$E2E_PAYER\"],\"id\":1}" \
+            "$E2E_SEQUENCER" | jq -r '.result // empty' 2>/dev/null)
+        if [ -n "$have" ] && ! python3 -c 'import sys; sys.exit(0 if int(sys.argv[1]) >= int(sys.argv[2]) + 20 * int(sys.argv[3]) else 1)' \
+                "$have" "$amount" "$gas"; then
+            die "payer $E2E_PAYER holds $have: short of $amount plus the transfer's fee reserve — fund it before running"
+        fi
+    fi
+    saved=$(cat "$cfg")
+    jq --argjson g "$gas" '.gas_limit = $g' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg" \
+        || die "cannot set the transfer gas limit in $cfg"
+    local rc=0
     ( cd "$lez/lez-rln" && LEE_WALLET_HOME_DIR="$E2E_WALLET_HOME" \
         NSSA_WALLET_HOME_DIR="$E2E_WALLET_HOME" LEZ_RLN_PAYER="$E2E_PAYER" \
-        "$bin" --to "$to" --amount "$amount" ) >/dev/null \
-        || die "fund_account failed (from $E2E_PAYER to $to)"
+        "$bin" --to "$to" --amount "$amount" ) >/dev/null || rc=$?
+    printf '%s\n' "$saved" > "$cfg"
+    [ "$rc" = 0 ] || die "fund_account failed (from $E2E_PAYER to $to)"
 }
 
 # Fund a node's payer, then wait for the balance to land.

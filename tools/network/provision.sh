@@ -169,7 +169,7 @@ step_payer() {
     [ -x "$LEZ/lez-rln/target/release/mint_payer" ] \
         || die "no mint_payer in $LEZ/lez-rln/target/release (build lez-rln, or set LEZ_RLN_CHECKOUT)"
     mkdir -p "$PAYER_WS"
-    jq -n --arg s "$LEZ_SEQUENCER" '{sequencers:[{sequencer_addr:$s}], seq_poll_timeout:"30s",
+    jq -n --arg s "$LEZ_SEQUENCER" '{sequencer:{sequencer_addr:$s}, sequencers:[{sequencer_addr:$s}], seq_poll_timeout:"30s",
         seq_tx_poll_max_blocks:15, seq_poll_max_retries:10, seq_block_poll_max_amount:100,
         multi_sequencer_client_config:{distribution_limit:1, calibration_limit:3}}' > "$PAYER_WS/wallet_config.json"
     local payer

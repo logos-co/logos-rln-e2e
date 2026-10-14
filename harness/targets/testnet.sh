@@ -173,6 +173,15 @@ _testnet_stage() {
             || die "cannot patch calibration cap into staged wallet_config.json"
         say "staged wallet_config: calibration cap patched in (stage.sh predates it)"
     fi
+    # LEZ v0.3.1 reads one `sequencer` (no serde default) where earlier wallets
+    # read `sequencers`; a stage.sh that predates it writes only the list.
+    if ! jq -e '.sequencer.sequencer_addr' "$E2E_WALLET_HOME/wallet_config.json" >/dev/null 2>&1; then
+        jq '. + {sequencer:{sequencer_addr:(.sequencers[0].sequencer_addr // .sequencer_addr)}}' \
+            "$E2E_WALLET_HOME/wallet_config.json" > "$E2E_WALLET_HOME/wallet_config.json.tmp" \
+            && mv "$E2E_WALLET_HOME/wallet_config.json.tmp" "$E2E_WALLET_HOME/wallet_config.json" \
+            || die "cannot patch sequencer into staged wallet_config.json"
+        say "staged wallet_config: v0.3.1 sequencer field patched in (stage.sh predates it)"
+    fi
 
     E2E_TREE_ID=$(grep -oE 'LEZ_RLN_TREE_ID_HEX=[0-9a-f]{64}' "$E2E_WALLET_HOME/env.sh" | cut -d= -f2)
     E2E_CONFIG_ACCOUNT=$(tr -d '\n\r' < "$E2E_WALLET_HOME/config_account.txt")

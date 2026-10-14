@@ -137,6 +137,7 @@ import json, sys
 path, seq = sys.argv[1], sys.argv[2]
 cfg = json.load(open(path))
 cfg["sequencer_addr"] = seq
+cfg["sequencer"] = {**cfg.get("sequencer", {}), "sequencer_addr": seq}
 for entry in cfg.get("sequencers", []):
     entry["sequencer_addr"] = seq
 json.dump(cfg, open(path, "w"), indent=2)
