@@ -38,7 +38,9 @@
 #                        active -> select_membership -> the registry module's
 #                        get_membership cross-check, then PASS. Skips every
 #                        step that needs the Merkle tree (get_merkle_proof,
-#                        the root window, generate/validate_proof).
+#                        the root window, generate/validate_proof): since
+#                        liblogos_rln_module 0.14.0 the tree is served by a
+#                        zone service, which this mode does not need.
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -192,7 +194,14 @@ done
 [ "$STATE" = "active" ] || [ "$STATE" = "grace_period" ] \
     || die "membership never became active (last state: ${STATE:-<none>})"
 LEAF=$(printf '%s' "$STATE_JSON" | jfield leaf_index)
-LEAF_SHOWN="$LEAF"
+# Since liblogos_rln_module 0.14.0 the chain records a leaf index only in its
+# Registered event: until the registry module reports the one this registration
+# claimed, the membership is active with leaf_pending:true and a placeholder
+# leaf_index of 0.
+case "$STATE_JSON" in
+    *'"leaf_pending":true'*) LEAF_SHOWN="pending (not reported yet)" ;;
+    *) LEAF_SHOWN="$LEAF" ;;
+esac
 say "ACTIVE at leaf $LEAF_SHOWN"
 
 # ---------- post-registration surface ----------------------------------------
@@ -223,7 +232,7 @@ fi
 
 PROOF=$(node_call "$NODE" liblogos_rln_module get_merkle_proof "$REGISTRY_ID" "$LEAF" | jres) || PROOF=""
 case "$PROOF" in
-    *'"valid_roots"'*) say "get_merkle_proof returned a rooted proof" ;;
+    *'"root"'*) say "get_merkle_proof returned a rooted proof" ;;
     *) die "get_merkle_proof failed: ${PROOF:-<empty>}" ;;
 esac
 
