@@ -289,3 +289,29 @@ perform a registry read (`register_membership`, `get_membership_state`,
 `generate_proof`), 10 s for the local rest. Nothing on this side has a
 deadline to manage, a late `rlnRespond` fails with an
 unknown-or-already-completed reqId, and the module never sends "timeout".
+
+## 8. The zone service (liblogos_rln_module 0.14.0)
+
+Since 0.14.0 the RLN module holds no tree and reads nothing from the chain to
+prove or validate: a **zone service** (the Zone indexer of
+[logos-rln-membership-zone](https://github.com/logos-co/logos-rln-membership-zone))
+serves the valid roots and each member's Merkle proof over libp2p — the
+protocol is `logos-rln-module/docs/zone-query.md`. Two consequences for a
+delivery integration:
+
+- **The module must be told where the service is**, and delivery's `start`
+  config has no field for it (it carries `registries`, `epoch_size_sec`,
+  `max_epoch_gap`). Until the preset grows a `zone-service` key, the daemon's
+  environment does it: `LOGOS_RLN_ZONE_PEER_ID` + `LOGOS_RLN_ZONE_MULTIADDR`
+  (or `LOGOS_RLN_ZONE_URL` against the indexer's JSON API, for development).
+  Without one, every root read and proof is `not_ready`, which delivery
+  Ignores.
+- **A validator needs no membership, no wallet and no funds**: roots come from
+  the service. It still gets `start`'s default provisioning, which parks in
+  `awaiting_funding` and never registers — harmless, but a preset `provision`
+  switch would be the clean fix.
+
+A zone scenario (n1 seeded with an existing membership through
+`seed_module_state`, n2 a bare validator, both reading one service) waits on
+a service that mounts the libp2p protocol; the seed export and the harness
+primitive are in place for it.

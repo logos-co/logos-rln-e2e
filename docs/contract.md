@@ -129,3 +129,11 @@ skips another's backlog. Watchers are reaped by `node_watch_stop`,
 daemons up but not watch processes); once reaped, a further `node_wait_event`
 on that watcher dies rather than polling a file nobody writes. `node_logs`,
 wallet/chain helpers, JSON plumbing: see each lib file's header.
+
+`seed_module_state <node> <module> <src-dir> [sibling-module]` (`seed.sh`)
+gives a node a module's persisted state from elsewhere — a membership another
+node registered, say, exported with `tools/zone/export-node-state.sh`. A
+module's persistence dir is host-stamped and appears only after the daemon
+has loaded the module once, so the scenario drives it: start and load, stop
+(`daemon_stop_wait`), seed, restart and load again. The companion
+`seed_module_dir` finds the dir.
