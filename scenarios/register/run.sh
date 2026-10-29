@@ -34,6 +34,11 @@
 #
 # Env beyond docs/contract.md:
 #   E2E_RATE_LIMIT=100   registration rate limit
+#   E2E_REGISTER_ONLY=1  stop after the on-chain registration: register ->
+#                        active -> select_membership -> the registry module's
+#                        get_membership cross-check, then PASS. Skips every
+#                        step that needs the Merkle tree (get_merkle_proof,
+#                        the root window, generate/validate_proof).
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -44,6 +49,7 @@ for _lib in compat json lgx daemon wallet chain; do
 done
 
 RATE_LIMIT="${E2E_RATE_LIMIT:-100}"
+REGISTER_ONLY="${E2E_REGISTER_ONLY:-0}"
 NODE=n1
 
 for _v in LOGOSCORE E2E_MODULES_DIR E2E_SEQUENCER E2E_WALLET_HOME E2E_CONFIG_ACCOUNT \
@@ -186,7 +192,8 @@ done
 [ "$STATE" = "active" ] || [ "$STATE" = "grace_period" ] \
     || die "membership never became active (last state: ${STATE:-<none>})"
 LEAF=$(printf '%s' "$STATE_JSON" | jfield leaf_index)
-say "ACTIVE at leaf $LEAF"
+LEAF_SHOWN="$LEAF"
+say "ACTIVE at leaf $LEAF_SHOWN"
 
 # ---------- post-registration surface ----------------------------------------
 # select_membership returns the PUBLIC view only (the secret never leaves the
@@ -198,17 +205,26 @@ case "$SELECTED" in
     *) die "select_membership did not return the membership: ${SELECTED:-<empty>}" ;;
 esac
 
-PROOF=$(node_call "$NODE" liblogos_rln_module get_merkle_proof "$REGISTRY_ID" "$LEAF" | jres) || PROOF=""
-case "$PROOF" in
-    *'"valid_roots"'*) say "get_merkle_proof returned a rooted proof" ;;
-    *) die "get_merkle_proof failed: ${PROOF:-<empty>}" ;;
-esac
-
 CROSS=$(node_call "$NODE" liblogos_lez_rln_module get_membership \
     "$(argfile cfg3 "$E2E_CONFIG_ACCOUNT")" "$(argfile commit2 "$COMMITMENT")" | jres) || CROSS=""
 case "$CROSS" in
     *'"registered":true'*) say "cross-check: rln module sees the membership ($(printf '%s' "$CROSS" | jfield state))" ;;
     *) die "cross-check get_membership failed: ${CROSS:-<empty>}" ;;
+esac
+
+if [ "$REGISTER_ONLY" = "1" ]; then
+    echo
+    echo "e2e: PASS (E2E_REGISTER_ONLY) — registered on $REGISTRY_ID"
+    echo "e2e:   membership_hash $MEMBERSHIP_HASH"
+    echo "e2e:   leaf_index      $LEAF_SHOWN"
+    echo "e2e:   paid by         $PAYER (the module's own payer, no gifter)"
+    exit 0
+fi
+
+PROOF=$(node_call "$NODE" liblogos_rln_module get_merkle_proof "$REGISTRY_ID" "$LEAF" | jres) || PROOF=""
+case "$PROOF" in
+    *'"valid_roots"'*) say "get_merkle_proof returned a rooted proof" ;;
+    *) die "get_merkle_proof failed: ${PROOF:-<empty>}" ;;
 esac
 
 # ---------- rate-limit proofs (the spec's rate-limiting portion) --------------
