@@ -1,0 +1,9 @@
+{
+  "name": "testnet-zone-events",
+  "tree_id": "47b2de4f08080e74e2d4beffe8e5e87e709dd598619c9b322b64f2756979b4cf",
+  "sequencer": "https://testnet.lez.logos.co/",
+  "registration_program_id": "f04803944507677bb79b27b61cd0ad6eea81928f281570347e2df6249495106a",
+  "config_account": "BpxYQFLWf6Wi5HhWAaZRtbhxmeKa5P9THK7WBDCoXRg9",
+  "payer_account": "56vby4CqqVzYgqPA8yHy1ZrYq62uBxgmXakEvZRyFVNo",
+  "treasury_account": "8A36WtJcHXGtEPhikbAL5SCbNSBfqiDXzWEmaeMLgevG"
+}
