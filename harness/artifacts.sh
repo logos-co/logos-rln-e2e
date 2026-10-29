@@ -77,6 +77,19 @@ _delivery_lgx() {
         src=$(staged_tree "$LOGOS_DELIVERY_CHECKOUT" logos-delivery)
         overrides+=(--override-input delivery-module/logos-delivery "path:$src")
     fi
+    # The RLN stack under it: delivery-module pins liblogos_rln_module (and,
+    # through it, liblogos_lez_rln_module) to a rln-modules rev of its own and
+    # generates its RLN client from that lidl. With RLN_MODULES_CHECKOUT the
+    # nodes load the checkout's modules, so the delivery bundle must be built
+    # against the same trees or it depends on the pin while the daemon runs the
+    # checkout. Reuses the filtered copy _bundle_lgx already staged.
+    if [ -n "${RLN_MODULES_CHECKOUT:-}" ]; then
+        local rmsrc="$E2E_RUN_DIR/src-rln-modules"
+        [ -d "$rmsrc" ] || rmsrc=$(staged_tree "$RLN_MODULES_CHECKOUT" rln-modules)
+        say "delivery-lgx: RLN dependency from the staged copy of $RLN_MODULES_CHECKOUT" >&2
+        overrides+=(--override-input delivery-module/liblogos_rln_module "path:$rmsrc/logos-rln-module")
+        overrides+=(--override-input delivery-module/liblogos_rln_module/liblogos_lez_rln_module "path:$rmsrc/logos-lez-rln-module")
+    fi
     if [ ${#overrides[@]} -eq 0 ]; then
         lgx_of "$(_nix_out delivery-lgx)"
         return
@@ -153,6 +166,19 @@ rln-modules pin builds against, or bump rln-layouts in logos-rln-modules."
     export E2E_LEZ_RLN_REV E2E_LEZ_RLN_MODULE_VERSION E2E_RLN_MODULE_VERSION
     say "pin matrix: rln-modules decides lez-rln ${E2E_LEZ_RLN_REV:0:12}, \
 liblogos_lez_rln_module $E2E_LEZ_RLN_MODULE_VERSION, liblogos_rln_module $E2E_RLN_MODULE_VERSION"
+    # resolve.py reads the PINNED tree: with a checkout override the versions
+    # above describe the pin, and the rln-layouts skew check never saw the
+    # tree the bundles are built from.
+    if [ -n "${RLN_MODULES_CHECKOUT:-}" ]; then
+        say "pin matrix: RLN_MODULES_CHECKOUT is set — the versions above are the pin's; the bundles come from \
+$RLN_MODULES_CHECKOUT (liblogos_rln_module $(_metadata_version "$RLN_MODULES_CHECKOUT/logos-rln-module"), \
+liblogos_lez_rln_module $(_metadata_version "$RLN_MODULES_CHECKOUT/logos-lez-rln-module"))"
+    fi
+}
+
+# The "version" of a module dir's metadata.json, or ? when unreadable.
+_metadata_version() {
+    python3 -I -c 'import json, sys; print(json.load(open(sys.argv[1]))["version"])' "$1/metadata.json" 2>/dev/null || echo '?'
 }
 
 resolve_artifacts() {
