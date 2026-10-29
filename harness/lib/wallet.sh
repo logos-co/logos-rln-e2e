@@ -127,6 +127,9 @@ wallet_fund_account() {
     local to="${1:?wallet_fund_account <account> <amount>}"
     local amount="${2:?wallet_fund_account <account> <amount>}"
     local lez="${LEZ_RLN_CHECKOUT:-$E2E_ROOT/../logos-lez-rln}"
+    # Absolute: the binary runs from inside lez-rln, where a relative checkout
+    # path no longer resolves.
+    lez=$(cd "$lez" && pwd) || die "LEZ_RLN_CHECKOUT does not exist: $lez"
     local bin="$lez/lez-rln/target/release/fund_account"
     [ -x "$bin" ] || die "no fund_account at $bin — build it:
     (cd $lez/lez-rln && cargo build --release --bin fund_account)"
