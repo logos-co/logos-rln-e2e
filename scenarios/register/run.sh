@@ -113,7 +113,10 @@ export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
 daemon_self_paying "$NODE" "$E2E_RUN_DIR/wallet-$NODE"
 daemon_start "$NODE" || die "daemon_start $NODE failed"
 NODE_UP=1
-daemon_load_modules "$NODE" liblogos_lez_rln_module liblogos_rln_module \
+# Dependencies first: liblogos_lez_rln_module 7.0.0 drives the lez_core
+# wallet module, liblogos_rln_module 0.14.0 reaches its zone service over
+# libp2p_module.
+daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module libp2p_module liblogos_rln_module \
     || die "load-module failed"
 
 # ---------- wallet: open + sync ---------------------------------------------
