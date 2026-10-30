@@ -1,9 +1,14 @@
 #!/usr/bin/env bash
-# scenarios/register — the single-node membership lifecycle over the real
-# module stack (liblogos_lez_rln_module -> liblogos_rln_module). Drives a PAID registration through the membership
-# module's spec surface — the payer-funded Register instruction, NOT the
-# gifter's delegated path:
+# scenarios/register — the membership lifecycle over the real module stack
+# (liblogos_lez_rln_module -> liblogos_rln_module), with the registry's tree
+# served the way a deployment serves it: a service node (zs) runs
+# liblogos_rln_data_service_module next to the zone and the member node (n1)
+# reads roots and Merkle proofs from it over libp2p. Drives a PAID
+# registration through the membership module's spec surface — the
+# payer-funded Register instruction, NOT the gifter's delegated path:
 #
+#   zs: libp2p_module + data service -> start (zone URL, listen) -> peer id
+#   n1 (told zs's peer id + multiaddr):
 #   open wallet -> sync -> fund the node's own payer (one account signs the
 #      Register tx, pays the registry price from its NATIVE balance and pays
 #      the fee)
@@ -33,6 +38,10 @@
 # as long as the target's confirmation budget allows.
 #
 # Env beyond docs/contract.md:
+#   E2E_ZONE_URL         the zone's JSON API the service node reads (default
+#                        http://127.0.0.1:3000: a logos-rln-membership-zone
+#                        sequencer run beside the harness)
+#   E2E_ZONE_SERVICE_PORT the service node's libp2p TCP port (default 61895)
 #   E2E_RATE_LIMIT=100   registration rate limit
 #   E2E_REGISTER_ONLY=1  stop after the on-chain registration: register ->
 #                        active -> select_membership -> the registry module's
@@ -53,6 +62,14 @@ done
 RATE_LIMIT="${E2E_RATE_LIMIT:-100}"
 REGISTER_ONLY="${E2E_REGISTER_ONLY:-0}"
 NODE=n1
+ZS=zs
+ZONE_URL="${E2E_ZONE_URL:-http://127.0.0.1:3000}"
+ZONE_PORT="${E2E_ZONE_SERVICE_PORT:-61895}"
+# A zone URL in the member's environment would make its rln module read the
+# zone over HTTP and bypass the service node this scenario exists to drive.
+case " ${E2E_DAEMON_ENV:-} " in
+    *" LOGOS_RLN_ZONE_URL="*) die "E2E_DAEMON_ENV carries LOGOS_RLN_ZONE_URL: the member must reach the zone through the service node (set E2E_ZONE_URL for the service instead)" ;;
+esac
 
 for _v in LOGOSCORE E2E_MODULES_DIR E2E_SEQUENCER E2E_WALLET_HOME E2E_CONFIG_ACCOUNT \
           E2E_TREE_ID E2E_PAYER E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
@@ -86,8 +103,10 @@ cleanup() {
         return
     fi
     [ "$NODE_UP" = 1 ] && daemon_stop "$NODE"
+    [ "$ZS_UP" = 1 ] && daemon_stop "$ZS"
 }
 trap cleanup EXIT
+ZS_UP=0
 
 CONFIG_HEX=$(python3 - "$E2E_CONFIG_ACCOUNT" <<'EOF'
 import sys
@@ -101,11 +120,28 @@ EOF
 REGISTRY_ID="logos:${E2E_TARGET}:$CONFIG_HEX"
 say "registry: $REGISTRY_ID (tree ${E2E_TREE_ID:0:8}…, sequencer $E2E_SEQUENCER)"
 
+# ---------- service node ---------------------------------------------------
+section "zone service"
+# No wallet, no funds: the data service only reads the zone and answers
+# libp2p. start brings libp2p up on the given address and reports the
+# identity the member is told.
+daemon_start "$ZS" || die "daemon_start $ZS failed"
+ZS_UP=1
+daemon_load_modules "$ZS" libp2p_module liblogos_rln_data_service_module \
+    || die "load-module failed on $ZS"
+ZS_START=$(node_call "$ZS" liblogos_rln_data_service_module start \
+    "{\"zone\":{\"url\":\"$ZONE_URL\"},\"listen\":[\"/ip4/127.0.0.1/tcp/$ZONE_PORT\"]}" | jres | jval) || ZS_START=""
+ZS_PEER=$(printf '%s' "$ZS_START" | jfield peer_id)
+[ -n "$ZS_PEER" ] || die "data service start failed: ${ZS_START:-<empty>}"
+ZS_ADDR="/ip4/127.0.0.1/tcp/$ZONE_PORT"
+say "zone service: peer $ZS_PEER @ $ZS_ADDR, zone $ZONE_URL"
+
 # ---------- node ------------------------------------------------------------
 section "node"
 # The module default is full-lazy self-owned keystore custody; this
-# scenario exercises MANUAL passwords — opt its daemons out.
-export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1"
+# scenario exercises MANUAL passwords — opt its daemons out. The zone is the
+# service node: its rln module dials zs for every root and proof.
+export E2E_DAEMON_ENV="${E2E_DAEMON_ENV:-} LOGOS_RLN_DISABLE_AUTO_UNLOCK=1 LOGOS_RLN_ZONE_PEER_ID=$ZS_PEER LOGOS_RLN_ZONE_MULTIADDR=$ZS_ADDR"
 # The node pays for its own membership out of its own wallet: a home carrying
 # only the staged wallet_config.json, so the module creates a fresh wallet
 # there and derives a payer nothing else holds. It has to happen before
@@ -118,6 +154,11 @@ NODE_UP=1
 # libp2p_module.
 daemon_load_modules "$NODE" lez_core liblogos_lez_rln_module libp2p_module liblogos_rln_module \
     || die "load-module failed"
+# The rln module dials through libp2p_module but does not bring the node
+# up; a dialer needs a started node of its own (any port).
+node_call "$NODE" libp2p_module createNode '{"addrs":["/ip4/127.0.0.1/tcp/0"]}' | jres >/dev/null \
+    || die "$NODE libp2p createNode failed"
+node_call "$NODE" libp2p_module start | jres >/dev/null || die "$NODE libp2p start failed"
 
 # ---------- wallet: open + sync ---------------------------------------------
 section "wallet"
@@ -225,6 +266,7 @@ case "$CROSS" in
 esac
 
 if [ "$REGISTER_ONLY" = "1" ]; then
+    say "zone service status: $(node_call "$ZS" liblogos_rln_data_service_module status | jres | jval)"
     echo
     echo "e2e: PASS (E2E_REGISTER_ONLY) — registered on $REGISTRY_ID"
     echo "e2e:   membership_hash $MEMBERSHIP_HASH"
@@ -360,8 +402,17 @@ case "$TVERIFY" in
     *) die "tampered signal was not rejected: ${TVERIFY:-<empty>}" ;;
 esac
 
+# Every root and proof above came through the service node, or the member
+# had a zone of its own: the service must have answered.
+ZS_STATUS=$(node_call "$ZS" liblogos_rln_data_service_module status | jres | jval) || ZS_STATUS=""
+ZS_SERVED=$(printf '%s' "$ZS_STATUS" | jfield served)
+say "zone service status: ${ZS_STATUS:-<empty>}"
+case "$ZS_SERVED" in
+    ''|0|*[!0-9]*) die "the data service served nothing: the member did not read the zone over libp2p" ;;
+esac
+
 echo
-echo "e2e: PASS — registered on $REGISTRY_ID"
+echo "e2e: PASS — registered on $REGISTRY_ID (zone over libp2p: $ZS_SERVED answers)"
 echo "e2e:   membership_hash $MEMBERSHIP_HASH"
 echo "e2e:   leaf_index      $LEAF"
 echo "e2e:   paid by         $PAYER (the module's own payer, no gifter)"

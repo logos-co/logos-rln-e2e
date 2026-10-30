@@ -311,7 +311,10 @@ delivery integration:
   `awaiting_funding` and never registers — harmless, but a preset `provision`
   switch would be the clean fix.
 
-A zone scenario (n1 seeded with an existing membership through
-`seed_module_state`, n2 a bare validator, both reading one service) waits on
-a service that mounts the libp2p protocol; the seed export and the harness
-primitive are in place for it.
+The libp2p side is `liblogos_rln_data_service_module` (logos-rln-modules),
+run by one node next to the zone: `scenarios/register` starts such a service
+node (`zs`, reading the zone at `E2E_ZONE_URL`, listening on
+`E2E_ZONE_SERVICE_PORT`) and hands its peer id and multiaddr to the member
+node's daemon environment, so every root and proof there crosses libp2p. A
+seeded-prover + bare-validator scenario (`seed_module_state`, the seed
+export) can be built on the same service node.

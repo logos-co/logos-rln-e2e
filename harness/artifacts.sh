@@ -3,7 +3,7 @@
 #
 # Resolution order per artifact:
 #   1. explicit env override: LOGOSCORE, WALLET_LGX, LEZ_RLN_LGX, RLN_LGX,
-#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX
+#      RLN_DATA_SERVICE_LGX, DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX
 #   2. checkout overrides — the dev loop for changing a repo and running a
 #      scenario against it (filtered copy + --override-input):
 #        RLN_MODULES_CHECKOUT=<dir>      the three RLN-stack bundles
@@ -219,7 +219,15 @@ resolve_artifacts() {
             export WALLET_LGX
             ;;
     esac
-    say "bundles: $(basename "$LEZ_RLN_LGX"), $(basename "$RLN_LGX")${WALLET_LGX:+, $(basename "$WALLET_LGX")}"
+    # The data service, from the same rln-modules tree, when a scenario runs
+    # a service node for the zone.
+    case " ${NEEDS_MODULES:-} " in
+        *" liblogos_rln_data_service_module "*)
+            [ -n "${RLN_DATA_SERVICE_LGX:-}" ] || RLN_DATA_SERVICE_LGX=$(_bundle_lgx rln-data-service-lgx)
+            export RLN_DATA_SERVICE_LGX
+            ;;
+    esac
+    say "bundles: $(basename "$LEZ_RLN_LGX"), $(basename "$RLN_LGX")${WALLET_LGX:+, $(basename "$WALLET_LGX")}${RLN_DATA_SERVICE_LGX:+, $(basename "$RLN_DATA_SERVICE_LGX")}"
 
     # The delivery bundle only when the scenario loads it (scenario.env is
     # sourced before resolve_artifacts, so NEEDS_MODULES is visible here) —
@@ -292,6 +300,7 @@ resolve_artifacts() {
     install_lgx "$LEZ_RLN_LGX"
     install_lgx "$RLN_LGX"
     [ -n "${WALLET_LGX:-}" ] && install_lgx "$WALLET_LGX"
+    [ -n "${RLN_DATA_SERVICE_LGX:-}" ] && install_lgx "$RLN_DATA_SERVICE_LGX"
     [ -n "${DELIVERY_LGX:-}" ] && install_lgx "$DELIVERY_LGX"
     [ -n "${CHAT_LGX:-}" ] && install_lgx "$CHAT_LGX"
     [ -n "${LIBP2P_LGX:-}" ] && install_lgx "$LIBP2P_LGX"

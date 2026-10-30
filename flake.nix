@@ -74,6 +74,7 @@
         // lib.optionalAttrs (rln-modules.packages ? ${system}) {
           lez-rln-module-lgx = rln-modules.packages.${system}.logos-lez-rln-module-lgx;
           rln-module-lgx = rln-modules.packages.${system}.logos-rln-module-lgx;
+          rln-data-service-lgx = rln-modules.packages.${system}.logos-rln-data-service-module-lgx;
           wallet-lgx = rln-modules.packages.${system}.wallet-module;
         }
         // lib.optionalAttrs (delivery-module.packages ? ${system}) {
