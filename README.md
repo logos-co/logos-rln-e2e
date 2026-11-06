@@ -8,8 +8,8 @@ external infra), the hosted testnet on request. Unit and hermetic tests stay
 in the producer repos; what lives here is anything that needs two repos plus
 a running chain.
 
-Formerly `logos-rln-mix-sim`: the 5-node RLN-over-mix simulation is now one
-scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
+Formerly `logos-rln-mix-sim`; the RLN-over-mix coverage is now
+`mix-delivery-rln`.
 
 ## Scenarios
 
@@ -25,7 +25,7 @@ scenario of several (currently quarantined — `scenarios/mix/STATUS.md`).
 | `delivery-relay-rln` | **active** | the shipping topology: two RLN-gated peers that never dial each other, meeting at a containerised relay that holds its own membership and validates what it forwards |
 | `chat-basecamp-rln` / `chat-basecamp-gifter` / `delivery-basecamp-rln` | active | the stack inside Basecamp's embedded core, where it actually ships: proof-gated chat, gifted membership through the allocation protocol, and the delivery plugin loaded with no consumer app |
 | `delivery-basecamp-pair` | **active** | two Basecamp instances and no daemon at all: both halves of the RLN path inside an embedded core, each app provisioning its own membership and paying from its own derived account. `--keep` leaves both up for hands-on work |
-| `mix` | quarantined | gifted membership allocation ([LIP-158]) + per-hop RLN over a 3-hop Sphinx mix ([LIP-144]) |
+| `mix-delivery-rln` | **active** | the Mixnet operator topology ([LIP-144] per-hop RLN): a Delivery message with anonymity `Required` crosses three standalone `libp2p_mix_rln_module` intermediates, each beside a Delivery Relay node that carries its proof metadata, both on one shared RLN backend with separate Relay and Mix memberships. Stopping the intermediates must block `Required` traffic while plain Relay still delivers. Every host is a released `logosctl` installing the way the operator doc does; `liblogos_rln_module`, Mix and Delivery come from file (portable builds) until the catalog carries rln-modules#27, the Mix module and logos-delivery-module#148 (pinned by ref in its `scenario.env`) |
 
 ```sh
 ./run.sh --list
@@ -69,7 +69,7 @@ The target is always a flag, never part of a scenario's name.
   (`cd ../logos-lez-rln/lez-rln && cargo build --release --bin mint_payer
   --bin fund_account`). Details: [docs/networks.md].
 - **docker** — the containerised relay (`delivery-relay-rln`,
-  `tools/build-e2e-image.sh`) and the compose-topology scenarios (mix).
+  `tools/build-e2e-image.sh`).
 
 Platforms: darwin-arm64 and linux (x86_64/aarch64).
 
@@ -117,7 +117,7 @@ harness/
 scenarios/
   register/ keystore/ delivery/ delivery-rln/ delivery-rln-soak/
   delivery-relay-rln/
-  *-basecamp-*/ live-registry/ mix/
+  *-basecamp-*/ live-registry/ mix-delivery-rln/
 deployments/            committed hosted-network descriptors (public ids only)
 networks/               per-network public values (tools/network/provision.sh)
 profiles/               committed local provision inputs (pinned tree + wallet)

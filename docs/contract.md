@@ -77,8 +77,7 @@ testnet stays a first-class target rather than a fallback:
 
 Each `scenarios/<id>/scenario.env` declares: `NODES` (daemon count),
 `NEEDS_MODULES` (runtime lib names, space-separated), `TARGETS` (supported
-targets), `RUNNER` (`bash`; `pytest`/`compose` arrive with the delivery and
-mix phases), optional `STATUS=quarantined`.
+targets), `RUNNER` (`bash`), optional `STATUS=quarantined`.
 
 ## Scenario conventions
 

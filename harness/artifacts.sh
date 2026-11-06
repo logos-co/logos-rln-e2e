@@ -3,11 +3,12 @@
 #
 # Resolution order per artifact:
 #   1. explicit env override: LOGOSCORE, WALLET_LGX, LEZ_RLN_LGX, RLN_LGX,
-#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX
+#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX, MIX_LGX, RLN_PORTABLE_LGX
 #   2. checkout overrides — the dev loop for changing a repo and running a
 #      scenario against it (filtered copy + --override-input):
 #        RLN_MODULES_CHECKOUT=<dir>      the three RLN-stack bundles
 #        DELIVERY_MODULE_CHECKOUT=<dir>  the delivery C++ shim
+#        MIX_RLN_MODULE_CHECKOUT=<dir>   the standalone Mix module
 #        LOGOS_DELIVERY_CHECKOUT=<dir>   the Nim lib under it (source build;
 #                                        composable with the shim override)
 #   3. nix build from the flake pins: .#logoscore, .#wallet-lgx,
@@ -64,9 +65,25 @@ _bundle_lgx() {
 # Swapping logos-delivery rebuilds liblogosdelivery from source (only pinned
 # revs are prebuilt in the logos cache) — expect a long first build.
 # DELIVERY_LGX (a prebuilt .lgx file) still short-circuits both.
+#
+# A scenario that needs a delivery revision other than the pin names it as a
+# flake ref, DELIVERY_FLAKE in its scenario.env, and its bundle builds from
+# that ref's own lock; DELIVERY_MODULE_CHECKOUT still replaces it. (Not a
+# second flake input: the delivery tree adds ~19k nodes to flake.lock.)
+# LGX_VARIANT=portable (scenario.env) builds its lgx-portable output instead,
+# for a scenario that installs it into a released logosctl.
 _delivery_lgx() {
     local -a overrides=()
     local src out
+    if [ -n "${DELIVERY_FLAKE:-}" ] && [ -z "${DELIVERY_MODULE_CHECKOUT:-}" ]; then
+        say "delivery-lgx: $DELIVERY_FLAKE" >&2
+        local attr=lgx
+        [ "${LGX_VARIANT:-dev}" = portable ] && attr=lgx-portable
+        out=$(nix build --no-link --print-out-paths --accept-flake-config \
+            "$DELIVERY_FLAKE#$attr") || die "nix build $DELIVERY_FLAKE#$attr failed"
+        lgx_of "$out"
+        return
+    fi
     if [ -n "${DELIVERY_MODULE_CHECKOUT:-}" ]; then
         say "delivery-lgx: shim from a filtered copy of $DELIVERY_MODULE_CHECKOUT" >&2
         src=$(staged_tree "$DELIVERY_MODULE_CHECKOUT" delivery-module)
@@ -215,6 +232,33 @@ resolve_artifacts() {
             ;;
     esac
 
+    # A scenario on released logosctl hosts (LGX_VARIANT=portable) installs
+    # liblogos_rln_module from file when the published one lags the pin
+    # (mix-delivery-rln: 0.10.0 in the catalog predates rln-modules#27, which
+    # validates Mix proofs). Built from the flake pin only.
+    if [ "${LGX_VARIANT:-dev}" = portable ]; then
+        [ -n "${RLN_PORTABLE_LGX:-}" ] || RLN_PORTABLE_LGX=$(lgx_of "$(_nix_out rln-module-lgx-portable)")
+        export RLN_PORTABLE_LGX
+    fi
+
+    # The standalone Mix intermediate (mix-delivery-rln). LGX_VARIANT=portable
+    # (scenario.env) is the bundle a released logosctl installs; the default
+    # -dev one is what install_lgx stages for logoscore.
+    case " ${NEEDS_MODULES:-} " in
+        *" libp2p_mix_rln_module "*)
+            if [ -z "${MIX_LGX:-}" ]; then
+                local mixattr=mix-rln-lgx
+                [ "${LGX_VARIANT:-dev}" = portable ] && mixattr=mix-rln-lgx-portable
+                if [ -n "${MIX_RLN_MODULE_CHECKOUT:-}" ]; then
+                    MIX_LGX=$(module_lgx "$mixattr" "$MIX_RLN_MODULE_CHECKOUT" mix-rln-module)
+                else
+                    MIX_LGX=$(lgx_of "$(_nix_out "$mixattr")")
+                fi
+            fi
+            export MIX_LGX
+            ;;
+    esac
+
     # Gifter-path artifacts: not pinned in this repo's flake
     # yet — the gifter needs a register-target fix that hasn't merged (its
     # lp.rs still calls the pre-rename module name), so these resolve from an
@@ -268,9 +312,13 @@ resolve_artifacts() {
     install_lgx "$LEZ_RLN_LGX"
     install_lgx "$RLN_LGX"
     [ -n "${WALLET_LGX:-}" ] && install_lgx "$WALLET_LGX"
-    [ -n "${DELIVERY_LGX:-}" ] && install_lgx "$DELIVERY_LGX"
     [ -n "${CHAT_LGX:-}" ] && install_lgx "$CHAT_LGX"
     [ -n "${LIBP2P_LGX:-}" ] && install_lgx "$LIBP2P_LGX"
+    # Portable bundles go to a logosctl node's own package manager instead.
+    if [ "${LGX_VARIANT:-dev}" != portable ]; then
+        [ -n "${DELIVERY_LGX:-}" ] && install_lgx "$DELIVERY_LGX"
+        [ -n "${MIX_LGX:-}" ] && install_lgx "$MIX_LGX"
+    fi
     [ -n "${GIFTER_LGX:-}" ] && install_lgx "$GIFTER_LGX"
     say "modules dir: $E2E_MODULES_DIR ($(lgx_platform))"
 }
