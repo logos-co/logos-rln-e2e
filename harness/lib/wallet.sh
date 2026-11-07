@@ -122,10 +122,17 @@ wallet_native_balance() {
 # It takes an account rather than a node because not everything that derives a
 # payer is a harness node: Basecamp embeds logos-core and is driven through the
 # QML inspector, so node_call cannot reach it — see basecamp_fund.
-# Usage: wallet_fund_account <account> <amount>
+#
+# An account that does not exist on the chain yet (a node's freshly derived
+# payer) cannot be named by id: the transfer declares it, and a declared
+# account is admitted by its public key. Pass the key as the third argument
+# and the transfer goes by `--to-public-key`; an existing account needs the id
+# only.
+# Usage: wallet_fund_account <account> <amount> [public-key]
 wallet_fund_account() {
-    local to="${1:?wallet_fund_account <account> <amount>}"
-    local amount="${2:?wallet_fund_account <account> <amount>}"
+    local to="${1:?wallet_fund_account <account> <amount> [public-key]}"
+    local amount="${2:?wallet_fund_account <account> <amount> [public-key]}"
+    local pk="${3:-}"
     local lez="${LEZ_RLN_CHECKOUT:-$E2E_ROOT/../logos-lez-rln}"
     local bin="$lez/lez-rln/target/release/fund_account"
     [ -x "$bin" ] || die "no fund_account at $bin — build it:
@@ -149,9 +156,11 @@ wallet_fund_account() {
     jq --argjson g "$gas" '.gas_limit = $g' "$cfg" > "$cfg.tmp" && mv "$cfg.tmp" "$cfg" \
         || die "cannot set the transfer gas limit in $cfg"
     local rc=0
+    local -a dest=(--to "$to")
+    [ -z "$pk" ] || dest=(--to-public-key "$pk")
     ( cd "$lez/lez-rln" && LEE_WALLET_HOME_DIR="$E2E_WALLET_HOME" \
-        NSSA_WALLET_HOME_DIR="$E2E_WALLET_HOME" LEZ_RLN_PAYER="$E2E_PAYER" \
-        "$bin" --to "$to" --amount "$amount" ) >/dev/null || rc=$?
+        LEE_WALLET_PASSWORD="" LEZ_RLN_PAYER="$E2E_PAYER" \
+        "$bin" "${dest[@]}" --amount "$amount" ) >/dev/null || rc=$?
     printf '%s\n' "$saved" > "$cfg"
     [ "$rc" = 0 ] || die "fund_account failed (from $E2E_PAYER to $to)"
 }
@@ -176,11 +185,18 @@ wallet_fund() {
     # running with payer="". The observed result was two failures — the real
     # one, then `fund_account --to ''` — with the second reading like the
     # cause. Check here so the first message is the only one.
-    local payer
+    local payer pk
     payer=$(wallet_payer "$node") || exit 1
     [ -n "$payer" ] || die_node "$node" "no payer to fund"
+    # A derived payer does not exist on the chain until this transfer lands,
+    # so the transfer names it by the public key the module publishes beside
+    # it. An empty key means the module's wallet holds no key for its payer,
+    # and such a payer could not sign a registration either.
+    pk=$(node_call "$node" "$E2E_REGISTRY_MOD" wallet_status | jres | jfield payer_public_key) || pk=""
+    [ "${#pk}" = 64 ] \
+        || die_node "$node" "the registry module published no public key for its payer $payer (wallet_status.payer_public_key)"
     say "$node: funding its payer $payer with $amount native"
-    wallet_fund_account "$payer" "$amount"
+    wallet_fund_account "$payer" "$amount" "$pk"
 
     wallet_wait_native "$node" "$amount"
 }

@@ -261,6 +261,36 @@ module's start config as `configJson` (`{"epoch_size_sec","registries"}`)
 built from that same conf, so a responder needs no out-of-band knowledge of
 the scope and injects nothing.
 
+### Two registries, two epochs
+
+A preset names ONE registry at ONE epoch, and the delivery module starts the
+backend from it. A second registry at another epoch — the mix tree at the
+Mix profile's 10 s beside the delivery tree at 600 s — does not fit a
+preset: give the preset `"manage-backend": false` and have the host start
+`liblogos_rln_module` once, naming both:
+
+```json
+{"epoch_size_sec": 600, "rate_limit": 100,
+ "registries": ["logos:local:<delivery-config-hex>",
+                {"registry_id": "logos:local:<mix-config-hex>", "epoch_size_sec": 10, "max_epoch_gap": 3,
+                 "rate_limit": 20}]}
+```
+
+A registry's rate-limit range is its own config state, set when it was
+provisioned (`LEZ_RLN_MIN_RATE_LIMIT` / `LEZ_RLN_MAX_RATE_LIMIT` to lez-rln's
+`provision.sh`): 0.4 deploys the delivery tree at 100..=600 and the mix tree at
+20..=100, so the mix entry names the rate provisioning registers at on it.
+
+Delivery still installs its Relay bridge and `rlnState` reads Ready; native
+Mix (`mix-rln-registry-id`) reaches the same backend, and its plugin refuses
+to start unless the backend reports the mix registry at exactly 10 s / gap 3.
+Provisioning (on by default) registers a membership on every registry the
+start names. Since liblogos_rln_module 0.14.2 a later `start()` naming only
+one registry leaves the other's epoch in force, and the nullifier log is kept
+per registry, so the two scopes neither reconfigure nor forget each other.
+`scenarios/delivery-two-registries` is the acceptance; `scenarios/two-registries`
+drives the module alone.
+
 ## 7. The seam: the in-process bridge (not optional for lez)
 
 `createNode` auto-enables delivery-module's in-process bridge whenever the

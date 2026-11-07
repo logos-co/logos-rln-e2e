@@ -8,6 +8,7 @@
 #   E2E_ACTUAL_LEAF   set by confirm_and_ready to the on-chain leaf index
 
 . "$(dirname "${BASH_SOURCE[0]}")/daemon.sh"
+. "$(dirname "${BASH_SOURCE[0]}")/registry.sh"
 
 E2E_REGISTRY_MOD="${E2E_REGISTRY_MOD:-liblogos_lez_rln_module}"
 
@@ -32,18 +33,20 @@ except Exception:
 # leaf (a merkle proof alone was unreliable: it is served for the OPTIMISTIC
 # leaf before the tree advances, so leaves collided). Reads the ACTUAL leaf
 # into E2E_ACTUAL_LEAF and flags any mismatch with the optimistic one.
-# Usage: confirm_and_ready <node> <id_commitment_hex> [optimistic_leaf] [label]
+# [registry] names the registry (E2E_REGISTRIES; default `default`).
+# Usage: confirm_and_ready <node> <id_commitment_hex> [optimistic_leaf] [label] [registry]
 confirm_and_ready() {
     local node="$1" idc="$2" lopt="${3:-}"
-    local label="${4:-$node}"
+    local label="${4:-$node}" registry="${5:-default}" cfg
     local iv="${E2E_POLL_INTERVAL_S:-10}" res conf="" flag="" _w tries
-    [ -n "${E2E_CONFIG_ACCOUNT:-}" ] || die "confirm_and_ready: E2E_CONFIG_ACCOUNT unset (the target sets it)"
+    cfg=$(registry_config_account "$registry") || return 1
+    [ -n "$cfg" ] || die "confirm_and_ready: no config account for registry '$registry' (the target stages it)"
     tries=$(( ${E2E_CONFIRM_TIMEOUT_S:-600} / iv ))
     [ "$tries" -lt 1 ] && tries=1
     E2E_ACTUAL_LEAF=""
     for _w in $(seq 1 "$tries"); do
         res=$(node_call "$node" "$E2E_REGISTRY_MOD" get_membership \
-            "$(argfile confirm_cfg "$E2E_CONFIG_ACCOUNT")" "$(argfile confirm_idc "$idc")" | jres)
+            "$(argfile confirm_cfg "$cfg")" "$(argfile confirm_idc "$idc")" | jres)
         case "$res" in
             *'"registered":true'*)
                 conf=true

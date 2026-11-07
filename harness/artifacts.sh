@@ -3,7 +3,7 @@
 #
 # Resolution order per artifact:
 #   1. explicit env override: LOGOSCORE, WALLET_LGX, LEZ_RLN_LGX, RLN_LGX,
-#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX
+#      DELIVERY_LGX, LIBP2P_LGX, GIFTER_LGX, AUTH_LGX, SIGN_LGX
 #   2. checkout overrides — the dev loop for changing a repo and running a
 #      scenario against it (filtered copy + --override-input):
 #        RLN_MODULES_CHECKOUT=<dir>      the three RLN-stack bundles
@@ -37,21 +37,77 @@
 E2E_ROOT="${E2E_ROOT:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
 . "$(dirname "${BASH_SOURCE[0]}")/lib/lgx.sh"
 
+# The key of a pinned build: this flake's two files and the attr. Nothing
+# else this flake evaluates lives in the tree (its packages are re-exports of
+# locked inputs).
+_pin_key() {
+    _e2e_sha "$1 $(shasum -a 256 "$E2E_ROOT/flake.nix" "$E2E_ROOT/flake.lock" | cut -c1-64 | tr '\n' ' ')"
+}
+
+# `nix build .#<attr>` from the pins, through the artifact cache: an unchanged
+# flake.nix + flake.lock answers from <cache>/artifacts/<attr> without the
+# 60-80 s evaluation. --accept-flake-config trusts OUR OWN flake's nixConfig
+# (the logos cache substituter the delivery bundle's prebuilt libs come from).
+# Every result is GC-rooted (nix_root) and pushed to the local cache (nix_push).
 _nix_out() {
-    local out
-    # --accept-flake-config trusts OUR OWN flake's nixConfig (the logos cache
-    # substituter the delivery bundle's prebuilt libs come from).
-    out=$(nix build "$E2E_ROOT#$1" --no-link --print-out-paths --accept-flake-config | tail -1)
-    [ -n "$out" ] || die "nix build .#$1 produced no output path"
+    local attr="$1" key out
+    key=$(_pin_key "$attr")
+    if out=$(artifact_cache_get "$attr" "$key"); then
+        say "$attr: pin unchanged, cached $out" >&2
+        nix_root "e2e-$attr" "$out"
+    else
+        nix_retry_cfg
+        out=$(nix build "$E2E_ROOT#$attr" --no-link --print-out-paths --accept-flake-config --fallback | tail -1)
+        [ -n "$out" ] && [ -e "$out" ] || die "nix build .#$attr produced no output path"
+        nix_root "e2e-$attr" "$out"
+        nix_push "$out" "$attr"
+        artifact_cache_put "$attr" "$key" "$out"
+    fi
     printf '%s' "$out"
 }
 
 _bundle_lgx() {
+    local out
     if [ -n "${RLN_MODULES_CHECKOUT:-}" ]; then
         module_lgx "$1" "$RLN_MODULES_CHECKOUT"
     else
-        lgx_of "$(_nix_out "$1")"
+        # a die inside $(...) only ends the subshell: check the path here
+        out=$(_nix_out "$1") || die "nix build .#$1 failed"
+        lgx_of "$out"
     fi
+}
+
+# _checkout_lgx <flake dir> <name> — `nix build <dir>#lgx` for a bundle that
+# has no pin in this flake (libp2p_module, gifter, auth, sign), through the
+# artifact cache (keyed by the tree's content), GC-rooted and pushed to the
+# local cache like every other build, printing the store path. Empty output
+# (a dropped substitute download) is a failure here, not later at
+# load-module. Without the root, a min-free auto-GC between this build and
+# install_lgx deletes the path (seen 2026-11-05).
+_checkout_lgx() {
+    local dir="$1" name="$2" key out
+    [ -d "$dir" ] || return 1
+    key=$(_e2e_sha "$dir $(_tree_hash "$dir")")
+    if out=$(artifact_cache_get "$name-checkout" "$key"); then
+        say "$name: $dir unchanged, cached $out" >&2
+        nix_root "e2e-$name-checkout" "$out"
+        printf '%s' "$out"
+        return 0
+    fi
+    nix_retry_cfg
+    out=$(cd "$dir" && nix build .#lgx --no-link --print-out-paths --accept-flake-config --fallback | tail -1) || return 1
+    [ -n "$out" ] && [ -e "$out" ] || return 1
+    nix_root "e2e-$name-checkout" "$out"
+    nix_push "$out" "$name"
+    artifact_cache_put "$name-checkout" "$key" "$out"
+    printf '%s' "$out"
+}
+
+# _need_lgx <var> <what>: the resolved bundle must be a file, or the run stops here.
+_need_lgx() {
+    local path
+    eval "path=\"\${$1:-}\""
+    [ -n "$path" ] && [ -f "$path" ] || die "$2: resolved to '${path:-<empty>}', not a bundle file — the build above failed"
 }
 
 # The delivery stack's dev loop: either repo swaps for a working tree,
@@ -78,11 +134,30 @@ _delivery_lgx() {
         overrides+=(--override-input delivery-module/logos-delivery "path:$src")
     fi
     if [ ${#overrides[@]} -eq 0 ]; then
-        lgx_of "$(_nix_out delivery-lgx)"
+        out=$(_nix_out delivery-lgx) || die "nix build .#delivery-lgx failed"
+        lgx_of "$out"
         return
     fi
-    out=$(cd "$E2E_ROOT" && nix build --no-link --print-out-paths --accept-flake-config \
-        ".#delivery-lgx" "${overrides[@]}") || die "nix build .#delivery-lgx (checkout override) failed"
+    # The override build goes through this flake (the delivery pin is only
+    # here), so it pays the evaluation; the artifact cache, keyed by the
+    # pins and every staged copy's content hash, spares a rerun.
+    local key hashes="" c
+    for c in "$(e2e_cache_dir)"/src/delivery-module "$(e2e_cache_dir)"/src/logos-delivery; do
+        [ -f "$c/.e2e-src-hash" ] && hashes="$hashes $(basename "$c")=$(cat "$c/.e2e-src-hash")"
+    done
+    key=$(_e2e_sha "$(_pin_key delivery-lgx) ${overrides[*]} $hashes")
+    if out=$(artifact_cache_get delivery-lgx-checkout "$key"); then
+        say "delivery-lgx: overrides unchanged, cached $out" >&2
+        nix_root e2e-delivery-lgx-checkout "$out"
+    else
+        nix_retry_cfg
+        out=$(cd "$E2E_ROOT" && nix build --no-link --print-out-paths --accept-flake-config --fallback \
+            ".#delivery-lgx" "${overrides[@]}" | tail -1)
+        [ -n "$out" ] && [ -e "$out" ] || die "nix build .#delivery-lgx (checkout override) produced no output path"
+        nix_root e2e-delivery-lgx-checkout "$out"
+        nix_push "$out" delivery-lgx
+        artifact_cache_put delivery-lgx-checkout "$key" "$out"
+    fi
     lgx_of "$out"
 }
 
@@ -179,8 +254,13 @@ resolve_artifacts() {
     [ -x "$LOGOSCORE" ] || die "logoscore not executable: $LOGOSCORE"
     export LOGOSCORE
 
-    [ -n "${LEZ_RLN_LGX:-}" ] || LEZ_RLN_LGX=$(_bundle_lgx lez-rln-module-lgx)
-    [ -n "${RLN_LGX:-}" ]     || RLN_LGX=$(_bundle_lgx rln-module-lgx)
+    # Each resolver runs in a $(...): its die ends only the subshell, so the
+    # result is checked here, before anything boots. A run that reached the
+    # devnet with an empty bundle path used to cost 4 min to fail at load-module.
+    [ -n "${LEZ_RLN_LGX:-}" ] || LEZ_RLN_LGX=$(_bundle_lgx lez-rln-module-lgx) || die "lez-rln-module-lgx: no bundle"
+    [ -n "${RLN_LGX:-}" ]     || RLN_LGX=$(_bundle_lgx rln-module-lgx) || die "rln-module-lgx: no bundle"
+    _need_lgx LEZ_RLN_LGX lez-rln-module-lgx
+    _need_lgx RLN_LGX rln-module-lgx
     export LEZ_RLN_LGX RLN_LGX
 
     # lez_core, like every other optional module: only when the scenario loads
@@ -191,7 +271,8 @@ resolve_artifacts() {
     # nothing else must pay for the build.
     case " ${NEEDS_MODULES:-} " in
         *" lez_core "*)
-            [ -n "${WALLET_LGX:-}" ] || WALLET_LGX=$(_bundle_lgx wallet-lgx)
+            [ -n "${WALLET_LGX:-}" ] || WALLET_LGX=$(_bundle_lgx wallet-lgx) || die "wallet-lgx: no bundle"
+            _need_lgx WALLET_LGX wallet-lgx
             export WALLET_LGX
             ;;
     esac
@@ -202,7 +283,8 @@ resolve_artifacts() {
     # register/live-registry runs must not pay for the delivery build.
     case " ${NEEDS_MODULES:-} " in
         *" delivery_module "*)
-            [ -n "${DELIVERY_LGX:-}" ] || DELIVERY_LGX=$(_delivery_lgx)
+            [ -n "${DELIVERY_LGX:-}" ] || DELIVERY_LGX=$(_delivery_lgx) || die "delivery-lgx: no bundle"
+            _need_lgx DELIVERY_LGX delivery-lgx
             export DELIVERY_LGX
             ;;
     esac
@@ -215,16 +297,17 @@ resolve_artifacts() {
             ;;
     esac
 
-    # Gifter-path artifacts: not pinned in this repo's flake
-    # yet — the gifter needs a register-target fix that hasn't merged (its
-    # lp.rs still calls the pre-rename module name), so these resolve from an
-    # env override or a checkout build only. Pin them once upstream is fixed.
+    # Gifter-path artifacts: not pinned in this repo's flake, so these
+    # resolve from an env override or a checkout build only. The gifter
+    # checkout also carries its verifier (rln_auth_module) and producer
+    # (rln_sign_module) modules, each its own flake under rust/.
     case " ${NEEDS_MODULES:-} " in
         *" libp2p_module "*)
             if [ -z "${LIBP2P_LGX:-}" ]; then
                 [ -n "${LIBP2P_MODULE_CHECKOUT:-}" ] \
                     || die "libp2p_module requested: set LIBP2P_LGX or LIBP2P_MODULE_CHECKOUT (no flake pin yet)"
-                LIBP2P_LGX=$(lgx_of "$(cd "$LIBP2P_MODULE_CHECKOUT" && nix build .#lgx --no-link --print-out-paths --accept-flake-config | tail -1)")
+                out=$(_checkout_lgx "$LIBP2P_MODULE_CHECKOUT" libp2p) || die "libp2p_module: nix build .#lgx failed in ${LIBP2P_MODULE_CHECKOUT}"
+                LIBP2P_LGX=$(lgx_of "$out") || die "libp2p_module: no .lgx in $out"
             fi
             export LIBP2P_LGX
             ;;
@@ -234,9 +317,32 @@ resolve_artifacts() {
             if [ -z "${GIFTER_LGX:-}" ]; then
                 [ -n "${GIFTER_CHECKOUT:-}" ] \
                     || die "rln_gifter_module requested: set GIFTER_LGX or GIFTER_CHECKOUT (no flake pin yet — needs the register-target fix branch)"
-                GIFTER_LGX=$(lgx_of "$(cd "$GIFTER_CHECKOUT/rust/rln-gifter-module" && nix build .#lgx --no-link --print-out-paths --accept-flake-config | tail -1)")
+                out=$(_checkout_lgx "$GIFTER_CHECKOUT/rust/rln-gifter-module" gifter) || die "rln_gifter_module: nix build .#lgx failed in ${GIFTER_CHECKOUT}"
+                GIFTER_LGX=$(lgx_of "$out") || die "rln_gifter_module: no .lgx in $out"
             fi
             export GIFTER_LGX
+            ;;
+    esac
+    case " ${NEEDS_MODULES:-} " in
+        *" rln_auth_module "*)
+            if [ -z "${AUTH_LGX:-}" ]; then
+                [ -n "${GIFTER_CHECKOUT:-}" ] \
+                    || die "rln_auth_module requested: set AUTH_LGX or GIFTER_CHECKOUT (no flake pin yet)"
+                out=$(_checkout_lgx "$GIFTER_CHECKOUT/rust/rln-auth-module" auth) || die "rln_auth_module: nix build .#lgx failed in ${GIFTER_CHECKOUT}"
+                AUTH_LGX=$(lgx_of "$out") || die "rln_auth_module: no .lgx in $out"
+            fi
+            export AUTH_LGX
+            ;;
+    esac
+    case " ${NEEDS_MODULES:-} " in
+        *" rln_sign_module "*)
+            if [ -z "${SIGN_LGX:-}" ]; then
+                [ -n "${GIFTER_CHECKOUT:-}" ] \
+                    || die "rln_sign_module requested: set SIGN_LGX or GIFTER_CHECKOUT (no flake pin yet)"
+                out=$(_checkout_lgx "$GIFTER_CHECKOUT/rust/rln-sign-module" sign) || die "rln_sign_module: nix build .#lgx failed in ${GIFTER_CHECKOUT}"
+                SIGN_LGX=$(lgx_of "$out") || die "rln_sign_module: no .lgx in $out"
+            fi
+            export SIGN_LGX
             ;;
     esac
 
@@ -272,5 +378,7 @@ resolve_artifacts() {
     [ -n "${CHAT_LGX:-}" ] && install_lgx "$CHAT_LGX"
     [ -n "${LIBP2P_LGX:-}" ] && install_lgx "$LIBP2P_LGX"
     [ -n "${GIFTER_LGX:-}" ] && install_lgx "$GIFTER_LGX"
+    [ -n "${AUTH_LGX:-}" ] && install_lgx "$AUTH_LGX"
+    [ -n "${SIGN_LGX:-}" ] && install_lgx "$SIGN_LGX"
     say "modules dir: $E2E_MODULES_DIR ($(lgx_platform))"
 }

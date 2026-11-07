@@ -22,7 +22,7 @@ channel.
 | `LOGOSCORE` | logoscore binary |
 | `WALLET_LGX`, `LEZ_RLN_LGX`, `RLN_LGX` | module bundles (each overridable by pre-setting the env) |
 | `DELIVERY_LGX` | delivery bundle — resolved only when the scenario's `NEEDS_MODULES` includes `delivery_module`; `DELIVERY_MODULE_CHECKOUT` / `LOGOS_DELIVERY_CHECKOUT` build it from working trees (see `harness/artifacts.sh`) |
-| `LIBP2P_LGX` / `GIFTER_LGX` | libp2p_module / rln_gifter_module bundles (the gifter path) — env override, else built from `LIBP2P_MODULE_CHECKOUT` / `GIFTER_CHECKOUT` (`nix build <checkout>#lgx`). Not pinned in this flake yet: the gifter needs its register-target fix branch (post-rename `register_member` lives on liblogos_lez_rln_module) |
+| `LIBP2P_LGX` / `GIFTER_LGX` / `AUTH_LGX` / `SIGN_LGX` | libp2p_module / rln_gifter_module / rln_auth_module / rln_sign_module bundles (the gifter path) — env override, else built from `LIBP2P_MODULE_CHECKOUT` (>= 1.1.0: `protocolAcceptStream` reports the peer id) / `GIFTER_CHECKOUT` (logos-rln-gifter `refactor/auth-vector-pipeline`; the three modules are `rust/*/` flakes). Not pinned in this flake yet |
 | `E2E_MODULES_DIR` | flattened module dir daemons load from |
 
 A scenario may also put one node on a released `logosctl` with `daemon_stack_ctl <node> <logosctl>` (see `harness/lib/daemon.sh`); its modules are installed after `daemon_start` through its own package commands into its session dir. `node_call`, module loading and `watch` then follow that binary. `harness/lib/usertools.sh` fetches the released `logosctl` and drives its catalog and package commands, cached under `E2E_USERTOOLS_DIR` (default `.cache/usertools`), pinned by `E2E_LOGOSCTL_RELEASE`. Packages resolve from the built-in official catalog, plus `E2E_EXTRA_CATALOG` when set.
@@ -43,6 +43,7 @@ that preflight chain vars fail fast under it by design.
 | `E2E_CONFIRM_TIMEOUT_S` / `E2E_POLL_INTERVAL_S` | on-chain confirmation budget (local 120/5, testnet 600/10) |
 | `E2E_EPOCH_SIZE_SEC` | RLN epoch size passed to `start` (local 60, testnet 600) |
 | `E2E_ROOT_WINDOW_TIMEOUT_S` | `validate_proof` root-window retry budget (local 60, testnet 120) |
+| `E2E_REGISTRIES` | the registries of the run, by name: `default` (the scalar vars above) plus the extras the scenario declared (`REGISTRIES` in scenario.env). Local only: each extra is one more tree provisioned on the default deployment's programs and staged under `$E2E_RUN_DIR/registries/<name>` (`registries/default` is `E2E_WALLET_HOME`). Scenarios address a registry by name through `harness/lib/registry.sh`: `registry_id <name>` (the CAIP-10 id every module call takes), `registry_config_account`, `registry_tree`, `registry_bounds` (the rate-limit range its config was initialised with, "min max"), `registry_home`; `confirm_and_ready … [registry]` and `delivery_registry_id [registry]` take the name too. Each registry is provisioned under its profile's `registry-<name>.env` (the rate-limit bounds, config state per registry) |
 
 ## Target inputs (caller → target)
 
@@ -63,22 +64,33 @@ the scenario's header, never invented in the harness.
 
 ### Known local-vs-testnet gaps
 
-The local target is a standalone (mock) sequencer; two behavioral gaps mean
+The local target is a standalone (mock) sequencer; one behavioral gap means
 testnet stays a first-class target rather than a fallback:
 
-- **Chain time**: the standalone sequencer leaves the `CLOCK_50` account at
-  zero, so anything clocked by chain time (membership pending windows,
-  expiry/renewal) is not faithfully exercised locally. The live-registry
-  clock test runs only against testnet.
 - **Block size**: local debug config caps blocks at 1 MiB; the real testnet
   cap is under ~459 KB, and oversized program deploys vanish silently there.
+
+Chain time is no longer a gap: since LEZ v0.4.0-rc1 it is the head block's
+timestamp, which the standalone sequencer stamps from its own clock, so
+membership windows and expiry run locally at wall speed.
 
 ## scenario.env
 
 Each `scenarios/<id>/scenario.env` declares: `NODES` (daemon count),
-`NEEDS_MODULES` (runtime lib names, space-separated), `TARGETS` (supported
+`NEEDS_MODULES` (runtime lib names, space-separated — every bundle a node
+must have INSTALLED, including the declared dependencies logoscore loads on
+its own: `liblogos_rln_module` ≥ 0.14.4 pulls in `rln_gifter_module` and
+`libp2p_module`, so scenarios list them here but need not load them; a
+scenario whose clients DISCOVER the allocator brings a bootstrap peer up
+first — `libp2p_module` alone, `mountServiceDiscovery` — and bootstraps the
+allocator and the clients to it, because an allocator registers its
+advertisement with the peers in its routing table at serve time),
+`TARGETS` (supported
 targets), `RUNNER` (`bash`; `pytest`/`compose` arrive with the delivery and
-mix phases), optional `STATUS=quarantined`.
+mix phases), optional `STATUS=quarantined`, optional `REGISTRIES` (the
+registries the target provisions, default `default`; an extra name needs a
+`tree-<name>.txt` in the local profile — `two-registries` declares
+`default mix`).
 
 ## Scenario conventions
 

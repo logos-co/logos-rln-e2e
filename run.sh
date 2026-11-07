@@ -48,6 +48,9 @@ done
 SDIR="$HERE/scenarios/$SCENARIO"
 [ -f "$SDIR/scenario.env" ] || die "unknown scenario '$SCENARIO' — ./run.sh --list"
 . "$SDIR/scenario.env"
+# The registries the target provisions: `default` (always) plus the extras a
+# scenario declares (REGISTRIES="default mix"); see docs/contract.md.
+export E2E_REGISTRIES="${REGISTRIES:-default}"
 [ "${STATUS:-active}" != "quarantined" ] \
     || die "scenario '$SCENARIO' is quarantined — see scenarios/$SCENARIO/STATUS.md"
 case " ${TARGETS:-local testnet} " in
@@ -70,7 +73,7 @@ TARGET_SH="$HERE/harness/targets/$TARGET.sh"
 
 export E2E_TARGET="$TARGET"
 export E2E_SCENARIO="$SCENARIO"
-E2E_RUN_DIR="$HERE/runs/$(date +%Y%m%d-%H%M%S)-$SCENARIO-$TARGET"
+E2E_RUN_DIR="${E2E_RUN_ROOT:-$HERE/runs}/$(date +%Y%m%d-%H%M%S)-$SCENARIO-$TARGET"
 export E2E_RUN_DIR
 mkdir -p "$E2E_RUN_DIR"
 say "run dir: $E2E_RUN_DIR"
@@ -80,7 +83,28 @@ resolve_artifacts
 
 # shellcheck source=/dev/null
 . "$TARGET_SH"
-trap 'target_down' EXIT
+# A scenario that died before its own cleanup knew the nodes were up leaves
+# logoscore daemons behind; the modules dir is unique to this run, so the
+# match cannot reach another run's. E2E_KEEP=1 keeps them.
+_run_finish() {
+    local rc=$?
+    target_down
+    # The scenario's own daemon_stop is an asynchronous SIGTERM: give its
+    # daemons a moment to go before calling them leftovers.
+    if [ "${E2E_KEEP:-0}" != 1 ] && [ -n "${E2E_MODULES_DIR:-}" ]; then
+        local _t
+        for _t in 1 2 3 4 5 6 7 8 9 10; do
+            pgrep -f "logoscore -m $E2E_MODULES_DIR" >/dev/null 2>&1 || break
+            sleep 0.5
+        done
+        if pgrep -f "logoscore -m $E2E_MODULES_DIR" >/dev/null 2>&1; then
+            say "stopping daemons the scenario left behind"
+            pkill -f "logoscore -m $E2E_MODULES_DIR" 2>/dev/null || true
+        fi
+    fi
+    return $rc
+}
+trap '_run_finish' EXIT
 target_up
 
 section "scenario: $SCENARIO --target $TARGET"
