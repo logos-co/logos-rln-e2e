@@ -36,8 +36,8 @@
 #                                          mountProtocol/protocolRequest; the
 #                                          delivery flake exports it as
 #                                          libp2p_module-lgx)
-#   GIFTER_LGX or GIFTER_CHECKOUT          logos-rln-gifter with
-#                                          fix/register-target-lez-rln-module
+#   GIFTER_LGX or GIFTER_CHECKOUT          logos-rln-gifter at
+#                                          refactor/auth-vector-pipeline
 #
 # Env beyond docs/contract.md:
 #   E2E_RATE_LIMIT=100          the gifted membership's rate limit
