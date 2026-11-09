@@ -19,15 +19,23 @@
 #       reads) + libp2p_module + rln_gifter_module (the client half) +
 #       rln_sign_module (the eth producer), bootstrapped to b and told no
 #       allocator peer id.
+#   c3  a cold-start client: the RLN stack with provisioning ON and an
+#       allocator block that discovers (no pinned pair), started while g is
+#       up but not serving, its payer never funded.
 #
 # Every registration goes through liblogos_rln_module.register_membership
 # (delegated), the path an application takes: the module mints the commitment,
 # names its scope's registry to the gifter, and confirms from the registry.
 #
 # What it proves:
-#   0. serve advertises the served (registry, auth type) pairs and a client
-#      discovers the allocator for each pair it asks about, nothing for a
-#      pair nobody serves;
+#   C. cold start: c3 finds no allocator, waits for funds with the miss as its
+#      fallback_reason, and once g serves, the provisioning pass's periodic
+#      probe discovers g and the membership lands granted by the discovered
+#      allocator;
+#   0. serve advertises the served (registry, auth type) pairs at the
+#      addresses it is given and a client discovers the allocator, at exactly
+#      those addresses, for each pair it asks about, nothing for a pair nobody
+#      serves;
 #   1. c1 gets a membership on D with peer-any, from an allocator it
 #      DISCOVERED: no key material beyond its libp2p identity, a constant
 #      payload; the leaf is the chain's;
@@ -44,7 +52,7 @@
 #      the client — nothing paid for either;
 #   7. the allocator restarts on the same key: the same PeerId, re-served, c1
 #      is still refused on D (the spent record survived) and c2 lands on M;
-#   8. the allocator's payer paid for exactly the five memberships it granted.
+#   8. the allocator's payer paid for exactly the six memberships it granted.
 #
 # Required:
 #   LIBP2P_LGX | LIBP2P_MODULE_CHECKOUT (libp2p_module >= 1.1.0: the accepted
@@ -56,8 +64,10 @@
 #
 # Env beyond docs/contract.md:
 #   E2E_ALLOC_PORT=62200     the gifter's libp2p port (+1, +2: the clients',
-#                            +3: the bootstrap peer's)
+#                            +3: the bootstrap peer's, +4: c3's)
 #   E2E_REG_WAIT_S=300       budget for a delegated registration to settle
+#   E2E_COLD_WAIT_S=45       budget for c3 to report awaiting_funding
+#   E2E_COLD_GRANT_S=150     budget, from g_serve, for c3's grant to land
 set -uo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -73,6 +83,8 @@ GADDR="/ip4/127.0.0.1/tcp/$GPORT"
 BADDR="/ip4/127.0.0.1/tcp/$(( GPORT + 3 ))"
 SERVICE_ID="/logos/rln/membership/1.0.0"
 REG_WAIT_S="${E2E_REG_WAIT_S:-300}"
+COLD_WAIT_S="${E2E_COLD_WAIT_S:-45}"
+COLD_GRANT_S="${E2E_COLD_GRANT_S:-150}"
 D_EPOCH="${E2E_DELIVERY_EPOCH_SIZE_SEC:-600}"
 M_EPOCH="${E2E_MIX_EPOCH_SIZE_SEC:-10}"
 M_GAP="${E2E_MIX_MAX_EPOCH_GAP:-3}"
@@ -156,11 +168,12 @@ g_up() {
 }
 # Usage: g_serve <allowlisted eth address> <label>
 # advertise:true explicitly: a node that cannot advertise must fail serve,
-# not serve unfound.
+# not serve unfound. advertiseAddrs: the record carries exactly GADDR.
 g_serve() {
     local body res
-    body=$(jq -cn --arg d "$D_CFG" --arg m "$M_CFG" --arg w "$GPAYER" --arg a "$1" --arg n "$NULLIFIERS" --argjson r "$RATE" \
+    body=$(jq -cn --arg d "$D_CFG" --arg m "$M_CFG" --arg w "$GPAYER" --arg a "$1" --arg n "$NULLIFIERS" --arg ga "$GADDR" --argjson r "$RATE" \
         '{config:$d, registries:[{config:$m, maxRateLimit:$r}], wallet:$w, consumedNullifiersPath:$n, maxRateLimit:$r, advertise:true,
+          advertiseAddrs:[$ga],
           authVerifiers:{"peer-any":{module:"rln_auth_module", config:{}},
                          "eth-allowlist":{module:"rln_auth_module", config:{allowlist:[$a]}}}}')
     local raw
@@ -200,10 +213,10 @@ print(" ".join(sorted(json.loads(line).get("dependencies_loaded", []))) if line 
     say "$1: loading liblogos_rln_module loaded [$loaded]"
 }
 START_CFG="{\"epoch_size_sec\":$D_EPOCH,\"registries\":[\"$D\",{\"registry_id\":\"$M\",\"epoch_size_sec\":$M_EPOCH,\"max_epoch_gap\":$M_GAP}],\"provision\":false}"
-# Usage: client_up <node> <port>   -> sets CLIENT_PEER (not a command
-# substitution: the node's registration must land in this shell)
+# Usage: client_up <node> <port> [start config]   -> sets CLIENT_PEER (not a
+# command substitution: the node's registration must land in this shell)
 client_up() {
-    local node="$1" port="$2" started peer
+    local node="$1" port="$2" cfg="${3:-$START_CFG}" started peer
     daemon_self_paying "$node" "$E2E_RUN_DIR/wallet-$node"
     daemon_start "$node" || die "daemon_start $node failed"
     # rln_gifter_module and libp2p_module are liblogos_rln_module's declared
@@ -218,13 +231,13 @@ client_up() {
     node_call "$node" libp2p_module start | jres >/dev/null || die "$node: libp2p start failed"
     peer=$(node_call "$node" libp2p_module peerInfo | jres | jval | jfield peerId) || peer=""
     [ -n "$peer" ] || die "$node: no peerId"
-    # provision:false: the clients never self-provision; every membership
-    # comes from the allocator.
-    started=$(node_call "$node" liblogos_rln_module start "$START_CFG" | jres | jval) || started=""
+    started=$(node_call "$node" liblogos_rln_module start "$cfg" | jres | jval) || started=""
     case "$started" in *'"started":true'*) ;; *) die "$node: rln start failed: ${started:-<empty>}" ;; esac
-    say "$node: up, peer $peer, rln started on D and M (provision off)"
+    say "$node: up, peer $peer, rln started: $cfg"
     CLIENT_PEER="$peer"
 }
+# provision:false: c1 and c2 never self-provision; every membership they
+# hold comes from register_membership (delegated).
 client_up c1 $(( GPORT + 1 )); C1PEER="$CLIENT_PEER"
 client_up c2 $(( GPORT + 2 )); C2PEER="$CLIENT_PEER"
 [ "$C1PEER" != "$C2PEER" ] || die "c1 and c2 share a peer id"
@@ -234,14 +247,68 @@ ADDR_C1=$(eth_address c1); ADDR_C2=$(eth_address c2)
 [ -n "$ADDR_C1" ] && [ -n "$ADDR_C2" ] && [ "$ADDR_C1" != "$ADDR_C2" ] \
     || die "the clients' eth identities are not two addresses: '$ADDR_C1' / '$ADDR_C2'"
 say "eth identities: c1 $ADDR_C1 (allowlisted), c2 $ADDR_C2 (not)"
+
+# ---------- C. cold start -------------------------------------------------------------
+section "C. cold start: c3 provisions before any allocator serves"
+# Provisioning on D alone, its allocator block discovering (no pinned pair);
+# c3's payer is never funded, so only the allocator can provision it.
+COLD_CFG=$(jq -cn --arg d "$D" --arg pl "$PEER_PAYLOAD" --argjson e "$D_EPOCH" --argjson r "$RATE" \
+    '{epoch_size_sec:$e, rate_limit:$r, registries:[$d], provision:true,
+      allocator:{discover:true, auth_type:"peer-any", auth_payload:$pl}}')
+client_up c3 $(( GPORT + 4 )) "$COLD_CFG"; C3PEER="$CLIENT_PEER"
+COLD_RID=$(new_rid)
+# Usage: c3_state -> c3's get_membership_state on D (registry-wide: any scope)
+c3_state() { node_call c3 liblogos_rln_module get_membership_state "$D" "$(argfile c3st "$COLD_RID")" | jres; }
+view=""; step=""; why=""
+for _t in $(seq 1 "$(polls "$COLD_WAIT_S" "$E2E_POLL_INTERVAL_S")"); do
+    view=$(c3_state) || view=""
+    step=$(printf '%s' "$view" | jq -r '.provisioning.step // empty' 2>/dev/null)
+    why=$(printf '%s' "$view" | jq -r '.provisioning.fallback_reason // empty' 2>/dev/null)
+    [ "$step" = awaiting_funding ] && [ -n "$why" ] && break
+    sleep "$E2E_POLL_INTERVAL_S"
+done
+[ "$step" = awaiting_funding ] || die_node c3 "cold start: no awaiting_funding within ${COLD_WAIT_S}s: ${view:-<empty>}"
+case "$why" in
+    *"no allocator advertises"*|*"discovery not joined"*|*"discovery: no allocator yet"*)
+        say "c3: awaiting funding, fallback_reason: $why" ;;
+    *) die_node c3 "cold start: the fallback_reason is not a discovery miss: ${why:-<none>} ($view)" ;;
+esac
 g_serve "$ADDR_C1" "peer-any + eth-allowlist[$ADDR_C1]"
+state=""
+for _t in $(seq 1 "$(polls "$COLD_GRANT_S" "$E2E_POLL_INTERVAL_S")"); do
+    view=$(c3_state) || view=""
+    state=$(printf '%s' "$view" | jfield state)
+    case "$state" in active|grace_period|failed) break ;; esac
+    sleep "$E2E_POLL_INTERVAL_S"
+done
+case "$state" in
+    active|grace_period) ;;
+    *) die_node c3 "cold start: no membership ${COLD_GRANT_S}s after g served (state ${state:-<none>}): ${view:-<empty>}" ;;
+esac
+# The pass records the granter on its own poll, after the registry may
+# already answer active.
+granted=""
+for _t in $(seq 1 12); do
+    granted=$(node_logs c3 | grep -m1 "provision $D: allocator $GPEER (discovered) registered a registry-wide membership") && break
+    sleep 5
+done
+[ -n "$granted" ] || die_node c3 "cold start: active, but not granted_by $GPEER (discovered): $view"
+[ "$(wallet_native_balance c3 "$(wallet_payer c3)")" = "0" ] || die "c3's payer moved: it paid for its membership"
+say "c3 ($C3PEER): $state at leaf $(printf '%s' "$view" | jfield leaf_index), granted by $GPEER (discovered)"
 
 # ---------- 0. discovery -------------------------------------------------------------
 section "0. the clients discover the allocator per (registry, auth type)"
 # Usage: discovered <node> <config account> <auth type> -> the candidate peer ids
+# The lookup must have joined, and every candidate's record must carry exactly
+# GADDR (the advertiseAddrs serve was given).
 discovered() {
-    node_call "$1" rln_gifter_module discover "$(jq -cn --arg c "$2" --arg t "$3" '{config:$c, authType:$t}')" | jres \
-        | jq -r '.candidates[].peerId' 2>/dev/null
+    local reply
+    reply=$(node_call "$1" rln_gifter_module discover "$(jq -cn --arg c "$2" --arg t "$3" '{config:$c, authType:$t}')" | jres) || reply=""
+    [ "$(printf '%s' "$reply" | jq -r '.joined' 2>/dev/null)" = true ] \
+        || die_node "$1" "discover $3 on ${2:0:12}… did not join: ${reply:-<empty>}"
+    printf '%s' "$reply" | jq -e --arg a "$GADDR" 'all(.candidates[]; .addrs == [$a])' >/dev/null 2>&1 \
+        || die_node "$1" "discover $3 on ${2:0:12}…: a record's addrs is not [$GADDR]: $reply"
+    printf '%s' "$reply" | jq -r '.candidates[].peerId'
 }
 for pair in "$D_CFG peer-any" "$M_CFG eth-allowlist"; do
     set -- $pair
@@ -396,8 +463,8 @@ expect_refused c1 default peer-any "$PEER_PAYLOAD" "" "c1 peer-any D after resta
 expect_active c2 mix peer-any "$PEER_PAYLOAD" "" "c2 peer-any M after restart"
 
 # ---------- 8. the bill -----------------------------------------------------------------------
-section "8. the allocator paid for exactly five memberships"
-GRANTED=5
+section "8. the allocator paid for exactly six memberships"
+GRANTED=6
 PAID=$(( GBAL0 - $(gbal) ))
 EACH=$(( RATE * PRICE ))
 [ "$PAID" -ge $(( GRANTED * EACH )) ] || die "paid $PAID, less than $GRANTED registrations' price ($(( GRANTED * EACH )))"
@@ -406,5 +473,5 @@ EACH=$(( RATE * PRICE ))
 [ "$PAID" -lt $(( (GRANTED + 1) * EACH + GRANTED * 100000000 )) ] || die "paid $PAID: more than $GRANTED registrations' worth"
 say "allocator paid $PAID for $GRANTED memberships (price $EACH each, the rest fees)"
 
-say "PASS — rln-allocator (target $E2E_TARGET): peer-any once per peer per registry (D and M), eth-allowlist \
+say "PASS — rln-allocator (target $E2E_TARGET): a cold-start client provisioned by the allocator it discovered later, peer-any once per peer per registry (D and M), eth-allowlist \
 through rln_sign_module, refusals free, the same PeerId and spent record across a restart, $GRANTED paid"

@@ -92,6 +92,21 @@ registries the target provisions, default `default`; an extra name needs a
 `tree-<name>.txt` in the local profile — `two-registries` declares
 `default mix`).
 
+Two discovery cases ride on that topology. Cold start (`rln-allocator`,
+`c3`): a client whose provisioning is on and whose allocator block discovers
+starts before any allocator serves; with its payer unfunded it reports
+`provisioning.step` `awaiting_funding` with the discovery miss as
+`fallback_reason`, and its pass's periodic `discover` probe (every 60 s)
+finds the allocator once it serves (`serve` with `advertiseAddrs`, the record
+carrying exactly those addresses), ending in a grant `(discovered)`.
+Discovery without plugin kademlia (`delivery-allocator-presets`, `n3`): a
+delivery preset carrying `allocator-bootstrap-nodes`, with a conf that has
+neither `pluginKadDiscovery` nor `kadBootstrapNodes`, has the delivery
+module bring `libp2p_module` up with service discovery on those peers, so
+the node discovers the allocator; a node with no bootstrap peers at all
+(`n4`) has nothing to discover with and falls back to its configured pair,
+then to funding.
+
 ## Scenario conventions
 
 `rln_identifier` scopes the **application**, not the member. It feeds the

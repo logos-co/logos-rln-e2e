@@ -18,10 +18,15 @@
 #            two registries and NO allocator: createNode alone discovers g
 #            and gets each a membership on D and on M through it, and n1
 #            sends a proof-gated message n2 receives.
-#   n3       the fallback: no discovery, a preset naming an allocator
-#            address nobody listens on, and a FUNDED payer: provisioning
-#            records why no allocator delivered and registers from n3's own
-#            wallet.
+#   n3       never funded, NO plugin kademlia discovery and no
+#            kadBootstrapNodes in its conf; its preset names no allocator
+#            but carries allocator-bootstrap-nodes (b): the delivery module
+#            brings libp2p_module up with service discovery on those peers,
+#            and n3 discovers g.
+#   n4       the fallback: no bootstrap peers, no plugin discovery, a preset
+#            naming an allocator address nobody listens on, and a FUNDED
+#            payer: provisioning records why no allocator delivered and
+#            registers from n4's own wallet.
 #
 # What it proves:
 #   1. with discovery on the node the delivery module brings its
@@ -30,13 +35,17 @@
 #      "delegating"), for both registries;
 #   2. n1 and n2 hold active memberships on D and M that the ALLOCATOR paid
 #      for (their payers never move), and n1 -> n2 relay is proof-gated;
-#   3. n3 has nothing to discover with and cannot reach its configured
+#   3. n3, with the preset's allocator-bootstrap-nodes alone (no plugin
+#      kademlia, no conf kad list), gets both memberships from the
+#      discovered allocator (its payer never moves);
+#   4. n4 has nothing to discover with and cannot reach its configured
 #      allocator: provisioning reports the reason
 #      (provisioning.fallback_reason) and falls back to a funded registration
-#      that lands (n3's payer paid);
-#   4. rlnState reports the allocator path (discovery; the configured peer).
+#      that lands (n4's payer paid);
+#   5. rlnState reports the allocator path (discovery; the configured peer).
 #
-# Required: DELIVERY_LGX | DELIVERY_MODULE_CHECKOUT (>= 0.3.6), LIBP2P_LGX |
+# Required: DELIVERY_LGX | DELIVERY_MODULE_CHECKOUT (>= 0.3.7: discovery
+#   without pluginKadDiscovery), LIBP2P_LGX |
 #   LIBP2P_MODULE_CHECKOUT (>= 1.1.0), GIFTER_LGX + AUTH_LGX | GIFTER_CHECKOUT
 #   (logos-rln-gifter refactor/auth-vector-pipeline, rln_gifter_module >=
 #   0.5.0), liblogos_rln_module >= 0.15.0 (the allocator block discovers).
@@ -72,7 +81,7 @@ RECV_WAIT_S="${E2E_RECV_WAIT_S:-12}"
 TOPIC="/logos-rln-e2e/1/delivery-allocator-presets/proto"
 META_TOPIC="/mix/1/metadata/proto"
 CLUSTER_ID="198"
-NODES_ALL="b g n1 n2 n3"
+NODES_ALL="b g n1 n2 n3 n4"
 
 for _v in LOGOSCORE E2E_MODULES_DIR E2E_RUN_DIR E2E_SEQUENCER E2E_WALLET_HOME \
           E2E_CONFIG_ACCOUNT E2E_PAYER E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
@@ -186,16 +195,22 @@ section "delivery daemons"
 PRESETS_N12="$E2E_RUN_DIR/rln-presets.json"
 delivery_stage_rln_presets "$PRESETS_N12" "$D" "$RELAY_ID" "$D_EPOCH" "" \
     "\"rate-limit\": $RATE_LIMIT, \"mix-registry-id\": \"$M\", \"mix-rate-limit\": $M_RATE_LIMIT, \"mix-metadata-topic\": \"$META_TOPIC\""
-# n3's preset dials an address nobody listens on.
-PRESETS_N3="$E2E_RUN_DIR/rln-presets-dead-allocator.json"
+# n3's preset names no allocator and carries the DHT peers its allocator
+# path bootstraps from.
+PRESETS_N3="$E2E_RUN_DIR/rln-presets-bootstrap.json"
 delivery_stage_rln_presets "$PRESETS_N3" "$D" "$RELAY_ID" "$D_EPOCH" "" \
+    "\"rate-limit\": $RATE_LIMIT, \"mix-registry-id\": \"$M\", \"mix-rate-limit\": $M_RATE_LIMIT, \"mix-metadata-topic\": \"$META_TOPIC\", \"allocator-bootstrap-nodes\": [\"$BADDR/p2p/$BPEER\"]"
+# n4's preset dials an address nobody listens on.
+PRESETS_N4="$E2E_RUN_DIR/rln-presets-dead-allocator.json"
+delivery_stage_rln_presets "$PRESETS_N4" "$D" "$RELAY_ID" "$D_EPOCH" "" \
     "\"rate-limit\": $RATE_LIMIT, \"mix-registry-id\": \"$M\", \"mix-rate-limit\": $M_RATE_LIMIT, \"mix-metadata-topic\": \"$META_TOPIC\", \"allocator-peer-id\": \"$GPEER\", \"allocator-multiaddr\": \"$DEAD_ADDR\""
 DAEMON_ENV_BASE="${E2E_DAEMON_ENV:-}"
-for n in n1 n2 n3; do
+for n in n1 n2 n3 n4; do
     daemon_self_paying "$n" "$E2E_RUN_DIR/wallet-$n"
 done
-for n in n1 n2; do
-    E2E_DAEMON_ENV="$DAEMON_ENV_BASE $(delivery_rln_presets_env "$PRESETS_N12")"
+for n in n1 n2 n3; do
+    case "$n" in n3) presets="$PRESETS_N3" ;; *) presets="$PRESETS_N12" ;; esac
+    E2E_DAEMON_ENV="$DAEMON_ENV_BASE $(delivery_rln_presets_env "$presets")"
     export E2E_DAEMON_ENV
     daemon_start "$n" || die "daemon_start $n failed"
     # The allocator client and libp2p are the RLN module's declared
@@ -203,44 +218,45 @@ for n in n1 n2; do
     daemon_load_modules "$n" liblogos_lez_rln_module liblogos_rln_module delivery_module \
         || die "$n: load-module failed"
 done
-E2E_DAEMON_ENV="$DAEMON_ENV_BASE $(delivery_rln_presets_env "$PRESETS_N3")"
+E2E_DAEMON_ENV="$DAEMON_ENV_BASE $(delivery_rln_presets_env "$PRESETS_N4")"
 export E2E_DAEMON_ENV
-daemon_start n3 || die "daemon_start n3 failed"
-daemon_load_modules n3 liblogos_lez_rln_module liblogos_rln_module delivery_module \
-    || die "n3: load-module failed"
-for n in n1 n2 n3; do
+daemon_start n4 || die "daemon_start n4 failed"
+daemon_load_modules n4 liblogos_lez_rln_module liblogos_rln_module delivery_module \
+    || die "n4: load-module failed"
+for n in n1 n2 n3 n4; do
     assert_deps_loaded "$n"
 done
 
 section "wallets"
-for n in n1 n2 n3; do
+for n in n1 n2 n3 n4; do
     wallet_open "$n" || die "$n: wallet open failed"
     wallet_sync "$n" >/dev/null || die "$n: wallet sync failed"
 done
-# n1 and n2 are never funded: every membership they hold came from g.
-for n in n1 n2; do
+# n1, n2 and n3 are never funded: every membership they hold came from g.
+for n in n1 n2 n3; do
     sv PAYER "$n" "$(wallet_payer "$n")"
     [ "$(wallet_native_balance "$n" "$(gv PAYER "$n")")" = "0" ] || die "$n's payer should start empty"
 done
-# n3 pays for itself once its allocator fails.
-wallet_fund n3 >/dev/null || die_node n3 "funding its payer failed"
-sv PAYER n3 "$(wallet_payer n3)"
-N3BAL0=$(wallet_native_balance n3 "$(gv PAYER n3)")
-say "n3: payer $(gv PAYER n3) holds $N3BAL0 native (the fallback's budget)"
+# n4 pays for itself once its allocator fails.
+wallet_fund n4 >/dev/null || die_node n4 "funding its payer failed"
+sv PAYER n4 "$(wallet_payer n4)"
+N4BAL0=$(wallet_native_balance n4 "$(gv PAYER n4)")
+say "n4: payer $(gv PAYER n4) holds $N4BAL0 native (the fallback's budget)"
 
 # Usage: delivery_rln_state <node> -> the rlnState value (JSON object)
 delivery_rln_state() { node_call "$1" delivery_module rlnState | jres | jval; }
-# Usage: mix_conf <tcp_port> [static_peer_maddr] [disco]
-# With [disco] the node runs plugin kademlia discovery bootstrapped to b:
-# the delivery module then brings libp2p_module up on that config, which is
-# what the RLN module's allocator discovery runs over.
+# Usage: mix_conf <tcp_port> [static_peer_maddr] [boot] [plugin]
+# [boot]: kadBootstrapNodes names b — the peers the delivery module brings
+# libp2p_module up on, with service discovery mounted, which is what the RLN
+# module's allocator discovery runs over. [plugin]: pluginKadDiscovery on.
 mix_conf() {
-    local port="$1" peers="${2:-}" disco="${3:-}"
-    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"ip-colocation-limit":0,"mix":true,"maxPureLibp2pPeers":100%s%s}' \
+    local port="$1" peers="${2:-}" boot="${3:-}" plugin="${4:-}"
+    printf '{"logLevel":"INFO","listenAddress":"127.0.0.1","tcpPort":%s,"clusterId":"%s","numShardsInNetwork":1,"relay":true,"store":false,"filter":false,"lightpush":false,"peerExchange":false,"discv5Discovery":false,"reliabilityEnabled":true,"ip-colocation-limit":0,"mix":true,"maxPureLibp2pPeers":100%s%s%s}' \
         "$port" "$CLUSTER_ID" "${peers:+,\"staticnodes\":[\"$peers\"]}" \
-        "${disco:+,\"pluginKadDiscovery\":true,\"kadBootstrapNodes\":[\"$BADDR/p2p/$BPEER\"]}"
+        "${boot:+,\"kadBootstrapNodes\":[\"$BADDR/p2p/$BPEER\"]}" \
+        "${plugin:+,\"pluginKadDiscovery\":true}"
 }
-for n in n1 n2 n3; do
+for n in n1 n2 n3 n4; do
     node_watch_start "$n" delivery_module
 done
 # Usage: node_started_verdict <node>  -> "ok" or the failure the library reported
@@ -293,7 +309,7 @@ assert_gifted() {
 
 # ---------- n1, n2: memberships from the allocator ------------------------------
 section "n1, n2: createNode alone, both memberships from the discovered allocator"
-delivery_node_create n1 "$(mix_conf $(( BASE_PORT + 1 )) "" disco)"
+delivery_node_create n1 "$(mix_conf $(( BASE_PORT + 1 )) "" boot plugin)"
 assert_allocator_named n1 ""
 await_both_memberships n1
 assert_gifted n1 "$D"
@@ -301,38 +317,46 @@ assert_gifted n1 "$M"
 PEER1=$(delivery_node_start n1 "$EVT_TIMEOUT") || exit 1
 [ "$(node_started_verdict n1)" = ok ] || die "n1: the library did not start: $(node_started_verdict n1)"
 sv MADDR n1 "/ip4/127.0.0.1/tcp/$(( BASE_PORT + 1 ))/p2p/$PEER1"
-delivery_node_create n2 "$(mix_conf $(( BASE_PORT + 2 )) "$(gv MADDR n1)" disco)"
+delivery_node_create n2 "$(mix_conf $(( BASE_PORT + 2 )) "$(gv MADDR n1)" boot plugin)"
 assert_allocator_named n2 ""
 await_both_memberships n2
 assert_gifted n2 "$D"
 assert_gifted n2 "$M"
 PEER2=$(delivery_node_start n2 "$EVT_TIMEOUT") || exit 1
 [ "$(node_started_verdict n2)" = ok ] || die "n2: the library did not start: $(node_started_verdict n2)"
-for n in n1 n2; do
+
+# ---------- n3: the preset's bootstrap peers, no plugin kademlia, still discovers
+section "n3: preset allocator-bootstrap-nodes, no kad in the conf, both memberships from the discovered allocator"
+delivery_node_create n3 "$(mix_conf $(( BASE_PORT + 3 )) "$(gv MADDR n1)")"
+assert_allocator_named n3 ""
+await_both_memberships n3
+assert_gifted n3 "$D"
+assert_gifted n3 "$M"
+for n in n1 n2 n3; do
     [ "$(wallet_native_balance "$n" "$(gv PAYER "$n")")" = "0" ] || die "$n's payer moved: it paid for a membership"
 done
 PAID=$(( GBAL0 - $(gbal) ))
-[ "$PAID" -ge $(( 2 * RATE_LIMIT * PRICE + 2 * M_RATE_LIMIT * PRICE )) ] \
-    || die "the allocator paid $PAID, less than four memberships' price"
-say "n1 and n2 paid nothing; the allocator paid $PAID for their four memberships"
+[ "$PAID" -ge $(( 3 * RATE_LIMIT * PRICE + 3 * M_RATE_LIMIT * PRICE )) ] \
+    || die "the allocator paid $PAID, less than six memberships' price"
+say "n1, n2 and n3 paid nothing; the allocator paid $PAID for their six memberships"
 
-# ---------- n3: no discovery, the allocator is unreachable, funding is the fallback
-section "n3: no discovery, dead allocator address, funded fallback"
-delivery_node_create n3 "$(mix_conf $(( BASE_PORT + 3 )) "$(gv MADDR n1)")"
-assert_allocator_named n3 "$DEAD_ADDR"
-delivery_await_provisioned n3 "$D" "$RELAY_ID" n3_d
-FALLBACK=$(gv FALLBACK n3_d)
-[ -n "$FALLBACK" ] || FALLBACK=$(node_logs n3 | grep -m1 "falling back to a funded registration") || FALLBACK=""
-[ -n "$FALLBACK" ] || die "n3: nothing recorded why the allocator failed (provisioning.fallback_reason / the module's log)"
+# ---------- n4: no discovery, the allocator is unreachable, funding is the fallback
+section "n4: no bootstrap peers, dead allocator address, funded fallback"
+delivery_node_create n4 "$(mix_conf $(( BASE_PORT + 4 )) "$(gv MADDR n1)")"
+assert_allocator_named n4 "$DEAD_ADDR"
+delivery_await_provisioned n4 "$D" "$RELAY_ID" n4_d
+FALLBACK=$(gv FALLBACK n4_d)
+[ -n "$FALLBACK" ] || FALLBACK=$(node_logs n4 | grep -m1 "falling back to a funded registration") || FALLBACK=""
+[ -n "$FALLBACK" ] || die "n4: nothing recorded why the allocator failed (provisioning.fallback_reason / the module's log)"
 case "$FALLBACK" in
-    *"$GPEER"*) say "n3: fell back — $FALLBACK" ;;
-    *) die "n3: the fallback reason does not name the allocator: $FALLBACK" ;;
+    *"$GPEER"*) say "n4: fell back — $FALLBACK" ;;
+    *) die "n4: the fallback reason does not name the allocator: $FALLBACK" ;;
 esac
-node_logs n3 | grep -q "provision $D: registered a registry-wide membership at rate $RATE_LIMIT" \
-    || die "n3: no funded registration recorded after the fallback"
-N3BAL1=$(wallet_native_balance n3 "$(gv PAYER n3)")
-[ "$N3BAL1" -lt "$N3BAL0" ] || die "n3's payer did not pay for its own membership ($N3BAL0 -> $N3BAL1)"
-say "n3: funded fallback landed at leaf $(gv LEAF n3_d); its payer paid $(( N3BAL0 - N3BAL1 ))"
+node_logs n4 | grep -q "provision $D: registered a registry-wide membership at rate $RATE_LIMIT" \
+    || die "n4: no funded registration recorded after the fallback"
+N4BAL1=$(wallet_native_balance n4 "$(gv PAYER n4)")
+[ "$N4BAL1" -lt "$N4BAL0" ] || die "n4's payer did not pay for its own membership ($N4BAL0 -> $N4BAL1)"
+say "n4: funded fallback landed at leaf $(gv LEAF n4_d); its payer paid $(( N4BAL0 - N4BAL1 ))"
 
 # ---------- mesh + send leg (proof-gated Relay on D) ---------------------------
 section "send leg (proof-gated relay, n1 -> n2)"
@@ -368,6 +392,6 @@ done
 
 echo
 echo "e2e: PASS — the preset's allocator provisioned both memberships by default, funding stayed the fallback (target $E2E_TARGET)"
-echo "e2e:   D $D: n1 leaf $(gv LEAF n1_d), n2 leaf $(gv LEAF n2_d), n3 leaf $(gv LEAF n3_d) (funded fallback)"
-echo "e2e:   M $M: n1 leaf $(gv LEAF n1_m), n2 leaf $(gv LEAF n2_m)"
-echo "e2e:   allocator $GPEER paid $PAID; n3 paid $(( N3BAL0 - N3BAL1 ))"
+echo "e2e:   D $D: n1 leaf $(gv LEAF n1_d), n2 leaf $(gv LEAF n2_d), n3 leaf $(gv LEAF n3_d) (preset bootstrap), n4 leaf $(gv LEAF n4_d) (funded fallback)"
+echo "e2e:   M $M: n1 leaf $(gv LEAF n1_m), n2 leaf $(gv LEAF n2_m), n3 leaf $(gv LEAF n3_m)"
+echo "e2e:   allocator $GPEER paid $PAID; n4 paid $(( N4BAL0 - N4BAL1 ))"
