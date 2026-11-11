@@ -170,10 +170,16 @@ wallet_sync g >/dev/null || die "g: wallet sync failed"
 PRICE=$(node_call g liblogos_lez_rln_module get_registry_bounds "$(argfile gcfg "$D_CFG")" | jres | jfield price_per_unit)
 [ -n "$PRICE" ] || die "no price_per_unit in the registry bounds"
 GPAYER=$(wallet_payer g) || die "g published no payer"
-# g pays eight registrations and must still hold the fee reserve for the last
-# one: a hosted target's per-node amount (1e9) is one registration too short.
-G_FUND="${E2E_ALLOCATOR_FUND_AMOUNT:-${E2E_FUND_AMOUNT:-5000000000}}"
-[ "$G_FUND" -ge 2000000000 ] || G_FUND=2000000000
+# g pays eight registrations (about 6.6e8 at base fee 8-9) and must still hold
+# the fee reserve (1.8e8) for the last one: a hosted target's per-node amount
+# (1e9) is one registration too short, so the default is at least 2e9.
+# E2E_ALLOCATOR_FUND_AMOUNT is taken as given.
+if [ -n "${E2E_ALLOCATOR_FUND_AMOUNT:-}" ]; then
+    G_FUND="$E2E_ALLOCATOR_FUND_AMOUNT"
+else
+    G_FUND="${E2E_FUND_AMOUNT:-5000000000}"
+    [ "$G_FUND" -ge 2000000000 ] || G_FUND=2000000000
+fi
 wallet_fund g "$G_FUND" >/dev/null || die "funding the allocator's payer never landed"
 gbal() { wallet_native_balance g "$GPAYER"; }
 GBAL0=$(gbal)
