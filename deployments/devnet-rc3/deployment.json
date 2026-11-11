@@ -1,0 +1,14 @@
+{
+  "name": "devnet-rc3",
+  "tree_id": "80157e0cc1127fc374f2fd4266a99ed99cf9a863ed704af6696b1cf78d2f9200",
+  "sequencer": "http://46.225.45.199:3040/",
+  "registration_program_id": "ecab2c07cb4a7ca6c0628b43ef6c5afdb4ece02cc80612d9d38d1b350da64dc7",
+  "merkle_program_id": "f967706bf8f36287ad052b2dd59f99f8df23a762e080a095b1afeb923352f9f8",
+  "config_account": "6rqbHkM1HzAytAKGoNdo3csmGDBjcmJhNqm3eVC8SEVx",
+  "payer_account": "AE6pb86QUjDi71mQ4GiiQhYG2amH79ErBQsRdVZTd6Q1",
+  "treasury_account": "HVmhNkdsjpzZAGaT3fFVKRsJ6Zh9t3AmSBWv3eTZNZmf",
+  "min_rate_limit": 100,
+  "max_rate_limit": 600,
+  "payer_public_key": "e6f39b898dfa20c6990b38ec410532f069b3c298304750e0648a825c90aeb60a",
+  "treasury_public_key": "4d48b40af6141ec0d24596fac71cccee044b56ff9874bf860fc03519bd95d488"
+}
