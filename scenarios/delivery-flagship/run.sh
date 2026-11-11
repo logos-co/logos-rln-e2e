@@ -551,10 +551,19 @@ done
 
 # ---------- quotas on D ---------------------------------------------------------
 section "quotas"
+# The proofs on D count against the epoch each send fell in. The sends above
+# finished within the last D epoch, so the epoch before this one is read too:
+# a read just after a boundary sees a fresh quota for the current epoch.
+NOW=$(date +%s)
 for n in $HOSTED; do
-    QD=$(delivery_quota "$n" "$D" "$RELAY_ID" "${n}_qd")
+    QD=$(delivery_quota "$n" "$D" "$RELAY_ID" "${n}_qd" "$NOW")
     [ "$(printf '%s' "$QD" | jfield rate_limit)" = "$RATE_LIMIT" ] || die "$n: no usable membership on D: $QD"
-    [ "$(printf '%s' "$QD" | jfield remaining)" -lt "$RATE_LIMIT" ] || die "$n: nothing spent on D: $QD"
+    if [ "$(printf '%s' "$QD" | jfield remaining)" -ge "$RATE_LIMIT" ]; then
+        QPREV=$(delivery_quota "$n" "$D" "$RELAY_ID" "${n}_qd_prev" "$(( NOW - D_EPOCH ))")
+        [ "$(printf '%s' "$QPREV" | jfield remaining)" -lt "$RATE_LIMIT" ] \
+            || die "$n: nothing spent on D in this epoch or the one before: $QD / $QPREV"
+        QD="$QPREV"
+    fi
     say "$n: D remaining $(printf '%s' "$QD" | jfield remaining)/$RATE_LIMIT"
 done
 
