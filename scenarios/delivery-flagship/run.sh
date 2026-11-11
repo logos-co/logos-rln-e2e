@@ -192,6 +192,12 @@ NULLIFIERS="$E2E_RUN_DIR/allocator-nullifiers"
 SERVE=$(jq -cn --arg d "$D_CFG" --arg m "$M_CFG" --arg w "$GPAYER" --arg n "$NULLIFIERS" --argjson r "$RATE_LIMIT" \
     '{config:$d, registries:[{config:$m, maxRateLimit:$r}], wallet:$w, consumedNullifiersPath:$n, maxRateLimit:$r, advertise:true,
       authVerifiers:{"peer-any":{module:"rln_auth_module", config:{}}}}')
+# The allocator's confirmation budget stays its default (150 s) unless named:
+# on a slow chain a late block then exercises the client's recovery from an
+# `unconfirmed` reply.
+if [ -n "${E2E_ALLOCATOR_CONFIRM_BUDGET_S:-}" ]; then
+    SERVE=$(printf '%s' "$SERVE" | jq -c --argjson b "$E2E_ALLOCATOR_CONFIRM_BUDGET_S" '. + {confirmBudgetSec:$b}')
+fi
 RES=$(node_call g rln_gifter_module serve "$SERVE" | jres) || RES=""
 case "$RES" in
     *'"advertised":true'*'"mounted":true'*) say "g: serving D and M with peer-any, advertised: $RES" ;;
