@@ -63,7 +63,7 @@ ARG TARGETARCH
 # by commit); the two only have to interoperate over gossipsub, since module
 # ABI is internal to each process. _check_image_pins is what keeps the gap
 # visible rather than silent.
-ARG LOGOSCORE_RELEASE=0.3.0-rc.2
+ARG LOGOSCORE_RELEASE=0.3.2
 RUN apt-get update -qq \
     && apt-get install -y -qq --no-install-recommends \
          ca-certificates curl python3 tar jq libstdc++6 \

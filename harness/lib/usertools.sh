@@ -41,7 +41,7 @@
 _UT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 UT_CACHE="${E2E_USERTOOLS_DIR:-$_UT_ROOT/.cache/usertools}"
 
-UT_LOGOSCTL_RELEASE="${E2E_LOGOSCTL_RELEASE:-0.3.0}"
+UT_LOGOSCTL_RELEASE="${E2E_LOGOSCTL_RELEASE:-0.3.2}"
 UT_EXTRA_CATALOG="${E2E_EXTRA_CATALOG:-}"
 
 # The platform string the release assets are named with — NOT lgx_platform's
