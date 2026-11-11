@@ -12,10 +12,44 @@ bash tools/network/provision.sh networks/devnet.env          # all steps
 bash tools/network/provision.sh networks/devnet.env status   # where it stands
 ```
 
+## The devnet on LEZ v0.4.0-rc3 (since 2026-11-11)
+
+`networks/devnet.env` names the rc3 devnet (`http://46.225.45.199:3040/`) and
+the deployment `devnet-rc3`. What differs from the procedure below:
+
+- **Reuse.** The RLN programs and their registries are deployed once and
+  adopted by every run and every machine. Deploy again only when the RLN
+  program changes or the network is reset, under a new deployment name. A
+  hosted target never provisions: a missing descriptor is an error.
+- **Two registries.** A scenario's extra registry `<registry>` is the committed
+  `deployments/<DEPLOYMENT>-<registry>/deployment.json`, one more tree on the
+  default deployment's programs (`devnet-rc3-mix`, rate limits 20..100, for
+  `REGISTRIES="default mix"`). Each tree holds 512 members for its life.
+- **Funding by transfer.** The payer was minted with logos-lez-rln's
+  `mint_payer` and funded by a transfer from an account that already held
+  native balance. Pass its wallet as `E2E_PAYER_WALLET=<storage.json>`.
+  `tools/network/provision.sh` is not ported to v0.4 yet: it stores
+  `mint_payer`'s two-line output as one value, and its bridge deposit names
+  the recipient by account id where rc3 expects the public key
+  (`DepositRecipient::Identified`). Do not use its `payer`/`fund` steps here.
+- **Provisioning** (once, from a logos-lez-rln checkout at the devnet's LEZ
+  tag, guest rebuilt): `tools/deployments/provision.sh --name devnet-rc3
+  --sequencer http://46.225.45.199:3040/ --payer <id> --adopt-wallet
+  <storage.json>`, then the same with `--name devnet-rc3-mix`,
+  `LEZ_RLN_REGISTRATION_PROGRAM_ID`/`LEZ_RLN_MERKLE_PROGRAM_ID` from the first
+  descriptor and `LEZ_RLN_MIN_RATE_LIMIT=20 LEZ_RLN_MAX_RATE_LIMIT=100`.
+  Blocks take about a minute: set `LEZ_RLN_ACCOUNT_WAIT_ATTEMPTS=1200`. Never
+  re-run it over an initialised tree.
+
+```sh
+E2E_PAYER_WALLET=<storage.json> ./run.sh delivery-flagship --target devnet
+```
+
 ## On a new machine
 
-The registry is already provisioned — `deployments/devnet-z2/deployment.json`
-is committed — so a new machine only needs a funded payer of its own:
+The procedure below is the bridge-deposit route of the earlier devnets
+(`deployments/devnet-z2` was its registry); see the section above for rc3.
+A new machine only needs a funded payer of its own:
 
 1. Build the logos-lez-rln host binaries once:
    `cd ../logos-lez-rln/lez-rln && cargo build --release --bin mint_payer --bin fund_account`.

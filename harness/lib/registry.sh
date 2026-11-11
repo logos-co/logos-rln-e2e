@@ -60,9 +60,25 @@ tools/deployments/provision.sh) and point the run at it." ;;
 # registry by name through these.
 # ---------------------------------------------------------------------------
 
+# Usage: registry_stage <lez-rln source> <deployment-dir> <home>
+# stage.sh a deployment (deployment.json + storage.json) into a wallet home a
+# run can mutate. Shared by the local and the hosted targets.
+registry_stage() {
+    local lez="$1" dep_dir="$2" home="$3"
+    bash "$lez/tools/deployments/stage.sh" "$dep_dir" "$home" \
+        || die "stage.sh failed for $dep_dir"
+    # stage.sh emits the wallet as a seed; the run mutates its own copy.
+    cp "$home/storage.json.seed" "$home/storage.json" \
+        || die "no storage.json.seed in $home"
+    # The descriptor itself, for what stage.sh does not flatten (the
+    # registry's rate-limit bounds — registry_bounds below).
+    cp "$dep_dir/deployment.json" "$home/deployment.json" \
+        || die "no deployment.json in $dep_dir"
+}
+
 # Usage: registry_home [name]   (default: default)
-# The staged home (stage.sh output) of a registry. A target that stages no
-# registries dir (testnet, devnet) still serves `default` from E2E_WALLET_HOME.
+# The staged home (stage.sh output) of a registry. A run with no registries
+# dir still serves `default` from E2E_WALLET_HOME.
 registry_home() {
     local name="${1:-default}" dir
     dir="${E2E_RUN_DIR:?registry_home: E2E_RUN_DIR unset}/registries/$name"

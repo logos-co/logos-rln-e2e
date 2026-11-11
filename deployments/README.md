@@ -1,8 +1,13 @@
 # Committed deployments
 
-Each `deployments/<name>/` is a **testnet** deployment profile: an RLN tree
-already provisioned on a hosted sequencer, committed so a run spends against a
-known tree instead of re-provisioning one.
+Each `deployments/<name>/` is a hosted-network deployment profile (testnet or
+devnet): an RLN tree already provisioned on a hosted sequencer, committed so a
+run spends against a known tree instead of re-provisioning one. A scenario's
+extra registry is `deployments/<name>-<registry>/`, one more tree on the same
+programs. Hosted deployments are reused until the RLN program changes or the
+network is reset (docs/networks.md). A descriptor whose chain is gone
+(`devnet-z2`, the `testnet-v03-*` ones on an older program) is refused at
+target start by `require_registry`.
 
 ```
 deployments/<name>/
@@ -12,7 +17,7 @@ deployments/<name>/
   storage.json      the wallet holding payer_account
 ```
 
-**This directory is empty, and that is deliberate.**
+**History: the profiles from before native-asset registration were deleted.**
 
 Registration became native-asset-only, which changed the registry guest
 program. The config account is a PDA of `(registration_program_id, tree_id)`

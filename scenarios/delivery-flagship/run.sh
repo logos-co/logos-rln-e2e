@@ -170,7 +170,11 @@ wallet_sync g >/dev/null || die "g: wallet sync failed"
 PRICE=$(node_call g liblogos_lez_rln_module get_registry_bounds "$(argfile gcfg "$D_CFG")" | jres | jfield price_per_unit)
 [ -n "$PRICE" ] || die "no price_per_unit in the registry bounds"
 GPAYER=$(wallet_payer g) || die "g published no payer"
-wallet_fund g >/dev/null || die "funding the allocator's payer never landed"
+# g pays eight registrations and must still hold the fee reserve for the last
+# one: a hosted target's per-node amount (1e9) is one registration too short.
+G_FUND="${E2E_ALLOCATOR_FUND_AMOUNT:-${E2E_FUND_AMOUNT:-5000000000}}"
+[ "$G_FUND" -ge 2000000000 ] || G_FUND=2000000000
+wallet_fund g "$G_FUND" >/dev/null || die "funding the allocator's payer never landed"
 gbal() { wallet_native_balance g "$GPAYER"; }
 GBAL0=$(gbal)
 node_call g libp2p_module createNode "$(disco_node_config "$GADDR")" | jres >/dev/null \
@@ -264,6 +268,15 @@ host_start() {
     printf '{"epoch_size_sec":%s,"rate_limit":%s,"registries":[{"registry_id":"%s","allocator":%s},{"registry_id":"%s","epoch_size_sec":%s,"max_epoch_gap":%s,"rate_limit":%s,"allocator":%s}]}' \
         "$D_EPOCH" "$RATE_LIMIT" "$D" "$1" "$M" "$M_EPOCH" "$M_GAP" "$M_RATE_LIMIT" "$2"
 }
+# On a hosted chain a block takes about a minute and the allocator registers
+# on one serialized worker, so requests that arrive together queue behind each
+# other past the client's request timeout. There the nodes are provisioned one
+# after another; a local chain (1 s blocks) keeps them concurrent.
+case "${E2E_TARGET:-local}" in local) SEQUENTIAL="${E2E_SEQUENTIAL_PROVISIONING:-0}" ;; *) SEQUENTIAL="${E2E_SEQUENTIAL_PROVISIONING:-1}" ;; esac
+# The module writes its "granted"/"paid" line on its own 5 s poll; the wait
+# follows the chain's confirmation budget, never under a minute.
+LINE_TRIES=$(( ${E2E_CONFIRM_TIMEOUT_S:-60} / 5 ))
+[ "$LINE_TRIES" -ge 12 ] || LINE_TRIES=12
 # Usage: await_both_memberships <node>
 await_both_memberships() {
     local n="$1"
@@ -279,7 +292,7 @@ await_both_memberships() {
 # The provisioning pass writes it on its own 5 s poll, so this waits a little.
 assert_granted() {
     local _t
-    for _t in $(seq 1 12); do
+    for _t in $(seq 1 "$LINE_TRIES"); do
         node_logs "$1" | grep -qF "provision $2: allocator $3 registered a registry-wide membership" && return 0
         sleep 5
     done
@@ -290,7 +303,7 @@ assert_granted() {
 # allocator line for that registry.
 assert_paid() {
     local _t ok=0
-    for _t in $(seq 1 12); do
+    for _t in $(seq 1 "$LINE_TRIES"); do
         node_logs "$1" | grep -qF "provision $2: registered a registry-wide membership at rate $3" && { ok=1; break; }
         sleep 5
     done
@@ -310,14 +323,16 @@ for n in $HOSTED; do
     node_call "$n" libp2p_module start | jres >/dev/null || die "$n: libp2p start failed"
 done
 delivery_prewarm a "$(host_start "$(pinned_allocator "$RATE_LIMIT")" null)"
+[ "$SEQUENTIAL" = 1 ] && await_both_memberships a
 delivery_prewarm bb "$(host_start null "$(pinned_allocator "$M_RATE_LIMIT")")"
+[ "$SEQUENTIAL" = 1 ] && await_both_memberships bb
 for n in $HOSTED; do
     PARAMS=$(rln_on "$n" get_registry_parameters "$M" "$(argfile "p_$n" "$MIX_ID")") || PARAMS=""
     [ "$(printf '%s' "$PARAMS" | jfield epoch_size_sec)" = "$M_EPOCH" ] \
         || die "$n: M reports epoch $(printf '%s' "$PARAMS" | jfield epoch_size_sec), want $M_EPOCH: $PARAMS"
 done
 for n in $HOSTED; do
-    await_both_memberships "$n"
+    [ "$SEQUENTIAL" = 1 ] || await_both_memberships "$n"
 done
 assert_granted a "$D" "$GPEER"
 assert_paid a "$M" "$M_RATE_LIMIT"
@@ -394,9 +409,10 @@ for n in $DISCO; do
     STATE=$(delivery_rln_state "$n") || die "$n: rlnState failed"
     [ "$(printf '%s' "$STATE" | jfield mixRegistryId)" = "$M" ] || die "$n: rlnState does not name M as the mix registry: $STATE"
     [ -z "$(printf '%s' "$STATE" | jfield allocatorPeerId)" ] || die "$n: rlnState names an allocator the preset did not: $STATE"
+    [ "$SEQUENTIAL" = 1 ] && await_both_memberships "$n"
 done
 for n in $DISCO; do
-    await_both_memberships "$n"
+    [ "$SEQUENTIAL" = 1 ] || await_both_memberships "$n"
     assert_granted "$n" "$D" "$GPEER (discovered)"
     assert_granted "$n" "$M" "$GPEER (discovered)"
     [ "$(payer_balance "$n")" = "0" ] || die "$n's payer moved: it paid for a membership"

@@ -193,6 +193,10 @@ _testnet_stage() {
     E2E_PAYER=$(tr -d '\n\r' < "$E2E_WALLET_HOME/payer_account.txt")
     [ -n "$E2E_TREE_ID" ] && [ -n "$E2E_CONFIG_ACCOUNT" ] && [ -n "$E2E_PAYER" ] \
         || die "staged fixtures incomplete in $E2E_WALLET_HOME"
+    # The descriptor beside the home, for registry_bounds.
+    cp "$dep_dir/deployment.json" "$E2E_WALLET_HOME/deployment.json"
+
+    _hosted_stage_extras "$name" "$dep_dir" "$lez"
 
     E2E_CONFIRM_TIMEOUT_S="${E2E_CONFIRM_TIMEOUT_S:-600}"
     E2E_POLL_INTERVAL_S="${E2E_POLL_INTERVAL_S:-10}"
@@ -200,8 +204,44 @@ _testnet_stage() {
     E2E_ROOT_WINDOW_TIMEOUT_S="${E2E_ROOT_WINDOW_TIMEOUT_S:-120}"
     export E2E_SEQUENCER E2E_DEPLOYMENT_DIR E2E_WALLET_HOME E2E_TREE_ID \
         E2E_CONFIG_ACCOUNT E2E_PAYER E2E_CONFIRM_TIMEOUT_S E2E_POLL_INTERVAL_S \
-        E2E_EPOCH_SIZE_SEC E2E_ROOT_WINDOW_TIMEOUT_S
+        E2E_EPOCH_SIZE_SEC E2E_ROOT_WINDOW_TIMEOUT_S E2E_REGISTRIES
     say "deployment: $name tree ${E2E_TREE_ID:0:8}… config $E2E_CONFIG_ACCOUNT payer $E2E_PAYER"
+}
+
+# Usage: _hosted_stage_extras <name> <dep_dir> <lez>
+# Every registry of the run under registries/<registry>: `default` is the home
+# staged above; each extra name in E2E_REGISTRIES is the committed descriptor
+# deployments/<name>-<registry>, one more tree on the default deployment's
+# programs. A hosted target adopts and never provisions: a missing descriptor
+# is an error (provision it once with logos-lez-rln's
+# tools/deployments/provision.sh and commit it; docs/networks.md). The payer
+# wallet is the default deployment's, and the staged descriptor names the
+# payer this machine runs as.
+_hosted_stage_extras() {
+    local name="$1" dep_dir="$2" lez="$3" reg desc reg_dep
+    E2E_REGISTRIES="${E2E_REGISTRIES:-default}"
+    case " $E2E_REGISTRIES " in *" default "*) ;; *) E2E_REGISTRIES="default $E2E_REGISTRIES" ;; esac
+    mkdir -p "$E2E_RUN_DIR/registries"
+    ln -sfn "$E2E_WALLET_HOME" "$E2E_RUN_DIR/registries/default"
+    for reg in $E2E_REGISTRIES; do
+        [ "$reg" != default ] || continue
+        desc="$_TESTNET_HERE/deployments/$name-$reg/deployment.json"
+        [ -f "$desc" ] \
+            || die "registry '$reg' has no deployments/$name-$reg/deployment.json — a hosted target does not provision (docs/networks.md)"
+        [ "$(jq -re .registration_program_id "$desc")" = "$(jq -re .registration_program_id "$dep_dir/deployment.json")" ] \
+            || die "deployments/$name-$reg is not on deployment $name's programs"
+        [ "$(jq -re .sequencer "$desc")" = "$(jq -re .sequencer "$dep_dir/deployment.json")" ] \
+            || die "deployments/$name-$reg names another sequencer than deployment $name"
+        require_registry "$E2E_SEQUENCER" "$desc" "registry $reg"
+        reg_dep="$E2E_RUN_DIR/deployment-$name-$reg"
+        mkdir -p "$reg_dep"
+        jq --arg p "$E2E_PAYER" '.payer_account = $p' "$desc" > "$reg_dep/deployment.json" \
+            || die "cannot stage deployments/$name-$reg/deployment.json"
+        cp "$dep_dir/storage.json" "$reg_dep/storage.json"
+        chmod 600 "$reg_dep/storage.json"
+        registry_stage "$lez" "$reg_dep" "$E2E_RUN_DIR/registries/$reg"
+        say "registry $reg: tree $(registry_tree "$reg" | cut -c1-8)… config $(registry_config_account "$reg") rate $(registry_bounds "$reg" | tr ' ' -)"
+    done
 }
 
 target_down() { :; }

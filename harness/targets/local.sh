@@ -264,16 +264,7 @@ _local_provision() {
 # Usage: _local_stage <lez> <deployment-dir> <home>
 # stage.sh the deployment into a wallet home a run can mutate.
 _local_stage() {
-    local lez="$1" dep_dir="$2" home="$3"
-    bash "$lez/tools/deployments/stage.sh" "$dep_dir" "$home" \
-        || die "stage.sh failed for $dep_dir"
-    # stage.sh emits the wallet as a seed; the run mutates its own copy.
-    cp "$home/storage.json.seed" "$home/storage.json" \
-        || die "no storage.json.seed in $home"
-    # The descriptor itself, for what stage.sh does not flatten (the
-    # registry's rate-limit bounds — registry_bounds in lib/registry.sh).
-    cp "$dep_dir/deployment.json" "$home/deployment.json" \
-        || die "no deployment.json in $dep_dir"
+    registry_stage "$@"
 }
 
 target_up() {
