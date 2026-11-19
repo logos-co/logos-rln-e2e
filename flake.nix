@@ -5,7 +5,7 @@
   # from the logos cache; without it the delivery bundle builds from source.
   nixConfig = {
     extra-substituters = [ "https://cache.nix.logos.co/public" ];
-    extra-trusted-public-keys = [ "public:l4HrXgL4nw246+LBh2SOJyhz64BoGegOYLheT/iIAPU=" ];
+    extra-trusted-public-keys = [ "public:zaDAOkd+E3cQyFm9J7qejQYd9HoLJc1SJvnk68hNWeI=" ];
   };
 
   inputs = {
